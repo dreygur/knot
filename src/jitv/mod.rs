@@ -1,13 +1,9 @@
 use crate::memory::node::{KnowledgeNode, VerificationResult, VerificationStatus};
-use sha2::{Digest, Sha256};
-use std::fs;
+use std::path::Path;
 
-/// Compute SHA-256 hex digest of a file's contents.
+/// Compute BLAKE3 hex digest of a file's contents.
 pub fn hash_path(path: &str) -> Option<String> {
-    let bytes = fs::read(path).ok()?;
-    let mut hasher = Sha256::new();
-    hasher.update(&bytes);
-    Some(hex::encode(hasher.finalize()))
+    crate::utils::calculate_hash(Path::new(path)).ok()
 }
 
 /// Run Jit-V on a single node. Returns a VerificationResult and, if stale,

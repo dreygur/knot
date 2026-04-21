@@ -5,6 +5,7 @@ mod jitv;
 mod logging;
 mod memory;
 mod tools;
+mod utils;
 
 use anyhow::Result;
 use engine::StorageEngine;
@@ -17,8 +18,7 @@ async fn main() -> Result<()> {
     let filter = std::env::var("KNOT_LOG").unwrap_or_else(|_| "knot=info".into());
     logging::init(&filter);
 
-    let data_dir = std::env::var("KNOT_DATA_DIR")
-        .unwrap_or_else(|_| resolve_data_dir());
+    let data_dir = std::env::var("KNOT_DATA_DIR").unwrap_or_else(|_| resolve_data_dir());
 
     tracing::info!("v{} data_dir={data_dir}", env!("CARGO_PKG_VERSION"));
 

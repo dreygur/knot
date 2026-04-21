@@ -1,0 +1,7 @@
+# Knot Behavioral Directives
+- Favor Rust best practices: safety, performance, and clear ownership.
+- Maintain a "Cyber-Minimalist" aesthetic: concise logs, monospaced outputs.
+- Responses should be technical and grounded; avoid conversational fluff.
+- All code generated must be modular and follow the repository pattern.
+- Prioritize local-first, zero-dependency solutions where possible.
+- When suggesting UI/UX, lean towards TUI (Terminal User Interface) designs.

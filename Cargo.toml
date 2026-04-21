@@ -36,8 +36,7 @@ anyhow = "1"
 thiserror = "1"
 
 # Hashing (Jit-V content verification)
-sha2 = "0.10"
-hex = "0.4"
+blake3 = "1"
 
 # Privacy scrubber
 regex = "1"

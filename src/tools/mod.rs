@@ -262,6 +262,7 @@ impl KnotServer {
     }
 }
 
+#[tool(tool_box)]
 impl ServerHandler for KnotServer {
     fn get_info(&self) -> rmcp::model::ServerInfo {
         InitializeResult {
