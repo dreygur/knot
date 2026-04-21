@@ -41,16 +41,6 @@ fi
 BIN_PATH="$(resolve_abs "$BIN_PATH")"
 mkdir -p "$DATA_DIR"
 
-detect_agent() {
-  if command -v opencode &>/dev/null; then
-    echo "opencode"
-  elif command -v claude &>/dev/null; then
-    echo "claude"
-  else
-    echo "none"
-  fi
-}
-
 install_opencode() {
   echo "[KNOT] INFO:  Registering with OpenCode..."
   local bin_abs
@@ -108,31 +98,33 @@ EOF
   echo "[KNOT] INFO:  Injected Knot Protocol into $rules_file"
 }
 
-AGENT=$(detect_agent)
+REGISTERED=0
 
-case "$AGENT" in
-  opencode)
-    install_opencode
-    inject_rules "opencode"
-    ;;
-  claude)
-    install_claude
-    inject_rules "claude"
-    ;;
-  none)
-    echo "[KNOT] WARN:  No MCP client detected (opencode / claude)."
-    echo ""
-    echo "Manual installation:"
-    echo ""
-    echo "  OpenCode:"
-    echo "    opencode mcp add --name $MCP_NAME --command '$BIN_PATH' \\"
-    echo "      -e 'KNOT_DATA_DIR=$DATA_DIR'"
-    echo ""
-    echo "  Claude Code:"
-    echo "    claude mcp add --name $MCP_NAME --command '$BIN_PATH' \\"
-    echo "      --scope user -e 'KNOT_DATA_DIR=$DATA_DIR'"
-    ;;
-esac
+if command -v opencode &>/dev/null; then
+  install_opencode
+  inject_rules "opencode"
+  REGISTERED=1
+fi
+
+if command -v claude &>/dev/null; then
+  install_claude
+  inject_rules "claude"
+  REGISTERED=1
+fi
+
+if [[ $REGISTERED -eq 0 ]]; then
+  echo "[KNOT] WARN:  No MCP client detected (opencode / claude)."
+  echo ""
+  echo "Manual installation:"
+  echo ""
+  echo "  OpenCode:"
+  echo "    opencode mcp add --name $MCP_NAME --command '$BIN_PATH' \\"
+  echo "      -e 'KNOT_DATA_DIR=$DATA_DIR'"
+  echo ""
+  echo "  Claude Code:"
+  echo "    claude mcp add --name $MCP_NAME --command '$BIN_PATH' \\"
+  echo "      --scope user -e 'KNOT_DATA_DIR=$DATA_DIR'"
+fi
 
 echo ""
 echo "[KNOT] INFO:  Binary    : $BIN_PATH"

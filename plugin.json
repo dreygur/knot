@@ -58,7 +58,15 @@
       },
       {
         "name": "prune_ghosts",
-        "description": "Delete Ghost Nodes whose source files no longer exist"
+        "description": "[DESTRUCTIVE] Delete Ghost Nodes whose source files no longer exist on disk. Returns count removed."
+      },
+      {
+        "name": "delete_wisdom",
+        "description": "[DESTRUCTIVE] Permanently remove a memory node. Children are re-parented to the deleted node's parent."
+      },
+      {
+        "name": "delete_skill",
+        "description": "[DESTRUCTIVE] Remove a saved skill by name. Requires force=true when success_count > 10."
       }
     ],
     "prompts": [],
