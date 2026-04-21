@@ -85,6 +85,8 @@ mod tests {
             utility_score: 0.5,
             scope: MemoryScope::Global,
             is_stale: false,
+            parent_id: None,
+            origin_agent: None,
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
         }

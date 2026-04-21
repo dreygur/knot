@@ -72,13 +72,17 @@ pub struct KnowledgeNode {
     pub tags: Vec<String>,
     /// Filesystem path whose existence/hash validates this node
     pub verification_path: Option<String>,
-    /// SHA-256 of verification_path content at save-time
+    /// BLAKE3 hex digest of verification_path content at save-time
     pub content_hash: Option<String>,
     /// 0.0–1.0; incremented on each recall hit
     pub utility_score: f32,
     pub scope: MemoryScope,
     /// True if Jit-V detected path missing or hash mismatch
     pub is_stale: bool,
+    /// Optional parent node for hierarchical knowledge inheritance
+    pub parent_id: Option<Uuid>,
+    /// Agent identifier that created this node — enforces namespace protection
+    pub origin_agent: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -90,6 +94,8 @@ impl KnowledgeNode {
         verification_path: Option<String>,
         content_hash: Option<String>,
         scope: MemoryScope,
+        parent_id: Option<Uuid>,
+        origin_agent: Option<String>,
     ) -> Self {
         let now = Utc::now();
         Self {
@@ -101,6 +107,8 @@ impl KnowledgeNode {
             utility_score: 0.5,
             scope,
             is_stale: false,
+            parent_id,
+            origin_agent,
             created_at: now,
             updated_at: now,
         }
@@ -158,6 +166,8 @@ pub enum VerificationStatus {
     StaleMissing,
     /// Path exists but content changed
     StaleModified,
+    /// Node is locally clean but a parent node is stale
+    StaleByInheritance,
 }
 
 impl VerificationStatus {
@@ -167,13 +177,16 @@ impl VerificationStatus {
             VerificationStatus::Verified => "",
             VerificationStatus::StaleMissing => "[STALE:MISSING]",
             VerificationStatus::StaleModified => "[STALE:MODIFIED]",
+            VerificationStatus::StaleByInheritance => "[STALE:INHERITED]",
         }
     }
 
     pub fn is_stale(&self) -> bool {
         matches!(
             self,
-            VerificationStatus::StaleMissing | VerificationStatus::StaleModified
+            VerificationStatus::StaleMissing
+                | VerificationStatus::StaleModified
+                | VerificationStatus::StaleByInheritance
         )
     }
 }

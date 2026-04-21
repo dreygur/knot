@@ -4,12 +4,14 @@ mod engine;
 mod jitv;
 mod logging;
 mod memory;
+mod skills;
 mod tools;
 mod utils;
 
 use anyhow::Result;
 use engine::StorageEngine;
 use rmcp::{transport::stdio, ServiceExt};
+use std::path::Path;
 use tools::KnotServer;
 use uuid::Uuid;
 
@@ -19,6 +21,13 @@ async fn main() -> Result<()> {
     logging::init(&filter);
 
     let data_dir = std::env::var("KNOT_DATA_DIR").unwrap_or_else(|_| resolve_data_dir());
+
+    let is_new = !Path::new(&data_dir).exists();
+    std::fs::create_dir_all(&data_dir)?;
+
+    if is_new {
+        eprintln!("[KNOT] INFO: Initialized new memory vault at {}", data_dir);
+    }
 
     tracing::info!("v{} data_dir={data_dir}", env!("CARGO_PKG_VERSION"));
 
