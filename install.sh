@@ -80,6 +80,16 @@ echo "[KNOT] INFO:  Version  : $VERSION"
 echo "[KNOT] INFO:  Data dir : $DATA_DIR"
 echo "[KNOT] INFO:  Bin dir  : $INSTALL_DIR"
 echo ""
+echo "[KNOT] INFO:  This script will:"
+echo "[KNOT] INFO:    1. Download the knot binary to $INSTALL_DIR"
+echo "[KNOT] INFO:    2. Create a data directory at $DATA_DIR"
+echo "[KNOT] INFO:    3. Register knot as an MCP server (Claude Code / OpenCode)"
+echo "[KNOT] INFO:    4. Write hook scripts to $DATA_DIR/hooks/"
+echo "[KNOT] INFO:    5. Add hook entries to ~/.claude/settings.json"
+echo "[KNOT] INFO:    6. Append the Knot Protocol to ~/.clauderules / ~/AGENTS.md"
+echo ""
+echo "[KNOT] INFO:  Nothing outside these paths is touched."
+echo ""
 
 ARTIFACT="$(detect_target)"
 mkdir -p "$INSTALL_DIR"
@@ -87,7 +97,7 @@ BIN_PATH="$INSTALL_DIR/knot"
 
 if [[ -n "$ARTIFACT" ]]; then
   URL="https://github.com/${REPO}/releases/download/${VERSION}/${ARTIFACT}"
-  echo "[KNOT] INFO:  Downloading $ARTIFACT..."
+  echo "[KNOT] PERM:  Download binary from GitHub releases -> $BIN_PATH"
   download "$URL" "$BIN_PATH"
   chmod +x "$BIN_PATH"
   echo "[KNOT] INFO:  Installed to $BIN_PATH"
@@ -98,6 +108,7 @@ else
     exit 1
   fi
   SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  echo "[KNOT] PERM:  Run cargo build --release in $SCRIPT_DIR"
   (cd "$SCRIPT_DIR" && cargo build --release)
   cp "$SCRIPT_DIR/target/release/knot" "$BIN_PATH"
   chmod +x "$BIN_PATH"
@@ -105,10 +116,11 @@ else
 fi
 
 BIN_PATH="$(resolve_abs "$BIN_PATH")"
+echo "[KNOT] PERM:  Create data directory $DATA_DIR"
 mkdir -p "$DATA_DIR"
 
 install_opencode() {
-  echo "[KNOT] INFO:  Registering with OpenCode..."
+  echo "[KNOT] PERM:  Register MCP server with OpenCode (opencode mcp add)"
   opencode mcp add --name "$MCP_NAME" --command "$BIN_PATH" \
     -e "KNOT_DATA_DIR=$DATA_DIR" \
     -e "KNOT_LOG=knot=info"
@@ -116,7 +128,7 @@ install_opencode() {
 }
 
 install_claude() {
-  echo "[KNOT] INFO:  Registering with Claude Code..."
+  echo "[KNOT] PERM:  Register MCP server with Claude Code (claude mcp add --scope user)"
   claude mcp add --name "$MCP_NAME" --command "$BIN_PATH" \
     --scope user \
     -e "KNOT_DATA_DIR=$DATA_DIR" \
@@ -214,6 +226,7 @@ with open(settings_path, "w") as f:
     f.write("\n")
 PY
 
+  echo "[KNOT] PERM:  Add hook entries to $claude_settings"
   if [[ $? -eq 0 ]]; then
     echo "[KNOT] INFO:  Registered hooks in $claude_settings"
     echo "[KNOT] INFO:    PreToolUse : $pre_tool_script"
@@ -240,6 +253,7 @@ inject_rules() {
     echo "[KNOT] INFO:  Created $rules_file"
   fi
 
+  echo "[KNOT] PERM:  Append Knot Protocol to $rules_file"
   if grep -qF "$marker" "$rules_file" 2>/dev/null; then
     echo "[KNOT] INFO:  Knot Protocol already present in $rules_file"
     return

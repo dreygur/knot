@@ -1,14 +1,29 @@
 # Knot
 
-Verified Engineering Memory - persistent memory pool MCP server with hierarchical knowledge, skill execution, and semantic drift detection. Eliminate Context Rot.
+**Persistent memory pool MCP server** - eliminate Context Rot with verified, hierarchical knowledge.
 
-## Features
+Every memory Knot stores is **verified against the actual file on disk**. If the file changes or disappears, the memory is flagged stale before it can mislead you. This is Jit-V: Just-in-Time Verification.
 
-- **Hierarchical Knowledge**: Parent-child node linking for project-specific inheritance
-- **Skills**: Reusable executable procedures with variable interpolation
-- **Jit-V**: Just-in-Time Verification - validates content against file hashes
-- **Semantic Drift Detection**: Confidence scoring based on cosine similarity distance
-- **Multi-Agent Protection**: Origin agent tracking for namespace isolation
+> Built in Dhaka for the global developer community.
+> Knot is dedicated to keeping code human-verified in an AI world.
+
+---
+
+## First 5 Minutes
+
+Install, then open Claude Code and try:
+
+```
+save_wisdom(content="SQLite WAL mode prevents reader/writer blocking", tags=["sqlite", "performance"])
+recall_memory(query="SQLite concurrency")
+```
+
+That's it. Knot is running. From here:
+- `save_wisdom` - persist anything you learn
+- `recall_memory` - retrieve it semantically later
+- `commit_session` - promote today's session memories to the project permanently
+
+---
 
 ## Installation
 
@@ -19,15 +34,15 @@ Verified Engineering Memory - persistent memory pool MCP server with hierarchica
 /plugin install knot@knot
 ```
 
-Knot registers itself as an MCP server automatically. The binary is downloaded from the latest GitHub release on first use.
+Knot registers itself as an MCP server and wires up Claude Code hooks automatically on first start.
 
-### One-liner (any platform)
+### One-liner
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/dreygur/knot/main/install.sh | bash
 ```
 
-Installs the binary to `~/.local/bin/knot` and registers with any detected MCP clients (Claude Code, OpenCode).
+Installs the binary, registers with Claude Code and OpenCode (whichever is detected), and injects the Knot Protocol into your agent rules.
 
 ### Manual
 
@@ -45,21 +60,43 @@ opencode mcp add --name knot --command ~/.local/bin/knot \
   -e KNOT_DATA_DIR=$HOME/.knot
 ```
 
-Available binaries:
-
 | Platform | Binary |
 |----------|--------|
 | Linux x86_64 | `knot-x86_64-unknown-linux-gnu` |
 | macOS x86_64 | `knot-x86_64-apple-darwin` |
 | macOS Apple Silicon | `knot-aarch64-apple-darwin` |
+| Windows x86_64 | `knot-x86_64-pc-windows-msvc.exe` |
 
-## Configuration
+---
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `KNOT_DATA_DIR` | `~/.knot` | Data persistence directory |
-| `KNOT_LOG` | `knot=info` | Logging level |
-| `KNOT_READ_ONLY` | - | Set to `1` to disable writes |
+## How Jit-V Works
+
+When you save a memory tied to a file:
+
+```
+save_wisdom(content="auth middleware validates JWT in 3 steps",
+            tags=["auth"], verification_path="/src/middleware/auth.rs")
+```
+
+Knot hashes the file at save time. On every future `recall_memory`, it re-hashes the file live:
+
+- **Match** - memory is `[VERIFIED]`, utility score increases
+- **Changed** - memory is `[STALE:MODIFIED]`, flagged but still returned
+- **Missing** - memory is `[STALE:MISSING]`, flagged for review
+
+Stale memories are never silently promoted to project scope. `commit_session` rejects them at the boundary.
+
+---
+
+## Memory Hierarchy
+
+| Level | Scope | Lifetime |
+|-------|-------|----------|
+| L1 | Session | Current conversation only |
+| L2 | Project | Promoted from session via `commit_session` |
+| L3 | Global | Cross-project, long-term knowledge |
+
+---
 
 ## Tools
 
@@ -67,56 +104,83 @@ Available binaries:
 
 | Tool | Description |
 |------|-------------|
-| `save_wisdom` | Persist knowledge with Jit-V verification |
-| `recall_memory` | Semantic search with ancestry chain |
-| `commit_session` | Promote session nodes to project scope |
-| `jit_verify` | Run verification on a specific node |
-| `list_nodes` | List nodes filtered by scope/tags |
-| `link_nodes` | Create typed edges between nodes |
+| `save_wisdom` | Persist knowledge with optional file verification |
+| `recall_memory` | Semantic search - returns verified results with confidence score |
+| `commit_session` | Promote L1 session nodes to L2 project scope (stale nodes rejected) |
+| `jit_verify` | Re-run verification on a specific node |
+| `list_nodes` | List nodes filtered by scope and tags |
+| `link_nodes` | Create typed edges: `depends_on`, `contradicts`, `refines` |
 | `forget_node` | Permanently delete a node |
-| `knot_status` | Health check: nodes, skills, ghost count |
+| `knot_status` | Health check: node counts, ghost count, DB status |
+| `prune_ghosts` | Remove nodes whose source files no longer exist |
 
 ### Skills
 
 | Tool | Description |
 |------|-------------|
-| `save_skill` | Save a reusable executable procedure |
-| `execute_skill` | Run a skill with variable substitution |
+| `save_skill` | Save a reusable executable procedure with steps and verification |
+| `execute_skill` | Run a saved skill with variable substitution |
 | `recall_skills` | Search skills by name or description |
 
-## Memory Hierarchy
+---
 
-| Level | Scope | Description |
-|-------|-------|-------------|
-| L1 | Session | Ephemeral, task-specific |
-| L2 | Project | Promoted from session on clean exit |
-| L3 | Global | Cross-project wisdom |
+## Skills
 
-## Skill Syntax
+Skills are reusable procedures with variable placeholders. Save once, run anywhere.
+
+### Community Standard Style (template)
+
+Copy this as a starting point for your own skills:
 
 ```json
 {
-  "name": "add-user-crud",
-  "description": "Add CRUD endpoints",
-  "prerequisites": ["src/db.rs", "cmd:cargo"],
+  "name": "community-standard-style",
+  "description": "Apply consistent code style to a module",
+  "prerequisites": ["cmd:cargo"],
   "steps": [
     {
-      "description": "Create model file",
-      "command": "touch {{project}}/src/models/{{entity}}.rs"
+      "description": "Format the module",
+      "command": "cargo fmt -- {{file_path}}"
+    },
+    {
+      "description": "Run linter",
+      "command": "cargo clippy -- -D warnings"
     }
   ],
   "verification_command": "cargo test"
 }
 ```
 
-Execute with:
+Save it:
 ```
-execute_skill(skill_name="add-user-crud", variables=[{key: "project", value: "myapp"}, {key: "entity", value: "user"}])
+save_skill(name="community-standard-style", description="Apply consistent code style",
+           prerequisites=["cmd:cargo"],
+           steps=[{description:"Format", command:"cargo fmt -- {{file_path}}"},
+                  {description:"Lint",   command:"cargo clippy -- -D warnings"}],
+           verification_command="cargo test")
 ```
+
+Run it:
+```
+execute_skill(skill_name="community-standard-style",
+              variables=[{key:"file_path", value:"src/main.rs"}])
+```
+
+---
+
+## Configuration
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `KNOT_DATA_DIR` | `~/.knot` | Data persistence directory |
+| `KNOT_LOG` | `knot=info` | Logging level (`knot=debug` for verbose) |
+| `KNOT_READ_ONLY` | - | Set to `1` to disable all writes |
+
+---
 
 ## Knot Protocol
 
-Add to your agent rules (`~/.clauderules` or `~/AGENTS.md`):
+The install script injects this into `~/.clauderules` / `~/AGENTS.md` automatically:
 
 ```markdown
 # Knot Protocol
@@ -126,7 +190,26 @@ Add to your agent rules (`~/.clauderules` or `~/AGENTS.md`):
 - Use commit_session to promote session learnings to project scope.
 ```
 
-The install script injects this automatically.
+---
+
+## CLI
+
+The binary also works as a CLI for scripting and hooks:
+
+```bash
+knot recall "SQLite WAL mode"          # semantic search
+knot commit <session_id> <project>     # commit session to project
+knot status                            # vault health
+knot --help
+```
+
+---
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md).
+
+---
 
 ## License
 
