@@ -121,7 +121,106 @@ install_claude() {
     --scope user \
     -e "KNOT_DATA_DIR=$DATA_DIR" \
     -e "KNOT_LOG=knot=info"
+  inject_claude_hooks
   echo "[KNOT] INFO:  Done. Restart Claude Code, then: claude mcp list"
+}
+
+inject_claude_hooks() {
+  local hook_dir="$DATA_DIR/hooks"
+  local pre_tool_script="$hook_dir/knot-pre-tool.sh"
+  local stop_script="$hook_dir/knot-stop.sh"
+  local claude_settings="$HOME/.claude/settings.json"
+  local marker="knot-pre-tool"
+
+  mkdir -p "$hook_dir"
+
+  # PreToolUse hook: inject relevant memories before Bash/Edit/Write
+  cat > "$pre_tool_script" <<HOOK
+#!/usr/bin/env bash
+TOOL_JSON=\$(cat)
+TOOL_NAME=\$(printf '%s' "\$TOOL_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin).get('tool_name',''))" 2>/dev/null)
+case "\$TOOL_NAME" in
+  Bash|Edit|Write)
+    QUERY=\$(printf '%s' "\$TOOL_JSON" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+inp = d.get('tool_input', {})
+print((inp.get('command') or inp.get('file_path') or inp.get('description') or '')[:150])
+" 2>/dev/null)
+    if [ -n "\$QUERY" ]; then
+      KNOT_DATA_DIR="\${KNOT_DATA_DIR:-\$HOME/.knot}" KNOT_LOG=knot=error \\
+        "$BIN_PATH" recall "\$QUERY" --limit 3 2>/dev/null || true
+    fi
+    ;;
+esac
+exit 0
+HOOK
+  chmod +x "$pre_tool_script"
+
+  # Stop hook: commit session memories to project scope
+  cat > "$stop_script" <<HOOK
+#!/usr/bin/env bash
+KNOT_DATA_DIR="\${KNOT_DATA_DIR:-\$HOME/.knot}"
+SESSION_FILE="\$KNOT_DATA_DIR/.current_session"
+if [ ! -f "\$SESSION_FILE" ]; then exit 0; fi
+SESSION_ID=\$(cat "\$SESSION_FILE")
+if [ -z "\$SESSION_ID" ]; then exit 0; fi
+PROJECT=\$(git remote get-url origin 2>/dev/null | sed 's|.*/||; s|\\.git\$||' || basename "\$PWD")
+KNOT_DATA_DIR="\$KNOT_DATA_DIR" KNOT_LOG=knot=error \\
+  "$BIN_PATH" commit "\$SESSION_ID" "\$PROJECT" 2>/dev/null || true
+exit 0
+HOOK
+  chmod +x "$stop_script"
+
+  if ! command -v python3 &>/dev/null; then
+    echo "[KNOT] WARN:  python3 not found — skipping hook registration in $claude_settings"
+    echo "[KNOT] WARN:  Add hooks manually: $pre_tool_script, $stop_script"
+    return
+  fi
+
+  if grep -qF "$marker" "$claude_settings" 2>/dev/null; then
+    echo "[KNOT] INFO:  Knot hooks already in $claude_settings"
+    return
+  fi
+
+  python3 - "$claude_settings" "$pre_tool_script" "$stop_script" <<'PY'
+import sys, json, os
+
+settings_path, pre_tool, stop_hook = sys.argv[1], sys.argv[2], sys.argv[3]
+
+cfg = {}
+if os.path.exists(settings_path):
+    try:
+        with open(settings_path) as f:
+            cfg = json.load(f)
+    except (json.JSONDecodeError, IOError):
+        pass
+
+cfg.setdefault("hooks", {})
+cfg["hooks"].setdefault("PreToolUse", [])
+cfg["hooks"].setdefault("Stop", [])
+
+cfg["hooks"]["PreToolUse"].append({
+    "matcher": "Bash|Edit|Write",
+    "hooks": [{"type": "command", "command": pre_tool}]
+})
+cfg["hooks"]["Stop"].append({
+    "hooks": [{"type": "command", "command": stop_hook}]
+})
+
+os.makedirs(os.path.dirname(os.path.abspath(settings_path)), exist_ok=True)
+with open(settings_path, "w") as f:
+    json.dump(cfg, f, indent=2)
+    f.write("\n")
+PY
+
+  if [[ $? -eq 0 ]]; then
+    echo "[KNOT] INFO:  Registered hooks in $claude_settings"
+    echo "[KNOT] INFO:    PreToolUse : $pre_tool_script"
+    echo "[KNOT] INFO:    Stop       : $stop_script"
+  else
+    echo "[KNOT] WARN:  Hook registration failed"
+  fi
 }
 
 inject_rules() {
