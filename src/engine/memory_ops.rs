@@ -15,7 +15,7 @@ impl StorageEngine {
     /// demoted to Session scope regardless of the requested scope. Only successful
     /// commands earn durable memory.
     pub async fn save(&self, req: SaveRequest) -> Result<KnowledgeNode> {
-        // Path traversal firewall — reject any verification_path containing ../
+        // Path traversal firewall - reject any verification_path containing ../
         if let Some(ref p) = req.verification_path {
             check_path_traversal(p)?;
         }
@@ -143,7 +143,7 @@ impl StorageEngine {
     /// Strict firewall: promote Session-scope nodes to Project scope only if they
     /// pass a fresh Jit-V check at promotion time.
     ///
-    /// Every node is accounted for — the returned `CommitReport` records every
+    /// Every node is accounted for - the returned `CommitReport` records every
     /// promotion and every rejection with a reason. Nothing crosses the boundary
     /// silently.
     pub async fn commit_session(&self, session_id: &str, project_id: &str) -> Result<CommitReport> {

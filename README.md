@@ -1,18 +1,18 @@
 # Knot
 
-Verified Engineering Memory — persistent memory pool MCP server with hierarchical knowledge, skill execution, and semantic drift detection. Eliminate Context Rot.
+Verified Engineering Memory - persistent memory pool MCP server with hierarchical knowledge, skill execution, and semantic drift detection. Eliminate Context Rot.
 
 ## Features
 
 - **Hierarchical Knowledge**: Parent-child node linking for project-specific inheritance
 - **Skills**: Reusable executable procedures with variable interpolation
-- **Jit-V**: Just-in-Time Verification — validates content against file hashes
+- **Jit-V**: Just-in-Time Verification - validates content against file hashes
 - **Semantic Drift Detection**: Confidence scoring based on cosine similarity distance
 - **Multi-Agent Protection**: Origin agent tracking for namespace isolation
 
 ## Installation
 
-### Claude Code — via `/plugin`
+### Claude Code - via `/plugin`
 
 ```
 /plugin marketplace add dreygur/knot
@@ -59,7 +59,7 @@ Available binaries:
 |----------|---------|-------------|
 | `KNOT_DATA_DIR` | `~/.knot` | Data persistence directory |
 | `KNOT_LOG` | `knot=info` | Logging level |
-| `KNOT_READ_ONLY` | — | Set to `1` to disable writes |
+| `KNOT_READ_ONLY` | - | Set to `1` to disable writes |
 
 ## Tools
 

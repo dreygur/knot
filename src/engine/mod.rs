@@ -50,7 +50,7 @@ mod tests {
     use tempfile::NamedTempFile;
 
     async fn test_engine() -> StorageEngine {
-        // Each test gets its own in-memory SQLite — no cross-test contamination.
+        // Each test gets its own in-memory SQLite - no cross-test contamination.
         let opts = SqliteConnectOptions::from_str("sqlite::memory:")
             .unwrap()
             .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal);
@@ -165,7 +165,7 @@ mod tests {
             .await
             .unwrap();
 
-        // Mutate the file after saving — simulates the file changing on disk.
+        // Mutate the file after saving - simulates the file changing on disk.
         std::fs::write(&path, b"MODIFIED content - hash will not match").unwrap();
 
         let report = engine
@@ -219,7 +219,7 @@ mod tests {
     async fn commit_mixed_batch_correct_counts() {
         let engine = test_engine().await;
 
-        // Node 1: abstract — should promote.
+        // Node 1: abstract - should promote.
         engine
             .save(req(
                 "Abstract wisdom",
@@ -231,7 +231,7 @@ mod tests {
             .await
             .unwrap();
 
-        // Node 2: valid file — should promote.
+        // Node 2: valid file - should promote.
         let mut f_valid = NamedTempFile::new().unwrap();
         f_valid.write_all(b"valid").unwrap();
         let valid_path = f_valid.path().to_str().unwrap().to_string();
@@ -246,7 +246,7 @@ mod tests {
             .await
             .unwrap();
 
-        // Node 3: file will be deleted — should be rejected.
+        // Node 3: file will be deleted - should be rejected.
         let f_gone = NamedTempFile::new().unwrap();
         let gone_path = f_gone.path().to_str().unwrap().to_string();
         engine
@@ -261,7 +261,7 @@ mod tests {
             .unwrap();
         drop(f_gone);
 
-        // Node 4: file will be mutated — should be rejected.
+        // Node 4: file will be mutated - should be rejected.
         let mut f_mut = NamedTempFile::new().unwrap();
         f_mut.write_all(b"before").unwrap();
         let mut_path = f_mut.path().to_str().unwrap().to_string();

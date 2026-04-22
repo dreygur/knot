@@ -1,7 +1,7 @@
 use crate::memory::KnowledgeNode;
 use uuid::Uuid;
 
-/// Result of a single recall hit — includes Jit-V annotation and distance.
+/// Result of a single recall hit - includes Jit-V annotation and distance.
 #[derive(Debug)]
 pub struct RecallResult {
     pub node: KnowledgeNode,
@@ -62,7 +62,7 @@ pub enum DeleteSkillResult {
     },
 }
 
-/// Full report from commit_session — every decision is recorded.
+/// Full report from commit_session - every decision is recorded.
 #[derive(Debug)]
 pub struct CommitReport {
     pub session_id: String,

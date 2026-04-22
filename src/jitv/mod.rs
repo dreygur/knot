@@ -13,7 +13,7 @@ pub fn verify(node: &KnowledgeNode) -> VerificationResult {
         return VerificationResult {
             node_id: node.id,
             status: VerificationStatus::Abstract,
-            detail: "No verification path — abstract knowledge".into(),
+            detail: "No verification path - abstract knowledge".into(),
         };
     };
 
@@ -35,17 +35,17 @@ pub fn verify(node: &KnowledgeNode) -> VerificationResult {
             node_id: node.id,
             status: VerificationStatus::StaleModified,
             detail: format!(
-                "Content changed — stored={}, current={}",
+                "Content changed - stored={}, current={}",
                 &stored[..8],
                 &current[..8]
             ),
         },
         (None, _) => {
-            // Node was saved without a hash — treat as verified (legacy/manual entry)
+            // Node was saved without a hash - treat as verified (legacy/manual entry)
             VerificationResult {
                 node_id: node.id,
                 status: VerificationStatus::Verified,
-                detail: "No stored hash — path existence confirmed".into(),
+                detail: "No stored hash - path existence confirmed".into(),
             }
         }
         (_, None) => VerificationResult {
@@ -63,7 +63,7 @@ pub fn annotate(node: &KnowledgeNode, result: &VerificationResult) -> Option<Str
     if tag.is_empty() {
         Some(node.content.clone())
     } else {
-        // Surface stale nodes with tag — caller decides whether to inject
+        // Surface stale nodes with tag - caller decides whether to inject
         Some(format!("{tag} {}", node.content))
     }
 }

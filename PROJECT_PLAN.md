@@ -1,4 +1,4 @@
-# Knot — Project Plan
+# Knot - Project Plan
 
 ## Mission
 Eliminate Context Rot by building a durable, relational memory graph that persists "wisdom" across sessions.
@@ -12,7 +12,7 @@ Every architectural decision made during this session is a candidate node.
 |---|---|---|
 | Graph model | Full hierarchical + typed lateral edges | Enables traversal and contradiction detection |
 | Jit-V depth | SHA-256 content hash | Balance between correctness and performance |
-| Stale handling | Surface to caller with `[STALE]` tag | Caller decides — never silent data loss |
+| Stale handling | Surface to caller with `[STALE]` tag | Caller decides - never silent data loss |
 | Success gate | `command_exit_code: Option<i32>` on `save_wisdom` | Only L0→L1 promotion; L1→L2 via utility score |
 | Embedding | Simple hash-projection (128-dim) at bootstrap | Replace with candle + MiniLM in Phase 2 |
 | Transport | MCP stdio | Zero network surface, local-first |
@@ -117,7 +117,7 @@ knot/
 
 ## Phases
 
-### Phase 1 — Bootstrap (this session)
+### Phase 1 - Bootstrap (this session)
 - [x] Architecture decisions locked
 - [ ] Cargo.toml with all dependencies
 - [ ] Data structures (`memory/node.rs`)
@@ -129,7 +129,7 @@ knot/
 - [ ] MCP tools (`tools/mod.rs`)
 - [ ] MCP server entry (`main.rs`)
 
-### Phase 2 — Intelligence
+### Phase 2 - Intelligence
 - [ ] Replace hash-projection with candle + MiniLM-L6 embeddings
 - [ ] Ratatui TUI for memory graph visualization
 - [ ] Auto-contradiction detection on `save_wisdom`
@@ -138,7 +138,7 @@ knot/
 ---
 
 ## Key Invariants
-1. **No silent data loss** — stale nodes are flagged, not dropped
-2. **Privacy-first** — all content scrubbed before persistence
-3. **Exit-code gate** — L1 memory only accepts success signals
-4. **Hash-verified recall** — every injected memory is verified at retrieval time
+1. **No silent data loss** - stale nodes are flagged, not dropped
+2. **Privacy-first** - all content scrubbed before persistence
+3. **Exit-code gate** - L1 memory only accepts success signals
+4. **Hash-verified recall** - every injected memory is verified at retrieval time

@@ -39,7 +39,7 @@ impl GraphStore {
         .execute(&self.pool)
         .await?;
 
-        // Additive migrations — safe to run on existing databases.
+        // Additive migrations - safe to run on existing databases.
         let _ = sqlx::query("ALTER TABLE nodes ADD COLUMN parent_id TEXT")
             .execute(&self.pool)
             .await;
@@ -344,7 +344,7 @@ impl GraphStore {
         Ok(())
     }
 
-    /// Clear the stale flag — called when Jit-V re-verifies a previously-stale node.
+    /// Clear the stale flag - called when Jit-V re-verifies a previously-stale node.
     pub async fn clear_stale(&self, id: Uuid) -> Result<()> {
         sqlx::query("UPDATE nodes SET is_stale = 0, updated_at = ? WHERE id = ?")
             .bind(Utc::now().to_rfc3339())

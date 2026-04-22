@@ -13,7 +13,7 @@ use tracing_subscriber::{
 /// All output goes to stderr. Stdout is owned exclusively by the MCP JSON-RPC
 /// transport and must never receive a byte from the application layer.
 ///
-/// Format is intentionally terse — no timestamp, no module path, no thread id.
+/// Format is intentionally terse - no timestamp, no module path, no thread id.
 /// The `[KNOT]` prefix makes it trivial to grep or filter in shell pipelines.
 pub struct KnotFormatter;
 
@@ -36,7 +36,7 @@ where
     }
 }
 
-/// Fixed-width, uppercase level tag — consistent column alignment.
+/// Fixed-width, uppercase level tag - consistent column alignment.
 fn level_tag(level: Level) -> &'static str {
     match level {
         Level::ERROR => "ERROR",

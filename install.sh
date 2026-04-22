@@ -173,7 +173,7 @@ HOOK
   chmod +x "$stop_script"
 
   if ! command -v python3 &>/dev/null; then
-    echo "[KNOT] WARN:  python3 not found — skipping hook registration in $claude_settings"
+    echo "[KNOT] WARN:  python3 not found - skipping hook registration in $claude_settings"
     echo "[KNOT] WARN:  Add hooks manually: $pre_tool_script, $stop_script"
     return
   fi

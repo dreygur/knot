@@ -20,7 +20,7 @@ use uuid::Uuid;
 pub struct KnotServer {
     engine: Arc<Mutex<StorageEngine>>,
     session_id: String,
-    /// True when KNOT_READ_ONLY env var is set — write tools return an error.
+    /// True when KNOT_READ_ONLY env var is set - write tools return an error.
     read_only: bool,
 }
 
@@ -255,7 +255,7 @@ impl KnotServer {
 
     #[tool(
         description = "Strict firewall: promote session-scope nodes to a named project. \
-        Every node is accounted for — promoted and rejected nodes are both reported. \
+        Every node is accounted for - promoted and rejected nodes are both reported. \
         A node is rejected if its verification_path is missing or its content changed on disk."
     )]
     async fn commit_session(
@@ -510,7 +510,7 @@ impl KnotServer {
         let engine = self.engine.lock().await;
         match engine.delete_wisdom(id).await.map_err(mcp_err)? {
             None => Ok(CallToolResult::success(vec![Content::text(format!(
-                "[KNOT] WARN: Node {id} not found — nothing deleted."
+                "[KNOT] WARN: Node {id} not found - nothing deleted."
             ))])),
             Some(report) => Ok(CallToolResult::success(vec![Content::text(format!(
                 "[KNOT] WARN: Memory node {} deleted ({} child(ren) re-parented).",
@@ -558,7 +558,7 @@ impl KnotServer {
 
     #[tool(
         description = "[DESTRUCTIVE] This tool permanently removes data from the Knot vault. \
-        Identifies and deletes Ghost Nodes — memories whose source files no longer exist on disk. \
+        Identifies and deletes Ghost Nodes - memories whose source files no longer exist on disk. \
         Reports count removed."
     )]
     async fn prune_ghosts(&self) -> Result<CallToolResult, McpError> {
@@ -573,7 +573,7 @@ impl KnotServer {
         let ghosts = engine.list_ghost_nodes().await.map_err(mcp_err)?;
         if ghosts.is_empty() {
             return Ok(CallToolResult::success(vec![Content::text(
-                "[KNOT] INFO:  No ghost nodes found — vault is clean.",
+                "[KNOT] INFO:  No ghost nodes found - vault is clean.",
             )]));
         }
 
@@ -670,7 +670,7 @@ fn format_commit_report(r: &CommitReport) -> String {
         out.push_str("\nAll session knowledge passed integrity checks.\n");
     } else {
         out.push_str(&format!(
-            "\n{} node(s) blocked — verification paths changed or missing on disk.\n",
+            "\n{} node(s) blocked - verification paths changed or missing on disk.\n",
             r.rejected_count()
         ));
     }
@@ -720,7 +720,7 @@ fn mcp_err(e: anyhow::Error) -> McpError {
 
 fn format_recall_summary(results: &[RecallResult]) -> String {
     let mut out = format!(
-        "Found {} memories (summary mode — pass full_content=true for details)\n\n",
+        "Found {} memories (summary mode - pass full_content=true for details)\n\n",
         results.len()
     );
     for (i, r) in results.iter().enumerate() {

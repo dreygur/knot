@@ -81,7 +81,7 @@ pub struct KnowledgeNode {
     pub is_stale: bool,
     /// Optional parent node for hierarchical knowledge inheritance
     pub parent_id: Option<Uuid>,
-    /// Agent identifier that created this node — enforces namespace protection
+    /// Agent identifier that created this node - enforces namespace protection
     pub origin_agent: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
@@ -158,7 +158,7 @@ pub struct VerificationResult {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum VerificationStatus {
-    /// No verification_path — abstract knowledge, always valid
+    /// No verification_path - abstract knowledge, always valid
     Abstract,
     /// Path exists and hash matches
     Verified,

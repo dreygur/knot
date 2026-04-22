@@ -2,7 +2,7 @@
 name = "knot"
 version = "0.2.0"
 edition = "2021"
-description = "Persistent memory pool MCP server — eliminate Context Rot"
+description = "Persistent memory pool MCP server - eliminate Context Rot"
 
 [[bin]]
 name = "knot"

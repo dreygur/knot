@@ -69,7 +69,7 @@ impl SkillNode {
 
 fn path_or_command_exists(s: &str) -> bool {
     if s.starts_with("cmd:") {
-        // Use Command::new("which") directly — no shell, no injection surface.
+        // Use Command::new("which") directly - no shell, no injection surface.
         let cmd = s.trim_start_matches("cmd:").trim();
         std::process::Command::new("which")
             .arg(cmd)
@@ -87,7 +87,7 @@ pub fn shell_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
 
-/// Plain interpolation — for display strings and descriptions only.
+/// Plain interpolation - for display strings and descriptions only.
 pub fn interpolate(template: &str, variables: &[(String, String)]) -> String {
     let mut result = template.to_string();
     for (key, value) in variables {

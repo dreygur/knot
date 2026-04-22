@@ -131,7 +131,7 @@ async fn run_mcp_server() -> Result<()> {
     // Persist session ID so the Stop hook can call `knot commit`
     let _ = std::fs::write(format!("{data_dir}/.current_session"), &session_id);
 
-    // Register Claude Code hooks (idempotent — silent if already in place)
+    // Register Claude Code hooks (idempotent - silent if already in place)
     if let Ok(bin_path) = std::env::current_exe() {
         match hooks::register(&data_dir, &bin_path) {
             Ok(true) => eprintln!("[KNOT] INFO:  Hooks registered in ~/.claude/settings.json"),

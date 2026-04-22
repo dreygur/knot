@@ -65,7 +65,7 @@ exit 0
 "#;
 
 /// Register Claude Code hooks. Returns `Ok(true)` when newly registered, `Ok(false)` when
-/// already in place (idempotent — safe to call on every server start).
+/// already in place (idempotent - safe to call on every server start).
 pub fn register(data_dir: &str, bin_path: &Path) -> Result<bool> {
     let hook_dir = PathBuf::from(data_dir).join("hooks");
     std::fs::create_dir_all(&hook_dir)?;
