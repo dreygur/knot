@@ -2,7 +2,10 @@
 name = "knot"
 version = "0.2.1"
 edition = "2021"
-description = "Persistent memory pool MCP server - eliminate Context Rot"
+description = "Persistent memory pool MCP server - eliminate Context Rot with hierarchical knowledge, skill execution, and semantic drift detection"
+
+[package.metadata.knot]
+short_description = "Knot - persistent memory pool MCP server for Claude Code"
 
 [[bin]]
 name = "knot"
