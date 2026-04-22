@@ -1,20 +1,21 @@
 use std::fmt;
+use std::fs::OpenOptions;
+use std::path::Path;
+use std::sync::Mutex;
 use tracing::Level;
 use tracing_subscriber::{
     fmt::{
         format::{FormatEvent, FormatFields, Writer},
         FmtContext,
     },
+    layer::SubscriberExt,
     registry::LookupSpan,
+    util::SubscriberInitExt,
+    EnvFilter,
 };
 
-/// Minimal log formatter: `[KNOT] LEVEL  message\n`
-///
-/// All output goes to stderr. Stdout is owned exclusively by the MCP JSON-RPC
-/// transport and must never receive a byte from the application layer.
-///
-/// Format is intentionally terse - no timestamp, no module path, no thread id.
-/// The `[KNOT]` prefix makes it trivial to grep or filter in shell pipelines.
+/// Terse stderr formatter: `[KNOT] LEVEL  message`
+/// Stdout is owned exclusively by the MCP JSON-RPC transport.
 pub struct KnotFormatter;
 
 impl<S, N> FormatEvent<S, N> for KnotFormatter
@@ -28,15 +29,37 @@ where
         mut writer: Writer<'_>,
         event: &tracing::Event<'_>,
     ) -> fmt::Result {
-        let level = *event.metadata().level();
-        let level_str = level_tag(level);
-        write!(writer, "[KNOT] {level_str}  ")?;
+        write!(writer, "[KNOT] {}  ", level_tag(*event.metadata().level()))?;
         ctx.format_fields(writer.by_ref(), event)?;
         writeln!(writer)
     }
 }
 
-/// Fixed-width, uppercase level tag - consistent column alignment.
+/// File formatter: `[YYYY-MM-DD HH:MM:SS] [LEVEL] message`
+pub struct ActivityLogFormatter;
+
+impl<S, N> FormatEvent<S, N> for ActivityLogFormatter
+where
+    S: tracing::Subscriber + for<'a> LookupSpan<'a>,
+    N: for<'a> FormatFields<'a> + 'static,
+{
+    fn format_event(
+        &self,
+        ctx: &FmtContext<'_, S, N>,
+        mut writer: Writer<'_>,
+        event: &tracing::Event<'_>,
+    ) -> fmt::Result {
+        write!(
+            writer,
+            "[{}] [{}] ",
+            chrono::Local::now().format("%Y-%m-%d %H:%M:%S"),
+            level_tag(*event.metadata().level()),
+        )?;
+        ctx.format_fields(writer.by_ref(), event)?;
+        writeln!(writer)
+    }
+}
+
 fn level_tag(level: Level) -> &'static str {
     match level {
         Level::ERROR => "ERROR",
@@ -47,12 +70,39 @@ fn level_tag(level: Level) -> &'static str {
     }
 }
 
-/// Initialise the global tracing subscriber.
-/// Must be called exactly once, before any `tracing::` macros fire.
-pub fn init(filter: &str) {
-    tracing_subscriber::fmt()
+fn open_log(path: &Path) -> Option<std::fs::File> {
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    OpenOptions::new().create(true).append(true).open(path).ok()
+}
+
+/// Initialise the global tracing subscriber. Must be called exactly once.
+/// When `log_path` is Some, events are also written to that file in
+/// `[YYYY-MM-DD HH:MM:SS] [LEVEL] message` format.
+pub fn init(filter: &str, log_path: Option<&Path>) {
+    let stderr = tracing_subscriber::fmt::layer()
         .event_format(KnotFormatter)
-        .with_writer(std::io::stderr)
-        .with_env_filter(filter)
-        .init();
+        .with_writer(std::io::stderr);
+
+    match log_path.and_then(open_log) {
+        Some(file) => {
+            tracing_subscriber::registry()
+                .with(EnvFilter::new(filter))
+                .with(stderr)
+                .with(
+                    tracing_subscriber::fmt::layer()
+                        .event_format(ActivityLogFormatter)
+                        .with_writer(Mutex::new(file))
+                        .with_ansi(false),
+                )
+                .init();
+        }
+        None => {
+            tracing_subscriber::registry()
+                .with(EnvFilter::new(filter))
+                .with(stderr)
+                .init();
+        }
+    }
 }
