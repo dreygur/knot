@@ -12,19 +12,14 @@ Verified Engineering Memory — persistent memory pool MCP server with hierarchi
 
 ## Installation
 
-### Claude Code — via `/plugins`
+### Claude Code — via `/plugin`
 
 ```
-/plugin install https://github.com/dreygur/knot.git
+/plugin marketplace add dreygur/knot
+/plugin install knot@knot
 ```
 
 Knot registers itself as an MCP server automatically. The binary is downloaded from the latest GitHub release on first use.
-
-### OpenCode — via `/plugins`
-
-```
-/plugins install https://github.com/dreygur/knot.git
-```
 
 ### One-liner (any platform)
 
