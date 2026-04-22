@@ -80,5 +80,5 @@
     "opencode": "opencode mcp add --name knot --command '{{binary_path}}'",
     "claude": "claude mcp add -s knot -c '{{binary_path}}'"
   },
-  "repository": "https://github.com/anomalyco/knot"
+  "repository": "https://github.com/dreygur/knot"
 }

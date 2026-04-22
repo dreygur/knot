@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO="dreygur/knot"
 DATA_DIR="${KNOT_DATA_DIR:-$HOME/.knot}"
+INSTALL_DIR="${KNOT_INSTALL_DIR:-$HOME/.local/bin}"
 MCP_NAME="knot"
 
 # Portable absolute path resolution (realpath not available on older macOS)
@@ -15,27 +16,92 @@ resolve_abs() {
   fi
 }
 
-VERSION_FILE="${SCRIPT_DIR}/plugin.json"
-if [[ -f "$VERSION_FILE" ]]; then
-  VER=$(grep -o '"version": *"[^"]*"' "$VERSION_FILE" | cut -d'"' -f4)
-else
-  VER="unknown"
+# Detect OS and arch, map to release artifact name
+detect_target() {
+  local os arch
+  os="$(uname -s)"
+  arch="$(uname -m)"
+
+  case "$os" in
+    Linux)
+      case "$arch" in
+        x86_64) echo "knot-x86_64-unknown-linux-gnu" ;;
+        *) echo "" ;;
+      esac
+      ;;
+    Darwin)
+      case "$arch" in
+        x86_64)  echo "knot-x86_64-apple-darwin" ;;
+        arm64)   echo "knot-aarch64-apple-darwin" ;;
+        *) echo "" ;;
+      esac
+      ;;
+    *) echo "" ;;
+  esac
+}
+
+# Fetch latest release version from GitHub API
+latest_version() {
+  if command -v curl &>/dev/null; then
+    curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" \
+      | grep '"tag_name"' | cut -d'"' -f4
+  elif command -v wget &>/dev/null; then
+    wget -qO- "https://api.github.com/repos/${REPO}/releases/latest" \
+      | grep '"tag_name"' | cut -d'"' -f4
+  else
+    echo ""
+  fi
+}
+
+# Download file using curl or wget
+download() {
+  local url="$1" dest="$2"
+  if command -v curl &>/dev/null; then
+    curl -fsSL "$url" -o "$dest"
+  elif command -v wget &>/dev/null; then
+    wget -qO "$dest" "$url"
+  else
+    echo "[KNOT] ERROR: curl or wget required" >&2
+    exit 1
+  fi
+}
+
+VERSION="${KNOT_VERSION:-$(latest_version)}"
+if [[ -z "$VERSION" ]]; then
+  echo "[KNOT] ERROR: Could not determine latest release version." >&2
+  exit 1
 fi
 
 echo "╔═══════════════════════════════════════════╗"
-echo "║      Knot MCP Plugin Installer  v${VER}   ║"
+echo "║      Knot MCP Plugin Installer            ║"
 echo "╚═══════════════════════════════════════════╝"
 echo ""
+echo "[KNOT] INFO:  Version  : $VERSION"
+echo "[KNOT] INFO:  Data dir : $DATA_DIR"
+echo "[KNOT] INFO:  Bin dir  : $INSTALL_DIR"
+echo ""
 
-BIN_PATH="${SCRIPT_DIR}/target/release/knot"
+ARTIFACT="$(detect_target)"
+mkdir -p "$INSTALL_DIR"
+BIN_PATH="$INSTALL_DIR/knot"
 
-if [[ ! -f "$BIN_PATH" ]]; then
-  echo "[KNOT] INFO:  Building Knot..."
+if [[ -n "$ARTIFACT" ]]; then
+  URL="https://github.com/${REPO}/releases/download/${VERSION}/${ARTIFACT}"
+  echo "[KNOT] INFO:  Downloading $ARTIFACT..."
+  download "$URL" "$BIN_PATH"
+  chmod +x "$BIN_PATH"
+  echo "[KNOT] INFO:  Installed to $BIN_PATH"
+else
+  echo "[KNOT] WARN:  No pre-built binary for this platform. Building from source..."
   if ! command -v cargo &>/dev/null; then
     echo "[KNOT] ERROR: cargo not found. Install Rust from https://rustup.rs" >&2
     exit 1
   fi
+  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
   (cd "$SCRIPT_DIR" && cargo build --release)
+  cp "$SCRIPT_DIR/target/release/knot" "$BIN_PATH"
+  chmod +x "$BIN_PATH"
+  echo "[KNOT] INFO:  Built and installed to $BIN_PATH"
 fi
 
 BIN_PATH="$(resolve_abs "$BIN_PATH")"
@@ -43,9 +109,6 @@ mkdir -p "$DATA_DIR"
 
 install_opencode() {
   echo "[KNOT] INFO:  Registering with OpenCode..."
-  local bin_abs
-  bin_abs="$(resolve_abs "$(command -v opencode)")"
-  echo "[KNOT] INFO:  opencode binary: $bin_abs"
   opencode mcp add --name "$MCP_NAME" --command "$BIN_PATH" \
     -e "KNOT_DATA_DIR=$DATA_DIR" \
     -e "KNOT_LOG=knot=info"
@@ -54,9 +117,6 @@ install_opencode() {
 
 install_claude() {
   echo "[KNOT] INFO:  Registering with Claude Code..."
-  local bin_abs
-  bin_abs="$(resolve_abs "$(command -v claude)")"
-  echo "[KNOT] INFO:  claude binary: $bin_abs"
   claude mcp add --name "$MCP_NAME" --command "$BIN_PATH" \
     --scope user \
     -e "KNOT_DATA_DIR=$DATA_DIR" \
@@ -76,7 +136,6 @@ inject_rules() {
 
   local marker="# Knot Protocol"
 
-  # Create the file if it doesn't exist yet.
   if [[ ! -f "$rules_file" ]]; then
     touch "$rules_file"
     echo "[KNOT] INFO:  Created $rules_file"
