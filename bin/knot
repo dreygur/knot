@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+REPO="dreygur/knot"
+BINARY="${HOME}/.local/bin/knot-server"
+
+detect_target() {
+  local os arch
+  os="$(uname -s)"
+  arch="$(uname -m)"
+  case "$os" in
+    Linux)  case "$arch" in x86_64) echo "knot-x86_64-unknown-linux-gnu" ;; *) echo "" ;; esac ;;
+    Darwin) case "$arch" in x86_64) echo "knot-x86_64-apple-darwin" ;; arm64) echo "knot-aarch64-apple-darwin" ;; *) echo "" ;; esac ;;
+    *)      echo "" ;;
+  esac
+}
+
+download() {
+  if command -v curl &>/dev/null; then
+    curl -fsSL "$1" -o "$2"
+  else
+    wget -qO "$2" "$1"
+  fi
+}
+
+if [[ ! -f "$BINARY" ]]; then
+  ARTIFACT="$(detect_target)"
+  if [[ -z "$ARTIFACT" ]]; then
+    echo "[knot] ERROR: No pre-built binary for this platform. Run install.sh to build from source." >&2
+    exit 1
+  fi
+
+  VERSION="$(download "https://api.github.com/repos/${REPO}/releases/latest" /dev/stdout 2>/dev/null | grep '"tag_name"' | cut -d'"' -f4)"
+  if [[ -z "$VERSION" ]]; then
+    echo "[knot] ERROR: Could not fetch latest release version." >&2
+    exit 1
+  fi
+
+  mkdir -p "$(dirname "$BINARY")"
+  download "https://github.com/${REPO}/releases/download/${VERSION}/${ARTIFACT}" "$BINARY"
+  chmod +x "$BINARY"
+fi
+
+exec "$BINARY" "$@"

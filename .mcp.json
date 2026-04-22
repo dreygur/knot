@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "knot": {
+      "command": "knot",
+      "env": {
+        "KNOT_DATA_DIR": "${HOME}/.knot",
+        "KNOT_LOG": "knot=info"
+      }
+    }
+  }
+}

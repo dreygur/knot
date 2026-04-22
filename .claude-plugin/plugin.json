@@ -1,0 +1,12 @@
+{
+  "name": "knot",
+  "description": "Persistent memory pool MCP server — eliminate Context Rot with hierarchical knowledge, skill execution, and semantic drift detection",
+  "version": "0.1.0",
+  "author": {
+    "name": "Rakibul Yeasin",
+    "email": "ryeasin03@gmail.com"
+  },
+  "homepage": "https://github.com/dreygur/knot",
+  "repository": "https://github.com/dreygur/knot",
+  "license": "MIT"
+}
