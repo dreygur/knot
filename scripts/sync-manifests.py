@@ -27,8 +27,6 @@ def update(path, fn):
 
 print(f"[sync] v{version}")
 
-update("plugin.json", lambda d: d.update({"version": version, "description": description}))
-
 update(".claude-plugin/plugin.json", lambda d: d.update({"version": version, "description": description}))
 
 def sync_marketplace(d):
