@@ -27,6 +27,10 @@ jobs:
             target: aarch64-apple-darwin
             artifact: knot-aarch64-apple-darwin
 
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            artifact: knot-x86_64-pc-windows-msvc.exe
+
     steps:
       - uses: actions/checkout@v6
 
@@ -39,11 +43,14 @@ jobs:
         run: cargo build --release --target ${{ matrix.target }}
 
       - name: Package binary
+        shell: bash
         run: |
           mkdir -p release
-          cp target/${{ matrix.target }}/release/knot release/${{ matrix.artifact }}
+          EXT=$([[ "$RUNNER_OS" == "Windows" ]] && echo ".exe" || echo "")
+          cp "target/${{ matrix.target }}/release/knot${EXT}" "release/${{ matrix.artifact }}"
 
       - name: Checksum
+        shell: bash
         run: |
           cd release
           if command -v sha256sum &>/dev/null; then
