@@ -187,13 +187,11 @@ impl GraphStore {
         old_parent: Uuid,
         new_parent: Option<Uuid>,
     ) -> Result<usize> {
-        let result = sqlx::query(
-            "UPDATE nodes SET parent_id = ? WHERE parent_id = ?",
-        )
-        .bind(new_parent.map(|u| u.to_string()))
-        .bind(old_parent.to_string())
-        .execute(&self.pool)
-        .await?;
+        let result = sqlx::query("UPDATE nodes SET parent_id = ? WHERE parent_id = ?")
+            .bind(new_parent.map(|u| u.to_string()))
+            .bind(old_parent.to_string())
+            .execute(&self.pool)
+            .await?;
         Ok(result.rows_affected() as usize)
     }
 
@@ -274,13 +272,19 @@ impl GraphStore {
         visited.insert(current_id);
 
         for _ in 0..16 {
-            let Some(node) = self.get_node(current_id).await? else { break };
-            let Some(parent_id) = node.parent_id else { break };
+            let Some(node) = self.get_node(current_id).await? else {
+                break;
+            };
+            let Some(parent_id) = node.parent_id else {
+                break;
+            };
             if visited.contains(&parent_id) {
                 break; // cycle guard
             }
             visited.insert(parent_id);
-            let Some(parent) = self.get_node(parent_id).await? else { break };
+            let Some(parent) = self.get_node(parent_id).await? else {
+                break;
+            };
             current_id = parent.id;
             chain.push(parent);
         }
@@ -434,21 +438,15 @@ impl GraphStore {
     }
 
     pub async fn count_nodes_by_scope(&self) -> Result<(i64, i64, i64)> {
-        let l1: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM nodes WHERE scope_type = 'session'",
-        )
-        .fetch_one(&self.pool)
-        .await?;
-        let l2: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM nodes WHERE scope_type = 'project'",
-        )
-        .fetch_one(&self.pool)
-        .await?;
-        let l3: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM nodes WHERE scope_type = 'global'",
-        )
-        .fetch_one(&self.pool)
-        .await?;
+        let l1: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM nodes WHERE scope_type = 'session'")
+            .fetch_one(&self.pool)
+            .await?;
+        let l2: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM nodes WHERE scope_type = 'project'")
+            .fetch_one(&self.pool)
+            .await?;
+        let l3: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM nodes WHERE scope_type = 'global'")
+            .fetch_one(&self.pool)
+            .await?;
         Ok((l1, l2, l3))
     }
 
@@ -472,9 +470,7 @@ impl GraphStore {
     }
 
     pub async fn health_check(&self) -> Result<String> {
-        let result = sqlx::query("SELECT 1")
-            .fetch_optional(&self.pool)
-            .await?;
+        let result = sqlx::query("SELECT 1").fetch_optional(&self.pool).await?;
         match result {
             Some(_) => Ok("ok".into()),
             None => Ok("error".into()),
@@ -498,10 +494,7 @@ fn row_to_node(r: &sqlx::sqlite::SqliteRow) -> Result<KnowledgeNode> {
         other => anyhow::bail!("Unknown scope_type: {other}"),
     };
 
-    let parent_id = parent_id_str
-        .as_deref()
-        .map(Uuid::parse_str)
-        .transpose()?;
+    let parent_id = parent_id_str.as_deref().map(Uuid::parse_str).transpose()?;
 
     Ok(KnowledgeNode {
         id: Uuid::parse_str(&id_str)?,

@@ -196,7 +196,10 @@ impl StorageEngine {
             node.scope = MemoryScope::Project(project_id.to_string());
             self.graph.update_node(&node).await?;
 
-            tracing::info!("commit_session PROMOTED node {} → project/{project_id}", node.id);
+            tracing::info!(
+                "commit_session PROMOTED node {} → project/{project_id}",
+                node.id
+            );
             report.promoted.push(node.id);
         }
 
@@ -269,7 +272,10 @@ impl StorageEngine {
             "[KNOT] WARN: Memory node {} deleted ({} child(ren) re-parented).",
             id, children_reparented
         );
-        Ok(Some(DeleteWisdomReport { node_id: id, children_reparented }))
+        Ok(Some(DeleteWisdomReport {
+            node_id: id,
+            children_reparented,
+        }))
     }
 
     pub async fn list(
@@ -278,7 +284,9 @@ impl StorageEngine {
         scope_id: Option<&str>,
         tag_filter: Option<&str>,
     ) -> Result<Vec<KnowledgeNode>> {
-        self.graph.list_nodes(scope_type, scope_id, tag_filter).await
+        self.graph
+            .list_nodes(scope_type, scope_id, tag_filter)
+            .await
     }
 
     /// Ghost nodes: have a verification_path whose file no longer exists.
@@ -313,7 +321,14 @@ impl StorageEngine {
         let skills = self.graph.count_skills().await?;
         let db_health = self.graph.health_check().await?;
         let ghost_count = self.list_ghost_nodes().await?.len() as i64;
-        Ok(StatusReport { l1_nodes: l1, l2_nodes: l2, l3_nodes: l3, skills, db_health, ghost_count })
+        Ok(StatusReport {
+            l1_nodes: l1,
+            l2_nodes: l2,
+            l3_nodes: l3,
+            skills,
+            db_health,
+            ghost_count,
+        })
     }
 }
 

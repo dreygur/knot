@@ -57,7 +57,9 @@ pub enum DeleteSkillResult {
     Deleted,
     NotFound,
     /// Skill has been used successfully more than 10 times; force=true required.
-    HighUtilityBlocked { success_count: i32 },
+    HighUtilityBlocked {
+        success_count: i32,
+    },
 }
 
 /// Full report from commit_session — every decision is recorded.

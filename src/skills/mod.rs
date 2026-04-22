@@ -108,10 +108,7 @@ pub fn interpolate_for_shell(template: &str, variables: &[(String, String)]) -> 
     result
 }
 
-pub fn interpolate_steps(
-    steps: &[SkillStep],
-    variables: &[(String, String)],
-) -> Vec<SkillStep> {
+pub fn interpolate_steps(steps: &[SkillStep], variables: &[(String, String)]) -> Vec<SkillStep> {
     steps
         .iter()
         .map(|s| SkillStep {

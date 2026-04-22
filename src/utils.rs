@@ -17,10 +17,7 @@ mod tests {
         let mut f = NamedTempFile::new().unwrap();
         f.write_all(b"hello world").unwrap();
         let hex = calculate_hash(f.path()).unwrap();
-        assert_eq!(
-            hex,
-            blake3::hash(b"hello world").to_hex().to_string()
-        );
+        assert_eq!(hex, blake3::hash(b"hello world").to_hex().to_string());
     }
 
     #[test]

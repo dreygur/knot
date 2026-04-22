@@ -120,7 +120,11 @@ fn project_token(vec: &mut [f32], token: &str, weight: f32) {
     for salt in 0..PROJECTIONS_PER_TOKEN as u64 {
         let hash = fnv1a_salted(token, salt);
         let bucket = (hash % EMBEDDING_DIM as u64) as usize;
-        let sign = if (hash >> 32) & 1 == 0 { 1.0f32 } else { -1.0f32 };
+        let sign = if (hash >> 32) & 1 == 0 {
+            1.0f32
+        } else {
+            -1.0f32
+        };
         vec[bucket] += sign * weight;
     }
 }
@@ -134,7 +138,8 @@ fn fnv1a_salted(s: &str, salt: u64) -> u64 {
         .to_le_bytes()
         .iter()
         .fold(OFFSET, |h, &b| (h ^ b as u64).wrapping_mul(PRIME));
-    s.bytes().fold(seed, |h, b| (h ^ b as u64).wrapping_mul(PRIME))
+    s.bytes()
+        .fold(seed, |h, b| (h ^ b as u64).wrapping_mul(PRIME))
 }
 
 fn l2_normalize(v: &mut [f32]) {
@@ -163,12 +168,56 @@ fn tokenize(content: &str) -> Vec<String> {
 fn is_stop_word(word: &str) -> bool {
     matches!(
         word,
-        "a" | "an" | "the" | "and" | "or" | "but" | "in" | "on" | "at" | "to"
-            | "for" | "of" | "is" | "it" | "its" | "be" | "as" | "by" | "we"
-            | "with" | "from" | "that" | "this" | "are" | "was" | "has" | "have"
-            | "had" | "not" | "do" | "does" | "did" | "will" | "can" | "use"
-            | "used" | "into" | "if" | "so" | "when" | "which" | "all" | "also"
-            | "more" | "than" | "then" | "he" | "she" | "they" | "their" | "our"
+        "a" | "an"
+            | "the"
+            | "and"
+            | "or"
+            | "but"
+            | "in"
+            | "on"
+            | "at"
+            | "to"
+            | "for"
+            | "of"
+            | "is"
+            | "it"
+            | "its"
+            | "be"
+            | "as"
+            | "by"
+            | "we"
+            | "with"
+            | "from"
+            | "that"
+            | "this"
+            | "are"
+            | "was"
+            | "has"
+            | "have"
+            | "had"
+            | "not"
+            | "do"
+            | "does"
+            | "did"
+            | "will"
+            | "can"
+            | "use"
+            | "used"
+            | "into"
+            | "if"
+            | "so"
+            | "when"
+            | "which"
+            | "all"
+            | "also"
+            | "more"
+            | "than"
+            | "then"
+            | "he"
+            | "she"
+            | "they"
+            | "their"
+            | "our"
     )
 }
 
@@ -190,7 +239,10 @@ mod tests {
         let a = embed("use sqlite for vector storage in phase one");
         let b = embed("use sqlite for vector storage in phase one");
         let d = cosine_distance(&a, &b);
-        assert!(d < 1e-5, "identical content should have distance ~0, got {d}");
+        assert!(
+            d < 1e-5,
+            "identical content should have distance ~0, got {d}"
+        );
     }
 
     #[test]
@@ -224,7 +276,10 @@ mod tests {
         let b = embed("sqlite storage");
         let d = cosine_distance(&a, &b);
         // Not identical (one has more signal tokens) but very close.
-        assert!(d < 0.15, "stop-word-heavy variant distance={d:.3} should be close to clean");
+        assert!(
+            d < 0.15,
+            "stop-word-heavy variant distance={d:.3} should be close to clean"
+        );
     }
 
     #[test]

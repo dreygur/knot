@@ -51,11 +51,7 @@ fn default_rules() -> Vec<(String, Regex)> {
         ("Private_Key", r"-----BEGIN [A-Z ]+ PRIVATE KEY-----"),
     ]
     .into_iter()
-    .filter_map(|(name, pattern)| {
-        Regex::new(pattern)
-            .ok()
-            .map(|re| (name.to_string(), re))
-    })
+    .filter_map(|(name, pattern)| Regex::new(pattern).ok().map(|re| (name.to_string(), re)))
     .collect()
 }
 
@@ -65,7 +61,9 @@ pub fn scrub(content: &str) -> String {
     let mut result = content.to_string();
     for (name, pattern) in RULES.iter() {
         let replacement = format!("[REDACTED:{}]", name);
-        result = pattern.replace_all(&result, replacement.as_str()).into_owned();
+        result = pattern
+            .replace_all(&result, replacement.as_str())
+            .into_owned();
     }
     result
 }
@@ -79,7 +77,10 @@ mod tests {
         let input = "Authorization: Bearer eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.abc";
         let out = scrub(input);
         assert!(!out.contains("eyJ"), "token should be redacted");
-        assert!(out.contains("[REDACTED:"), "should contain redaction marker");
+        assert!(
+            out.contains("[REDACTED:"),
+            "should contain redaction marker"
+        );
     }
 
     #[test]

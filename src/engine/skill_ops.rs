@@ -23,7 +23,11 @@ impl StorageEngine {
             related_node_id,
         );
         self.graph.insert_skill(&skill).await?;
-        tracing::info!("[KNOT] Saved skill '{}' (score={:.2})", skill.name, skill.utility_score);
+        tracing::info!(
+            "[KNOT] Saved skill '{}' (score={:.2})",
+            skill.name,
+            skill.utility_score
+        );
         Ok(skill)
     }
 
@@ -50,7 +54,10 @@ impl StorageEngine {
 
         for step in &expanded_steps {
             let output = if let Some(ref wd) = step.working_dir {
-                Command::new("sh").args(["-c", &step.command]).current_dir(wd).output()
+                Command::new("sh")
+                    .args(["-c", &step.command])
+                    .current_dir(wd)
+                    .output()
             } else {
                 Command::new("sh").args(["-c", &step.command]).output()
             };
@@ -93,16 +100,27 @@ impl StorageEngine {
         if let Some(ref vo) = verification_output {
             if vo.success {
                 self.graph.increment_skill_success(name).await?;
-                tracing::info!("[KNOT] SUCCESS: Skill '{}' executed. Utility score incremented.", name);
+                tracing::info!(
+                    "[KNOT] SUCCESS: Skill '{}' executed. Utility score incremented.",
+                    name
+                );
             }
         }
 
-        let verification_passed = verification_output.as_ref().map(|v| v.success).unwrap_or(false);
+        let verification_passed = verification_output
+            .as_ref()
+            .map(|v| v.success)
+            .unwrap_or(false);
         Ok(ExecutionResult {
             success: all_steps_passed && verification_passed,
             step_results,
             verification_output,
-            detail: if all_steps_passed { "All steps executed" } else { "Some steps failed" }.into(),
+            detail: if all_steps_passed {
+                "All steps executed"
+            } else {
+                "Some steps failed"
+            }
+            .into(),
         })
     }
 
@@ -127,7 +145,11 @@ impl StorageEngine {
             return Ok(DeleteSkillResult::HighUtilityBlocked { success_count });
         }
         self.graph.delete_skill_by_name(name).await?;
-        tracing::info!("[KNOT] Deleted skill '{}' (success_count={})", name, success_count);
+        tracing::info!(
+            "[KNOT] Deleted skill '{}' (success_count={})",
+            name,
+            success_count
+        );
         Ok(DeleteSkillResult::Deleted)
     }
 }

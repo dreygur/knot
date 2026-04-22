@@ -40,8 +40,8 @@ where
 fn level_tag(level: Level) -> &'static str {
     match level {
         Level::ERROR => "ERROR",
-        Level::WARN  => "WARN ",
-        Level::INFO  => "INFO ",
+        Level::WARN => "WARN ",
+        Level::INFO => "INFO ",
         Level::DEBUG => "DEBUG",
         Level::TRACE => "TRACE",
     }

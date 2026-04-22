@@ -103,9 +103,16 @@ mod tests {
             .await
             .unwrap();
 
-        let report = engine.commit_session(session(), "knot-project").await.unwrap();
+        let report = engine
+            .commit_session(session(), "knot-project")
+            .await
+            .unwrap();
 
-        assert_eq!(report.promoted_count(), 1, "abstract node should be promoted");
+        assert_eq!(
+            report.promoted_count(),
+            1,
+            "abstract node should be promoted"
+        );
         assert_eq!(report.rejected_count(), 0);
     }
 
@@ -127,9 +134,16 @@ mod tests {
             .await
             .unwrap();
 
-        let report = engine.commit_session(session(), "knot-project").await.unwrap();
+        let report = engine
+            .commit_session(session(), "knot-project")
+            .await
+            .unwrap();
 
-        assert_eq!(report.promoted_count(), 1, "file-backed node with correct hash should promote");
+        assert_eq!(
+            report.promoted_count(),
+            1,
+            "file-backed node with correct hash should promote"
+        );
         assert_eq!(report.rejected_count(), 0);
     }
 
@@ -154,9 +168,16 @@ mod tests {
         // Mutate the file after saving — simulates the file changing on disk.
         std::fs::write(&path, b"MODIFIED content - hash will not match").unwrap();
 
-        let report = engine.commit_session(session(), "knot-project").await.unwrap();
+        let report = engine
+            .commit_session(session(), "knot-project")
+            .await
+            .unwrap();
 
-        assert_eq!(report.promoted_count(), 0, "modified file should be blocked");
+        assert_eq!(
+            report.promoted_count(),
+            0,
+            "modified file should be blocked"
+        );
         assert_eq!(report.rejected_count(), 1);
         assert_eq!(
             report.rejected[0].reason,
@@ -184,7 +205,10 @@ mod tests {
 
         drop(f);
 
-        let report = engine.commit_session(session(), "knot-project").await.unwrap();
+        let report = engine
+            .commit_session(session(), "knot-project")
+            .await
+            .unwrap();
 
         assert_eq!(report.promoted_count(), 0, "missing file should be blocked");
         assert_eq!(report.rejected_count(), 1);
@@ -197,7 +221,13 @@ mod tests {
 
         // Node 1: abstract — should promote.
         engine
-            .save(req("Abstract wisdom", vec![], None, crate::memory::MemoryScope::Session(session().into()), Some(0)))
+            .save(req(
+                "Abstract wisdom",
+                vec![],
+                None,
+                crate::memory::MemoryScope::Session(session().into()),
+                Some(0),
+            ))
             .await
             .unwrap();
 
@@ -206,7 +236,13 @@ mod tests {
         f_valid.write_all(b"valid").unwrap();
         let valid_path = f_valid.path().to_str().unwrap().to_string();
         engine
-            .save(req("Valid file wisdom", vec![], Some(valid_path), crate::memory::MemoryScope::Session(session().into()), Some(0)))
+            .save(req(
+                "Valid file wisdom",
+                vec![],
+                Some(valid_path),
+                crate::memory::MemoryScope::Session(session().into()),
+                Some(0),
+            ))
             .await
             .unwrap();
 
@@ -214,7 +250,13 @@ mod tests {
         let f_gone = NamedTempFile::new().unwrap();
         let gone_path = f_gone.path().to_str().unwrap().to_string();
         engine
-            .save(req("Wisdom about gone file", vec![], Some(gone_path), crate::memory::MemoryScope::Session(session().into()), Some(0)))
+            .save(req(
+                "Wisdom about gone file",
+                vec![],
+                Some(gone_path),
+                crate::memory::MemoryScope::Session(session().into()),
+                Some(0),
+            ))
             .await
             .unwrap();
         drop(f_gone);
@@ -224,15 +266,28 @@ mod tests {
         f_mut.write_all(b"before").unwrap();
         let mut_path = f_mut.path().to_str().unwrap().to_string();
         engine
-            .save(req("Wisdom about mutated file", vec![], Some(mut_path.clone()), crate::memory::MemoryScope::Session(session().into()), Some(0)))
+            .save(req(
+                "Wisdom about mutated file",
+                vec![],
+                Some(mut_path.clone()),
+                crate::memory::MemoryScope::Session(session().into()),
+                Some(0),
+            ))
             .await
             .unwrap();
         std::fs::write(&mut_path, b"after").unwrap();
 
-        let report = engine.commit_session(session(), "knot-project").await.unwrap();
+        let report = engine
+            .commit_session(session(), "knot-project")
+            .await
+            .unwrap();
 
         assert_eq!(report.promoted_count(), 2, "2 of 4 nodes should promote");
-        assert_eq!(report.rejected_count(), 2, "2 of 4 nodes should be rejected");
+        assert_eq!(
+            report.rejected_count(),
+            2,
+            "2 of 4 nodes should be rejected"
+        );
     }
 
     // ── Recall utility-score invariant ────────────────────────────────────────
@@ -301,10 +356,21 @@ mod tests {
         std::fs::write(&path, original).unwrap();
 
         let results = engine.recall("answer function", 5).await.unwrap();
-        assert!(!results[0].is_stale, "node should recover when file is restored");
+        assert!(
+            !results[0].is_stale,
+            "node should recover when file is restored"
+        );
 
-        let node = engine.graph.get_node(results[0].node.id).await.unwrap().unwrap();
-        assert!(!node.is_stale, "DB is_stale flag must be cleared on recovery");
+        let node = engine
+            .graph
+            .get_node(results[0].node.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            !node.is_stale,
+            "DB is_stale flag must be cleared on recovery"
+        );
     }
 
     // ── delete_wisdom ─────────────────────────────────────────────────────────
@@ -314,23 +380,41 @@ mod tests {
         let engine = test_engine().await;
 
         let parent = engine
-            .save(req("parent node", vec![], None, crate::memory::MemoryScope::Global, None))
+            .save(req(
+                "parent node",
+                vec![],
+                None,
+                crate::memory::MemoryScope::Global,
+                None,
+            ))
             .await
             .unwrap();
 
         let child_req = SaveRequest {
             parent_id: Some(parent.id),
-            ..req("child node", vec![], None, crate::memory::MemoryScope::Global, None)
+            ..req(
+                "child node",
+                vec![],
+                None,
+                crate::memory::MemoryScope::Global,
+                None,
+            )
         };
         let child = engine.save(child_req).await.unwrap();
         assert_eq!(child.parent_id, Some(parent.id));
 
         let report = engine.delete_wisdom(parent.id).await.unwrap().unwrap();
         assert_eq!(report.children_reparented, 1);
-        assert!(engine.graph.get_node(parent.id).await.unwrap().is_none(), "parent must be gone");
+        assert!(
+            engine.graph.get_node(parent.id).await.unwrap().is_none(),
+            "parent must be gone"
+        );
 
         let child_after = engine.graph.get_node(child.id).await.unwrap().unwrap();
-        assert_eq!(child_after.parent_id, None, "child must be re-parented to NULL");
+        assert_eq!(
+            child_after.parent_id, None,
+            "child must be re-parented to NULL"
+        );
     }
 
     #[tokio::test]
@@ -346,7 +430,14 @@ mod tests {
     async fn delete_skill_removes_low_utility_skill() {
         let engine = test_engine().await;
         engine
-            .save_skill("low-util".into(), "desc".into(), vec![], vec![], "true".into(), None)
+            .save_skill(
+                "low-util".into(),
+                "desc".into(),
+                vec![],
+                vec![],
+                "true".into(),
+                None,
+            )
             .await
             .unwrap();
 
@@ -359,28 +450,56 @@ mod tests {
     async fn delete_skill_blocks_high_utility_without_force() {
         let engine = test_engine().await;
         engine
-            .save_skill("hot-skill".into(), "desc".into(), vec![], vec![], "true".into(), None)
+            .save_skill(
+                "hot-skill".into(),
+                "desc".into(),
+                vec![],
+                vec![],
+                "true".into(),
+                None,
+            )
             .await
             .unwrap();
 
         for _ in 0..11 {
-            engine.graph.increment_skill_success("hot-skill").await.unwrap();
+            engine
+                .graph
+                .increment_skill_success("hot-skill")
+                .await
+                .unwrap();
         }
 
         let result = engine.delete_skill("hot-skill", false).await.unwrap();
-        assert!(matches!(result, DeleteSkillResult::HighUtilityBlocked { .. }));
-        assert!(engine.graph.get_skill("hot-skill").await.unwrap().is_some(), "skill must survive");
+        assert!(matches!(
+            result,
+            DeleteSkillResult::HighUtilityBlocked { .. }
+        ));
+        assert!(
+            engine.graph.get_skill("hot-skill").await.unwrap().is_some(),
+            "skill must survive"
+        );
     }
 
     #[tokio::test]
     async fn delete_skill_force_bypasses_high_utility_gate() {
         let engine = test_engine().await;
         engine
-            .save_skill("hot-skill".into(), "desc".into(), vec![], vec![], "true".into(), None)
+            .save_skill(
+                "hot-skill".into(),
+                "desc".into(),
+                vec![],
+                vec![],
+                "true".into(),
+                None,
+            )
             .await
             .unwrap();
         for _ in 0..11 {
-            engine.graph.increment_skill_success("hot-skill").await.unwrap();
+            engine
+                .graph
+                .increment_skill_success("hot-skill")
+                .await
+                .unwrap();
         }
 
         let result = engine.delete_skill("hot-skill", true).await.unwrap();

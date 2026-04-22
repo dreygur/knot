@@ -174,7 +174,10 @@ impl KnotServer {
             input.project_id.as_deref(),
             &self.session_id,
         );
-        let parent_id = input.parent_id.as_ref().and_then(|s| Uuid::parse_str(s).ok());
+        let parent_id = input
+            .parent_id
+            .as_ref()
+            .and_then(|s| Uuid::parse_str(s).ok());
         let node = engine
             .save(SaveRequest {
                 content: input.content,
@@ -250,9 +253,11 @@ impl KnotServer {
         }
     }
 
-    #[tool(description = "Strict firewall: promote session-scope nodes to a named project. \
+    #[tool(
+        description = "Strict firewall: promote session-scope nodes to a named project. \
         Every node is accounted for — promoted and rejected nodes are both reported. \
-        A node is rejected if its verification_path is missing or its content changed on disk.")]
+        A node is rejected if its verification_path is missing or its content changed on disk."
+    )]
     async fn commit_session(
         &self,
         #[tool(aggr)] input: CommitSessionInput,
@@ -284,7 +289,9 @@ impl KnotServer {
             .map_err(mcp_err)?;
 
         if nodes.is_empty() {
-            return Ok(CallToolResult::success(vec![Content::text("No nodes found.")]));
+            return Ok(CallToolResult::success(vec![Content::text(
+                "No nodes found.",
+            )]));
         }
         let output = nodes
             .iter()
@@ -312,11 +319,9 @@ impl KnotServer {
     ) -> Result<CallToolResult, McpError> {
         let src = parse_uuid(&input.source_id)?;
         let tgt = parse_uuid(&input.target_id)?;
-        let et = EdgeType::from_str(&input.edge_type)
-            .ok_or_else(|| McpError::invalid_params(
-                format!("Unknown edge_type: {}", input.edge_type),
-                None,
-            ))?;
+        let et = EdgeType::from_str(&input.edge_type).ok_or_else(|| {
+            McpError::invalid_params(format!("Unknown edge_type: {}", input.edge_type), None)
+        })?;
         let engine = self.engine.lock().await;
         let edge = engine.link_nodes(src, tgt, et).await.map_err(mcp_err)?;
         Ok(CallToolResult::success(vec![Content::text(format!(
@@ -339,16 +344,18 @@ impl KnotServer {
     }
 
     #[tool(description = "Health check: node count by level, skill count, and database status.")]
-    async fn knot_status(
-        &self,
-    ) -> Result<CallToolResult, McpError> {
+    async fn knot_status(&self) -> Result<CallToolResult, McpError> {
         let engine = self.engine.lock().await;
         let status = engine.knot_status().await.map_err(mcp_err)?;
-        Ok(CallToolResult::success(vec![Content::text(format_status_report(&status))]))
+        Ok(CallToolResult::success(vec![Content::text(
+            format_status_report(&status),
+        )]))
     }
 
-    #[tool(description = "Save a reusable skill procedure with prerequisites, steps, and verification command. \
-        Use placeholders like {{entity_name}} for reusability.")]
+    #[tool(
+        description = "Save a reusable skill procedure with prerequisites, steps, and verification command. \
+        Use placeholders like {{entity_name}} for reusability."
+    )]
     async fn save_skill(
         &self,
         #[tool(aggr)] input: SaveSkillInput,
@@ -386,7 +393,9 @@ impl KnotServer {
         ))]))
     }
 
-    #[tool(description = "Execute a saved skill with variable substitutions. Performs dry-run check first.")]
+    #[tool(
+        description = "Execute a saved skill with variable substitutions. Performs dry-run check first."
+    )]
     async fn execute_skill(
         &self,
         #[tool(aggr)] input: ExecuteSkillInput,
@@ -404,43 +413,50 @@ impl KnotServer {
             .map_err(mcp_err)?;
 
         if result.success {
-            Ok(CallToolResult::success(vec![Content::text(
-                format!(
-                    "[KNOT] SUCCESS: Skill '{}' executed.\n{}\nVerification:\n{}",
-                    input.skill_name,
-                    result.step_results
-                        .iter()
-                        .enumerate()
-                        .map(|(i, r)| format!("  Step {}: {} → {}", i + 1, r.command, if r.success { "OK" } else { "FAILED" }))
-                        .collect::<Vec<_>>()
-                        .join("\n"),
-                    result.verification_output
-                        .as_ref()
-                        .map(|v| format!("  {}: {}", if v.success { "PASS" } else { "FAIL" }, v.stdout.lines().next().unwrap_or("")))
-                        .unwrap_or("  (no verification)".into())
-                ),
-            )]))
+            Ok(CallToolResult::success(vec![Content::text(format!(
+                "[KNOT] SUCCESS: Skill '{}' executed.\n{}\nVerification:\n{}",
+                input.skill_name,
+                result
+                    .step_results
+                    .iter()
+                    .enumerate()
+                    .map(|(i, r)| format!(
+                        "  Step {}: {} → {}",
+                        i + 1,
+                        r.command,
+                        if r.success { "OK" } else { "FAILED" }
+                    ))
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+                result
+                    .verification_output
+                    .as_ref()
+                    .map(|v| format!(
+                        "  {}: {}",
+                        if v.success { "PASS" } else { "FAIL" },
+                        v.stdout.lines().next().unwrap_or("")
+                    ))
+                    .unwrap_or("  (no verification)".into())
+            ))]))
         } else {
-            Ok(CallToolResult::success(vec![Content::text(
-                format!(
-                    "[KNOT] FAIL: Skill '{}' execution failed.\n{}\n{}",
-                    input.skill_name,
-                    result.detail,
-                    result
-                        .step_results
-                        .iter()
-                        .enumerate()
-                        .filter_map(|(i, r)| {
-                            if !r.success {
-                                Some(format!("  Step {} failed: {}", i + 1, r.stderr))
-                            } else {
-                                None
-                            }
-                        })
-                        .collect::<Vec<_>>()
-                        .join("\n")
-                ),
-            )]))
+            Ok(CallToolResult::success(vec![Content::text(format!(
+                "[KNOT] FAIL: Skill '{}' execution failed.\n{}\n{}",
+                input.skill_name,
+                result.detail,
+                result
+                    .step_results
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(i, r)| {
+                        if !r.success {
+                            Some(format!("  Step {} failed: {}", i + 1, r.stderr))
+                        } else {
+                            None
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            ))]))
         }
     }
 
@@ -453,7 +469,9 @@ impl KnotServer {
         let skills = engine.recall_skills(&input.query).await.map_err(mcp_err)?;
 
         if skills.is_empty() {
-            return Ok(CallToolResult::success(vec![Content::text("No skills found.")]));
+            return Ok(CallToolResult::success(vec![Content::text(
+                "No skills found.",
+            )]));
         }
 
         let output = skills
@@ -474,9 +492,11 @@ impl KnotServer {
         Ok(CallToolResult::success(vec![Content::text(output)]))
     }
 
-    #[tool(description = "[DESTRUCTIVE] This tool permanently removes data from the Knot vault. \
+    #[tool(
+        description = "[DESTRUCTIVE] This tool permanently removes data from the Knot vault. \
         Deletes a knowledge node and re-parents any child nodes to the deleted node's parent. \
-        Edges referencing this node are also removed.")]
+        Edges referencing this node are also removed."
+    )]
     async fn delete_wisdom(
         &self,
         #[tool(aggr)] input: DeleteWisdomInput,
@@ -499,9 +519,11 @@ impl KnotServer {
         }
     }
 
-    #[tool(description = "[DESTRUCTIVE] This tool permanently removes data from the Knot vault. \
+    #[tool(
+        description = "[DESTRUCTIVE] This tool permanently removes data from the Knot vault. \
         Deletes a named skill. Requires force=true when success_count > 10 to prevent \
-        accidental removal of high-utility skills.")]
+        accidental removal of high-utility skills."
+    )]
     async fn delete_skill(
         &self,
         #[tool(aggr)] input: DeleteSkillInput,
@@ -513,13 +535,17 @@ impl KnotServer {
         }
         let force = input.force.unwrap_or(false);
         let engine = self.engine.lock().await;
-        match engine.delete_skill(&input.skill_name, force).await.map_err(mcp_err)? {
-            DeleteSkillResult::Deleted => Ok(CallToolResult::success(vec![Content::text(format!(
-                "[KNOT] SUCCESS: Skill '{}' deleted.", input.skill_name
-            ))])),
-            DeleteSkillResult::NotFound => Ok(CallToolResult::success(vec![Content::text(format!(
-                "[KNOT] WARN: Skill '{}' not found.", input.skill_name
-            ))])),
+        match engine
+            .delete_skill(&input.skill_name, force)
+            .await
+            .map_err(mcp_err)?
+        {
+            DeleteSkillResult::Deleted => Ok(CallToolResult::success(vec![Content::text(
+                format!("[KNOT] SUCCESS: Skill '{}' deleted.", input.skill_name),
+            )])),
+            DeleteSkillResult::NotFound => Ok(CallToolResult::success(vec![Content::text(
+                format!("[KNOT] WARN: Skill '{}' not found.", input.skill_name),
+            )])),
             DeleteSkillResult::HighUtilityBlocked { success_count } => {
                 Ok(CallToolResult::success(vec![Content::text(format!(
                     "[KNOT] BLOCKED: Skill '{}' has success_count={} (> 10). \
@@ -530,9 +556,11 @@ impl KnotServer {
         }
     }
 
-    #[tool(description = "[DESTRUCTIVE] This tool permanently removes data from the Knot vault. \
+    #[tool(
+        description = "[DESTRUCTIVE] This tool permanently removes data from the Knot vault. \
         Identifies and deletes Ghost Nodes — memories whose source files no longer exist on disk. \
-        Reports count removed.")]
+        Reports count removed."
+    )]
     async fn prune_ghosts(&self) -> Result<CallToolResult, McpError> {
         if self.read_only {
             return Ok(CallToolResult::success(vec![Content::text(
@@ -668,11 +696,13 @@ fn format_recall_results(results: &[RecallResult]) -> String {
             );
             if !r.ancestry.is_empty() {
                 out.push_str("\n   ancestry: ");
-                out.push_str(&r.ancestry
-                    .iter()
-                    .map(|a| format!("{}", a.id))
-                    .collect::<Vec<_>>()
-                    .join(" → "));
+                out.push_str(
+                    &r.ancestry
+                        .iter()
+                        .map(|a| format!("{}", a.id))
+                        .collect::<Vec<_>>()
+                        .join(" → "),
+                );
             }
             out
         })
@@ -712,7 +742,10 @@ fn format_recall_summary(results: &[RecallResult]) -> String {
 
 fn format_status_report(r: &StatusReport) -> String {
     let ghost_line = if r.ghost_count > 0 {
-        format!("│ Ghosts       : {:>4}  ← run prune_ghosts\n", r.ghost_count)
+        format!(
+            "│ Ghosts       : {:>4}  ← run prune_ghosts\n",
+            r.ghost_count
+        )
     } else {
         format!("│ Ghosts       : {:>4}\n", r.ghost_count)
     };
@@ -726,11 +759,6 @@ fn format_status_report(r: &StatusReport) -> String {
          {}\
          │ DB Health     : {}\n\
          ──────────",
-        r.l1_nodes,
-        r.l2_nodes,
-        r.l3_nodes,
-        r.skills,
-        ghost_line,
-        r.db_health
+        r.l1_nodes, r.l2_nodes, r.l3_nodes, r.skills, ghost_line, r.db_health
     )
 }
