@@ -318,19 +318,6 @@ fn register_path(bin_dir: &Path) -> Result<()> {
     };
     env.set_value("PATH", &new_path)?;
 
-    // Notify running processes of the environment change.
-    unsafe {
-        windows_sys::Win32::UI::WindowsAndMessaging::SendMessageTimeoutW(
-            windows_sys::Win32::UI::WindowsAndMessaging::HWND_BROADCAST,
-            windows_sys::Win32::UI::WindowsAndMessaging::WM_SETTINGCHANGE,
-            0,
-            windows_sys::core::w!("Environment") as _,
-            windows_sys::Win32::UI::WindowsAndMessaging::SMTO_ABORTIFHUNG,
-            5000,
-            std::ptr::null_mut(),
-        );
-    }
-
     println!("[KNOT] INFO:  Registered {} in User PATH (registry).", bin_dir.display());
     println!("[KNOT] SUCCESS: Open a new terminal window to pick up the change.");
     Ok(())
