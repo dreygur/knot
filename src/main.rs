@@ -12,11 +12,13 @@ mod utils;
 use anyhow::Result;
 use engine::{CommitReport, RecallResult, StatusReport, StorageEngine};
 use rmcp::{transport::stdio, ServiceExt};
-use std::fs::OpenOptions;
-use std::io::{BufRead, BufReader, Seek, SeekFrom, Write};
+use std::io::{BufRead, BufReader, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use tools::KnotServer;
 use uuid::Uuid;
+
+const BLOCK_START: &str = "# >>> knot initialize >>>";
+const BLOCK_END: &str = "# <<< knot initialize <<<";
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -104,7 +106,9 @@ fn warn_if_not_in_path() {
     if let Ok(bin) = std::env::current_exe() {
         if let Some(dir) = bin.parent() {
             if !is_in_path(dir) {
-                eprintln!("[KNOT] WARN:  Knot is not in your PATH. Run 'knot init' to fix this.");
+                eprintln!(
+                    "[KNOT] WARN:  Knot is not in your PATH. Run 'knot init' to enable global access."
+                );
             }
         }
     }
@@ -119,7 +123,7 @@ fn log_path_for(data_dir: &str) -> PathBuf {
 async fn cli_recall(query: &str, limit: usize) -> Result<()> {
     let filter = std::env::var("KNOT_LOG").unwrap_or_else(|_| "knot=error".into());
     let data_dir = std::env::var("KNOT_DATA_DIR").unwrap_or_else(|_| resolve_data_dir());
-    logging::init(&filter, Some(&log_path_for(&data_dir)));
+    let _guard = logging::init(&filter, Some(&log_path_for(&data_dir)));
     warn_if_not_in_path();
     let engine = StorageEngine::new(&data_dir).await?;
     let results = engine.recall(query, limit.min(20)).await?;
@@ -132,7 +136,7 @@ async fn cli_recall(query: &str, limit: usize) -> Result<()> {
 async fn cli_commit(session_id: &str, project_id: &str) -> Result<()> {
     let filter = std::env::var("KNOT_LOG").unwrap_or_else(|_| "knot=error".into());
     let data_dir = std::env::var("KNOT_DATA_DIR").unwrap_or_else(|_| resolve_data_dir());
-    logging::init(&filter, Some(&log_path_for(&data_dir)));
+    let _guard = logging::init(&filter, Some(&log_path_for(&data_dir)));
     warn_if_not_in_path();
     let engine = StorageEngine::new(&data_dir).await?;
     let report = engine.commit_session(session_id, project_id).await?;
@@ -143,7 +147,7 @@ async fn cli_commit(session_id: &str, project_id: &str) -> Result<()> {
 async fn cli_status() -> Result<()> {
     let filter = std::env::var("KNOT_LOG").unwrap_or_else(|_| "knot=error".into());
     let data_dir = std::env::var("KNOT_DATA_DIR").unwrap_or_else(|_| resolve_data_dir());
-    logging::init(&filter, Some(&log_path_for(&data_dir)));
+    let _guard = logging::init(&filter, Some(&log_path_for(&data_dir)));
     warn_if_not_in_path();
     let engine = StorageEngine::new(&data_dir).await?;
     let status = engine.knot_status().await?;
@@ -152,9 +156,9 @@ async fn cli_status() -> Result<()> {
 }
 
 async fn cli_logs(follow: bool) -> Result<()> {
-    // No file logging here - avoid the log growing from reading itself.
+    // Pass None to avoid the log growing from reading itself.
     let filter = std::env::var("KNOT_LOG").unwrap_or_else(|_| "knot=error".into());
-    logging::init(&filter, None);
+    let _guard = logging::init(&filter, None);
     let data_dir = std::env::var("KNOT_DATA_DIR").unwrap_or_else(|_| resolve_data_dir());
     let log_path = log_path_for(&data_dir);
 
@@ -192,85 +196,143 @@ fn cli_init() -> Result<()> {
         .parent()
         .ok_or_else(|| anyhow::anyhow!("Cannot determine binary directory"))?;
 
-    if is_in_path(bin_dir) {
-        println!("[KNOT] INFO:  {} is already in PATH.", bin_dir.display());
-        return Ok(());
-    }
+    register_path(bin_dir)
+}
 
-    register_path(bin_dir)?;
-    println!("[KNOT] SUCCESS: Path registered. Restart your terminal to use 'knot' globally.");
-    Ok(())
+// ── PATH registration ─────────────────────────────────────────────────────────
+
+/// Build the managed block content for POSIX shells.
+#[cfg(unix)]
+fn path_block(bin_dir: &Path) -> String {
+    format!(
+        "\n{BLOCK_START}\nexport PATH=\"{}:$PATH\"\n{BLOCK_END}\n",
+        bin_dir.display()
+    )
+}
+
+/// Replace or append the managed block in `content`, returning the new string.
+fn inject_block(content: &str, block: &str) -> String {
+    if let (Some(s), Some(e)) = (content.find(BLOCK_START), content.find(BLOCK_END)) {
+        if s < e {
+            let after_end = e + BLOCK_END.len();
+            return format!("{}{}{}", &content[..s], block.trim_start_matches('\n'), &content[after_end..]);
+        }
+    }
+    format!("{content}{block}")
 }
 
 #[cfg(unix)]
 fn register_path(bin_dir: &Path) -> Result<()> {
-    let home = std::env::var("HOME")?;
+    let home = dirs::home_dir().ok_or_else(|| anyhow::anyhow!("Cannot determine home directory"))?;
     let shell = std::env::var("SHELL").unwrap_or_default();
 
-    let (config, line) = if shell.ends_with("zsh") {
-        (
-            PathBuf::from(&home).join(".zshrc"),
-            format!("\nexport PATH=\"$PATH:{}\"  # added by knot init\n", bin_dir.display()),
-        )
+    let (config, source_cmd) = if shell.ends_with("zsh") {
+        (home.join(".zshrc"), "source ~/.zshrc")
+    } else if shell.ends_with("bash") {
+        // Prefer .bash_profile on macOS (login shell), .bashrc on Linux.
+        if cfg!(target_os = "macos") {
+            (home.join(".bash_profile"), "source ~/.bash_profile")
+        } else {
+            (home.join(".bashrc"), "source ~/.bashrc")
+        }
     } else if shell.ends_with("fish") {
-        (
-            PathBuf::from(&home).join(".config/fish/config.fish"),
-            format!("\nfish_add_path {}  # added by knot init\n", bin_dir.display()),
-        )
+        // fish uses a different config and syntax - handled separately.
+        return register_path_fish(bin_dir, &home);
     } else {
-        (
-            PathBuf::from(&home).join(".bashrc"),
-            format!("\nexport PATH=\"$PATH:{}\"  # added by knot init\n", bin_dir.display()),
-        )
+        (home.join(".bashrc"), "source ~/.bashrc")
     };
 
     let existing = std::fs::read_to_string(&config).unwrap_or_default();
-    if existing.contains("# added by knot init") {
-        println!("[KNOT] INFO:  PATH entry already present in {}", config.display());
+
+    if existing.contains(BLOCK_START) {
+        // Block present - check if path inside it is already correct.
+        let block = path_block(bin_dir);
+        if existing.contains(&format!("export PATH=\"{}:$PATH\"", bin_dir.display())) {
+            println!("[KNOT] INFO:  {} is already registered in {}", bin_dir.display(), config.display());
+            println!("[KNOT] INFO:  Run: {source_cmd}");
+            return Ok(());
+        }
+        // Path changed (binary moved) - update in place.
+        let updated = inject_block(&existing, &block);
+        std::fs::write(&config, updated)?;
+        println!("[KNOT] INFO:  Updated PATH entry in {}", config.display());
+    } else {
+        if let Some(parent) = config.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let block = path_block(bin_dir);
+        let updated = inject_block(&existing, &block);
+        std::fs::write(&config, updated)?;
+        println!("[KNOT] INFO:  Registered {} in {}", bin_dir.display(), config.display());
+    }
+
+    println!("[KNOT] SUCCESS: Run the following to activate immediately:");
+    println!("         {source_cmd}");
+    Ok(())
+}
+
+#[cfg(unix)]
+fn register_path_fish(bin_dir: &Path, home: &Path) -> Result<()> {
+    let config = home.join(".config/fish/config.fish");
+    let entry = format!("fish_add_path \"{}\"", bin_dir.display());
+    let existing = std::fs::read_to_string(&config).unwrap_or_default();
+
+    if existing.contains(&entry) {
+        println!("[KNOT] INFO:  {} is already registered in {}", bin_dir.display(), config.display());
+        println!("[KNOT] INFO:  Run: source ~/.config/fish/config.fish");
         return Ok(());
     }
 
     if let Some(parent) = config.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&config)?
-        .write_all(line.as_bytes())?;
-
-    println!("[KNOT] INFO:  Appended PATH entry to {}", config.display());
+    let updated = format!(
+        "{existing}\n{BLOCK_START}\n{entry}\n{BLOCK_END}\n"
+    );
+    std::fs::write(&config, updated)?;
+    println!("[KNOT] INFO:  Registered {} in {}", bin_dir.display(), config.display());
+    println!("[KNOT] SUCCESS: Run the following to activate immediately:");
+    println!("         source ~/.config/fish/config.fish");
     Ok(())
 }
 
 #[cfg(windows)]
 fn register_path(bin_dir: &Path) -> Result<()> {
-    let home = std::env::var("USERPROFILE").or_else(|_| std::env::var("HOME"))?;
-    let profile = PathBuf::from(&home)
-        .join("Documents")
-        .join("PowerShell")
-        .join("Microsoft.PowerShell_profile.ps1");
+    use winreg::enums::{HKEY_CURRENT_USER, KEY_READ, KEY_WRITE};
+    use winreg::RegKey;
 
-    let existing = std::fs::read_to_string(&profile).unwrap_or_default();
-    if existing.contains("# added by knot init") {
-        println!("[KNOT] INFO:  PATH entry already present in {}", profile.display());
+    let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+    let env = hkcu.open_subkey_with_flags("Environment", KEY_READ | KEY_WRITE)?;
+    let current: String = env.get_value("PATH").unwrap_or_default();
+
+    let dir_str = bin_dir.to_string_lossy();
+    if current.split(';').any(|p| p.trim() == dir_str.as_ref()) {
+        println!("[KNOT] INFO:  {} is already in the User PATH.", bin_dir.display());
         return Ok(());
     }
 
-    if let Some(parent) = profile.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let line = format!(
-        "\n$env:PATH += \";{}\"  # added by knot init\n",
-        bin_dir.display()
-    );
-    OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&profile)?
-        .write_all(line.as_bytes())?;
+    let new_path = if current.is_empty() {
+        dir_str.into_owned()
+    } else {
+        format!("{current};{dir_str}")
+    };
+    env.set_value("PATH", &new_path)?;
 
-    println!("[KNOT] INFO:  Appended PATH entry to {}", profile.display());
+    // Notify running processes of the environment change.
+    unsafe {
+        windows_sys::Win32::UI::WindowsAndMessaging::SendMessageTimeoutW(
+            windows_sys::Win32::UI::WindowsAndMessaging::HWND_BROADCAST,
+            windows_sys::Win32::UI::WindowsAndMessaging::WM_SETTINGCHANGE,
+            0,
+            windows_sys::core::w!("Environment") as _,
+            windows_sys::Win32::UI::WindowsAndMessaging::SMTO_ABORTIFHUNG,
+            5000,
+            std::ptr::null_mut(),
+        );
+    }
+
+    println!("[KNOT] INFO:  Registered {} in User PATH (registry).", bin_dir.display());
+    println!("[KNOT] SUCCESS: Open a new terminal window to pick up the change.");
     Ok(())
 }
 
@@ -283,7 +345,7 @@ async fn run_mcp_server() -> Result<()> {
     let is_new = !Path::new(&data_dir).exists();
     std::fs::create_dir_all(&data_dir)?;
 
-    logging::init(&filter, Some(&log_path_for(&data_dir)));
+    let _guard = logging::init(&filter, Some(&log_path_for(&data_dir)));
 
     if is_new {
         eprintln!("[KNOT] INFO:  Initialized new memory vault at {}", data_dir);
@@ -353,7 +415,7 @@ fn format_status_cli(r: &StatusReport) -> String {
 }
 
 fn resolve_data_dir() -> String {
-    std::env::var("HOME")
-        .map(|h| format!("{h}/.knot"))
-        .unwrap_or_else(|_| ".knot".into())
+    dirs::home_dir()
+        .map(|h| format!("{}", h.join(".knot").display()))
+        .unwrap_or_else(|| ".knot".into())
 }
