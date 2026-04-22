@@ -10,7 +10,7 @@ path = "src/main.rs"
 
 [dependencies]
 # MCP transport
-rmcp = { version = "0.1", features = ["server", "transport-io"] }
+rmcp = { version = "1.5", features = ["server", "transport-io"] }
 schemars = "0.8"
 
 # Graph/metadata store (also hosts vectors as JSON blobs in Phase 1)
