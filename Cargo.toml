@@ -1,6 +1,6 @@
 [package]
 name = "knot"
-version = "0.2.2"
+version = "0.3.0"
 edition = "2021"
 description = "Persistent memory pool MCP server - eliminate Context Rot with hierarchical knowledge, skill execution, and semantic drift detection"
 

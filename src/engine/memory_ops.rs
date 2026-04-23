@@ -31,6 +31,13 @@ impl StorageEngine {
         let clean_content = privacy::scrub(&req.content);
         let content_hash = req.verification_path.as_deref().and_then(jitv::hash_path);
 
+        // Register content → path mapping for future relink operations.
+        if let (Some(ref hash), Some(ref path)) = (&content_hash, &req.verification_path) {
+            if let Err(e) = self.graph.upsert_path_map(hash, path).await {
+                tracing::warn!("path_map upsert failed: {e}");
+            }
+        }
+
         let node = KnowledgeNode::new(
             clean_content,
             req.tags,
@@ -75,6 +82,13 @@ impl StorageEngine {
             let mut status = vr.status.clone();
             if stale_by_inheritance {
                 status = VerificationStatus::StaleByInheritance;
+            }
+
+            // Auto-heal: if the file is missing, scan the project for its hash.
+            if matches!(status, VerificationStatus::StaleMissing) {
+                if self.relink_stale_wisdom(&mut node).await.unwrap_or(false) {
+                    status = VerificationStatus::Verified;
+                }
             }
 
             match status {
@@ -303,16 +317,27 @@ impl StorageEngine {
             .collect())
     }
 
-    /// Delete all ghost nodes (source file gone) from DB and vector store.
+    /// Move all ghost nodes (source file gone and unrelink-able) to archived_nodes.
+    /// Auto-deletes archived nodes older than 30 days with success_count = 0.
+    /// Returns count archived in this run.
     pub async fn prune_ghosts(&self) -> Result<usize> {
         let ghosts = self.list_ghost_nodes().await?;
         let count = ghosts.len();
         for node in &ghosts {
-            self.graph.delete_node(node.id).await?;
+            self.graph.archive_node(node).await?;
             let _ = self.vectors.delete(node.id).await;
-            tracing::info!("[KNOT] pruned ghost node {}", node.id);
+            tracing::info!("[KNOT] Archived ghost node {}", node.id);
         }
-        tracing::info!("[KNOT] prune_ghosts: removed {count} ghost(s)");
+
+        let cutoff = (chrono::Utc::now() - chrono::Duration::days(30)).to_rfc3339();
+        let deleted = self.graph.prune_old_archives(&cutoff).await?;
+        if deleted > 0 {
+            tracing::info!("[KNOT] Auto-purged {deleted} stale archive(s) older than 30 days");
+        }
+
+        tracing::info!(
+            "[KNOT] prune_ghosts: archived {count} ghost(s), purged {deleted} old archive(s)"
+        );
         Ok(count)
     }
 
@@ -321,6 +346,7 @@ impl StorageEngine {
         let skills = self.graph.count_skills().await?;
         let db_health = self.graph.health_check().await?;
         let ghost_count = self.list_ghost_nodes().await?.len() as i64;
+        let archived_count = self.graph.count_archived_nodes().await?;
         Ok(StatusReport {
             l1_nodes: l1,
             l2_nodes: l2,
@@ -328,8 +354,92 @@ impl StorageEngine {
             skills,
             db_health,
             ghost_count,
+            archived_count,
         })
     }
+
+    /// Attempt to find a stale node's file at a new path by scanning the project tree.
+    /// On success, updates verification_path + path_map and clears the stale flag.
+    pub async fn relink_stale_wisdom(&self, node: &mut KnowledgeNode) -> Result<bool> {
+        let hash = match &node.content_hash {
+            Some(h) => h.clone(),
+            None => return Ok(false),
+        };
+        let last_path = match &node.verification_path {
+            Some(p) => p.clone(),
+            None => return Ok(false),
+        };
+
+        let search_root = find_project_root(&last_path);
+        let Some(new_path) = scan_for_hash(&search_root, &hash, 8) else {
+            return Ok(false);
+        };
+
+        let new_hash = jitv::hash_path(&new_path);
+        self.graph
+            .update_verification_path(node.id, &new_path, new_hash.as_deref())
+            .await?;
+        self.graph.upsert_path_map(&hash, &new_path).await?;
+
+        node.verification_path = Some(new_path.clone());
+        node.content_hash = new_hash;
+        node.is_stale = false;
+        tracing::info!("[KNOT] Relinked node {} → {}", node.id, new_path);
+        Ok(true)
+    }
+}
+
+/// Walk up from `path`'s parent directory until a `.git` marker is found or
+/// we reach the home directory. Returns the project root to use as scan base.
+fn find_project_root(path: &str) -> std::path::PathBuf {
+    let home = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("/"));
+    let mut current = std::path::Path::new(path)
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| home.clone());
+
+    loop {
+        if current.join(".git").exists() {
+            return current;
+        }
+        if current == home {
+            return home;
+        }
+        match current.parent() {
+            Some(p) if p != current.as_path() => current = p.to_path_buf(),
+            _ => return home,
+        }
+    }
+}
+
+/// Recursively scan `root` for a file whose BLAKE3 digest matches `target_hash`.
+/// Skips hidden directories, `target/`, and `node_modules/`. Depth-capped at `max`.
+fn scan_for_hash(root: &std::path::Path, target_hash: &str, max: usize) -> Option<String> {
+    if max == 0 {
+        return None;
+    }
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return None;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            if name.starts_with('.') || matches!(name, "target" | "node_modules") {
+                continue;
+            }
+            if let Some(found) = scan_for_hash(&path, target_hash, max - 1) {
+                return Some(found);
+            }
+        } else if path.is_file() {
+            if let Ok(hash) = crate::utils::calculate_hash(&path) {
+                if hash == target_hash {
+                    return path.to_str().map(String::from);
+                }
+            }
+        }
+    }
+    None
 }
 
 /// Reject paths that attempt directory traversal via `../`.

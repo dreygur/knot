@@ -193,22 +193,23 @@ impl KnotServer {
             .map_err(mcp_err)?;
 
         let msg = format!(
-            "Saved node {}\nscope={}\nutility_score={:.2}\nverification={}\ntags={:?}",
+            "Saved node {}\nscope={}\nutility_score={:.2}\nblake3={}\ntags={:?}",
             node.id,
             node.scope.scope_type(),
             node.utility_score,
             node.content_hash
                 .as_deref()
-                .map(|h| format!("sha256:{}", &h[..8]))
-                .unwrap_or_else(|| "none".into()),
+                .map(|h| &h[..8])
+                .unwrap_or("none"),
             node.tags,
         );
         Ok(CallToolResult::success(vec![Content::text(msg)]))
     }
 
     #[tool(description = "Semantic search with Jit-V verification. \
-        Stale nodes are tagged [STALE:MISSING] or [STALE:MODIFIED]. \
-        Returns summaries when >3 results; pass full_content=true for full detail.")]
+        Stale nodes are tagged [STALE:MISSING] or [STALE:MODIFIED]; missing files trigger \
+        automatic relink (hash-scan of project tree) before returning stale. \
+        Returns path + snippet by default; pass full_content=true for full content.")]
     async fn recall_memory(
         &self,
         #[tool(aggr)] input: RecallMemoryInput,
@@ -683,8 +684,14 @@ fn format_recall_results(results: &[RecallResult]) -> String {
         .iter()
         .enumerate()
         .map(|(i, r)| {
+            let path_line = r
+                .node
+                .verification_path
+                .as_deref()
+                .map(|p| format!("\n   path: {p}"))
+                .unwrap_or_default();
             let mut out = format!(
-                "{}. [{}] {} (score={:.2}, dist={:.4}, confidence={}{})\n   {}",
+                "{}. [{}] {} (score={:.2}, dist={:.4}, confidence={}{})\n   {}{}",
                 i + 1,
                 r.node.scope.scope_type(),
                 r.node.id,
@@ -692,7 +699,8 @@ fn format_recall_results(results: &[RecallResult]) -> String {
                 r.distance,
                 r.confidence,
                 if r.is_stale { " STALE" } else { "" },
-                r.annotated_content.lines().next().unwrap_or("")
+                r.annotated_content.lines().next().unwrap_or(""),
+                path_line,
             );
             if !r.ancestry.is_empty() {
                 out.push_str("\n   ancestry: ");
@@ -726,15 +734,22 @@ fn format_recall_summary(results: &[RecallResult]) -> String {
     for (i, r) in results.iter().enumerate() {
         let stale = if r.is_stale { " [STALE]" } else { "" };
         let snippet: String = r.annotated_content.chars().take(100).collect();
+        let path_line = r
+            .node
+            .verification_path
+            .as_deref()
+            .map(|p| format!("\n   path: {p}"))
+            .unwrap_or_default();
         out.push_str(&format!(
-            "{}. [{}] {} (score={:.2}, dist={:.4}{})\n   {}\n\n",
+            "{}. [{}] {} (score={:.2}, dist={:.4}{})\n   {}{}\n\n",
             i + 1,
             r.node.scope.scope_type(),
             r.node.id,
             r.node.utility_score,
             r.distance,
             stale,
-            snippet
+            snippet,
+            path_line,
         ));
     }
     out
@@ -757,8 +772,9 @@ fn format_status_report(r: &StatusReport) -> String {
          │ L3 (Global)   : {:>4}\n\
          │ Skills        : {:>4}\n\
          {}\
+         │ Archived      : {:>4}\n\
          │ DB Health     : {}\n\
          ──────────",
-        r.l1_nodes, r.l2_nodes, r.l3_nodes, r.skills, ghost_line, r.db_health
+        r.l1_nodes, r.l2_nodes, r.l3_nodes, r.skills, ghost_line, r.archived_count, r.db_health
     )
 }

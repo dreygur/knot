@@ -117,4 +117,6 @@ pub struct StatusReport {
     pub db_health: String,
     /// Nodes whose verification_path no longer exists on disk.
     pub ghost_count: i64,
+    /// Nodes moved to archive (stale, awaiting 30-day auto-cleanup if never recalled).
+    pub archived_count: i64,
 }

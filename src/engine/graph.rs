@@ -99,6 +99,45 @@ impl GraphStore {
             .execute(&self.pool)
             .await?;
 
+        // CAW: path_map decouples content identity (hash) from location (path).
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS path_map (
+                content_hash     TEXT PRIMARY KEY,
+                last_known_path  TEXT NOT NULL,
+                updated_at       TEXT NOT NULL
+            );
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
+
+        // Archive sink: stale nodes move here instead of being deleted outright.
+        // Auto-purged after 30 days if success_count = 0 (never recalled).
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS archived_nodes (
+                id                TEXT PRIMARY KEY,
+                content           TEXT NOT NULL,
+                tags              TEXT NOT NULL,
+                verification_path TEXT,
+                content_hash      TEXT,
+                utility_score     REAL NOT NULL DEFAULT 0.5,
+                scope_type        TEXT NOT NULL,
+                scope_id          TEXT,
+                is_stale          INTEGER NOT NULL DEFAULT 0,
+                parent_id         TEXT,
+                origin_agent      TEXT,
+                success_count     INTEGER NOT NULL DEFAULT 0,
+                created_at        TEXT NOT NULL,
+                updated_at        TEXT NOT NULL,
+                archived_at       TEXT NOT NULL
+            );
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
+
         Ok(())
     }
 
@@ -475,6 +514,107 @@ impl GraphStore {
             Some(_) => Ok("ok".into()),
             None => Ok("error".into()),
         }
+    }
+
+    /// Insert or update the content_hash → last_known_path mapping.
+    pub async fn upsert_path_map(&self, content_hash: &str, path: &str) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO path_map (content_hash, last_known_path, updated_at) VALUES (?, ?, ?) \
+             ON CONFLICT(content_hash) DO UPDATE SET \
+             last_known_path = excluded.last_known_path, updated_at = excluded.updated_at",
+        )
+        .bind(content_hash)
+        .bind(path)
+        .bind(Utc::now().to_rfc3339())
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Update a node's verification_path and refresh its content_hash + clear stale flag.
+    pub async fn update_verification_path(
+        &self,
+        id: Uuid,
+        new_path: &str,
+        new_hash: Option<&str>,
+    ) -> Result<()> {
+        sqlx::query(
+            "UPDATE nodes SET verification_path = ?, content_hash = ?, \
+             is_stale = 0, updated_at = ? WHERE id = ?",
+        )
+        .bind(new_path)
+        .bind(new_hash)
+        .bind(Utc::now().to_rfc3339())
+        .bind(id.to_string())
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Move a node from active storage to the archive in a single transaction.
+    /// success_count is derived from how many times the node was recalled
+    /// (each recall increments utility_score by 0.05 from a baseline of 0.5).
+    pub async fn archive_node(&self, node: &KnowledgeNode) -> Result<()> {
+        let tags_json = serde_json::to_string(&node.tags)?;
+        let recall_count = {
+            let delta = node.utility_score - 0.5;
+            if delta > 0.0 { (delta / 0.05).round() as i64 } else { 0 }
+        };
+        let archived_at = Utc::now().to_rfc3339();
+
+        let mut tx = self.pool.begin().await?;
+
+        sqlx::query(
+            r#"INSERT OR REPLACE INTO archived_nodes
+               (id, content, tags, verification_path, content_hash, utility_score,
+                scope_type, scope_id, is_stale, parent_id, origin_agent,
+                success_count, created_at, updated_at, archived_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"#,
+        )
+        .bind(node.id.to_string())
+        .bind(&node.content)
+        .bind(&tags_json)
+        .bind(&node.verification_path)
+        .bind(&node.content_hash)
+        .bind(node.utility_score)
+        .bind(node.scope.scope_type())
+        .bind(node.scope.scope_id())
+        .bind(node.is_stale as i32)
+        .bind(node.parent_id.map(|u| u.to_string()))
+        .bind(&node.origin_agent)
+        .bind(recall_count)
+        .bind(node.created_at.to_rfc3339())
+        .bind(node.updated_at.to_rfc3339())
+        .bind(&archived_at)
+        .execute(&mut *tx)
+        .await?;
+
+        sqlx::query("DELETE FROM nodes WHERE id = ?")
+            .bind(node.id.to_string())
+            .execute(&mut *tx)
+            .await?;
+
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// Delete archived nodes that are both older than `before` (RFC3339) and
+    /// were never recalled (success_count = 0). Returns count deleted.
+    pub async fn prune_old_archives(&self, before: &str) -> Result<u64> {
+        let result = sqlx::query(
+            "DELETE FROM archived_nodes WHERE archived_at < ? AND success_count = 0",
+        )
+        .bind(before)
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected())
+    }
+
+    pub async fn count_archived_nodes(&self) -> Result<i64> {
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM archived_nodes")
+            .fetch_one(&self.pool)
+            .await?;
+        Ok(count)
     }
 }
 
