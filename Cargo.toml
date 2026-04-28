@@ -51,7 +51,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 tracing-appender = "0.2"
 
 # Cross-platform path helpers
-dirs = "5"
+dirs = "6"
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.52"
