@@ -138,6 +138,27 @@ impl GraphStore {
         .execute(&self.pool)
         .await?;
 
+        sqlx::query(
+            r#"
+            CREATE VIRTUAL TABLE IF NOT EXISTS nodes_fts USING fts5(
+                node_id UNINDEXED,
+                content,
+                tags,
+                verification_path
+            );
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
+
+        let _ = sqlx::query(
+            "INSERT INTO nodes_fts (node_id, content, tags, verification_path) \
+             SELECT id, content, tags, verification_path FROM nodes \
+             WHERE id NOT IN (SELECT node_id FROM nodes_fts)",
+        )
+        .execute(&self.pool)
+        .await;
+
         Ok(())
     }
 
@@ -167,6 +188,17 @@ impl GraphStore {
         .bind(node.updated_at.to_rfc3339())
         .execute(&self.pool)
         .await?;
+
+        sqlx::query(
+            "INSERT INTO nodes_fts (node_id, content, tags, verification_path) VALUES (?, ?, ?, ?)",
+        )
+        .bind(node.id.to_string())
+        .bind(&node.content)
+        .bind(&tags_json)
+        .bind(&node.verification_path)
+        .execute(&self.pool)
+        .await?;
+
         Ok(())
     }
 
@@ -195,6 +227,22 @@ impl GraphStore {
         .bind(node.id.to_string())
         .execute(&self.pool)
         .await?;
+
+        sqlx::query("DELETE FROM nodes_fts WHERE node_id = ?")
+            .bind(node.id.to_string())
+            .execute(&self.pool)
+            .await?;
+
+        sqlx::query(
+            "INSERT INTO nodes_fts (node_id, content, tags, verification_path) VALUES (?, ?, ?, ?)",
+        )
+        .bind(node.id.to_string())
+        .bind(&node.content)
+        .bind(&tags_json)
+        .bind(&node.verification_path)
+        .execute(&self.pool)
+        .await?;
+
         Ok(())
     }
 
@@ -216,7 +264,42 @@ impl GraphStore {
             .bind(id.to_string())
             .execute(&self.pool)
             .await?;
+        sqlx::query("DELETE FROM nodes_fts WHERE node_id = ?")
+            .bind(id.to_string())
+            .execute(&self.pool)
+            .await?;
         Ok(())
+    }
+
+    pub async fn search_fts(&self, query: &str, limit: usize) -> Result<Vec<(Uuid, f32)>> {
+        let Some(fts_query) = super::hybrid::build_fts_query(query) else {
+            return Ok(Vec::new());
+        };
+
+        let rows = sqlx::query(
+            "SELECT node_id, bm25(nodes_fts) AS rank \
+             FROM nodes_fts \
+             WHERE nodes_fts MATCH ? \
+             ORDER BY rank ASC \
+             LIMIT ?",
+        )
+        .bind(fts_query)
+        .bind(limit as i64)
+        .fetch_all(&self.pool)
+        .await?;
+
+        let hits = rows
+            .into_iter()
+            .filter_map(|r| {
+                let id_str: String = r.get("node_id");
+                let rank: f64 = r.get("rank");
+                let id = Uuid::parse_str(&id_str).ok()?;
+                let score = super::hybrid::normalize_bm25(rank);
+                Some((id, score))
+            })
+            .collect();
+
+        Ok(hits)
     }
 
     /// Re-parent all direct children of `old_parent` to `new_parent` (or NULL).
@@ -548,6 +631,13 @@ impl GraphStore {
         .bind(id.to_string())
         .execute(&self.pool)
         .await?;
+
+        let _ = sqlx::query("UPDATE nodes_fts SET verification_path = ? WHERE node_id = ?")
+            .bind(new_path)
+            .bind(id.to_string())
+            .execute(&self.pool)
+            .await;
+
         Ok(())
     }
 
@@ -590,6 +680,11 @@ impl GraphStore {
         .await?;
 
         sqlx::query("DELETE FROM nodes WHERE id = ?")
+            .bind(node.id.to_string())
+            .execute(&mut *tx)
+            .await?;
+
+        sqlx::query("DELETE FROM nodes_fts WHERE node_id = ?")
             .bind(node.id.to_string())
             .execute(&mut *tx)
             .await?;

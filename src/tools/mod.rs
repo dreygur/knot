@@ -237,6 +237,9 @@ impl KnotServer {
         #[tool(aggr)] input: RecallMemoryInput,
     ) -> Result<CallToolResult, McpError> {
         let engine = self.engine.lock().await;
+        if let Ok(cwd) = std::env::current_dir() {
+            let _ = engine.refresh_centrality(&cwd).await;
+        }
         let limit = input.limit.unwrap_or(5).min(20);
         let results = engine.recall(&input.query, limit).await.map_err(mcp_err)?;
 

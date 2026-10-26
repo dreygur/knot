@@ -55,7 +55,8 @@ impl StorageEngine {
         Ok(node)
     }
 
-    /// Semantic search with Jit-V pass on all candidates.
+    /// Hybrid search combining vector similarity, SQLite FTS5 lexical matching,
+    /// and PageRank graph centrality.
     ///
     /// Invariants:
     /// - Stale nodes are returned tagged but never have their utility score incremented.
@@ -63,15 +64,41 @@ impl StorageEngine {
     ///   the stale flag is cleared in storage before the result is returned.
     /// - If distance > 0.7, confidence is "low" and a [KNOT] WARN is emitted.
     pub async fn recall(&self, query: &str, limit: usize) -> Result<Vec<RecallResult>> {
-        let candidates = self.vectors.search(query, limit * 2).await?;
+        let vector_candidates = self.vectors.search(query, limit * 2).await?;
+        let fts_candidates = match self.graph.search_fts(query, limit * 2).await {
+            Ok(hits) => hits,
+            Err(e) => {
+                tracing::warn!("FTS search failed: {e}");
+                Vec::new()
+            }
+        };
+
+        let vector_distances: std::collections::HashMap<Uuid, f32> =
+            vector_candidates.into_iter().collect();
+        let lexical_scores: std::collections::HashMap<Uuid, f32> =
+            fts_candidates.into_iter().collect();
+
+        let mut candidate_ids: Vec<Uuid> = Vec::new();
+        for &id in vector_distances.keys() {
+            if !candidate_ids.contains(&id) {
+                candidate_ids.push(id);
+            }
+        }
+        for &id in lexical_scores.keys() {
+            if !candidate_ids.contains(&id) {
+                candidate_ids.push(id);
+            }
+        }
+
+        let centrality_scores = self.get_centrality_snapshot().await;
+        let query_vec = super::lance::embed(query);
 
         let mut results = Vec::new();
-        for (id, distance) in candidates {
+        for id in candidate_ids {
             let Some(mut node) = self.graph.get_node(id).await? else {
                 continue;
             };
 
-            // ── Jit-V verification ────────────────────────────────────────────
             let vr = jitv::verify(&node);
             let stale_by_inheritance = if node.parent_id.is_some() {
                 self.check_parent_stale(node.parent_id).await?
@@ -109,18 +136,37 @@ impl StorageEngine {
                 }
             }
 
-            // ── Confidence scoring (semantic drift) ───────────────────────────
-            let confidence = if distance > 0.7 {
+            let dist = if let Some(&d) = vector_distances.get(&id) {
+                d
+            } else {
+                let node_vec = super::lance::embed(&node.content);
+                super::lance::cosine_distance(&query_vec, &node_vec)
+            };
+            let vector_sim = (1.0 - dist).clamp(0.0, 1.0);
+            let lexical_score = lexical_scores.get(&id).copied().unwrap_or(0.0);
+            let pagerank_score = super::hybrid::resolve_centrality(
+                &centrality_scores,
+                node.verification_path.as_deref(),
+            );
+
+            let hybrid_score = super::hybrid::compute_hybrid_score(
+                vector_sim,
+                lexical_score,
+                pagerank_score,
+                node.utility_score,
+            );
+            let effective_distance = super::hybrid::compute_effective_distance(hybrid_score);
+
+            let confidence = if effective_distance > 0.7 {
                 eprintln!(
                     "[KNOT] WARN: low confidence for node {} (dist={:.4}) - verify or re-learn",
-                    node.id, distance
+                    node.id, effective_distance
                 );
                 "low"
             } else {
                 "high"
             };
 
-            // ── Ancestry chain ────────────────────────────────────────────────
             let ancestry = self.graph.fetch_ancestry(node.id).await?;
             let annotated = jitv::annotate(&node, &vr).unwrap_or_else(|| node.content.clone());
             let is_stale = vr.status.is_stale() || stale_by_inheritance;
@@ -128,7 +174,7 @@ impl StorageEngine {
             results.push(RecallResult {
                 node,
                 annotated_content: annotated,
-                distance,
+                distance: effective_distance,
                 confidence: confidence.to_string(),
                 is_stale,
                 ancestry,

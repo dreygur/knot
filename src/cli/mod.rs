@@ -221,6 +221,9 @@ async fn cli_recall(query: &str, limit: usize) -> Result<()> {
     let _guard = logging::init(&filter, Some(&log_path_for(&data_dir)));
     warn_if_not_in_path();
     let engine = StorageEngine::new(&data_dir).await?;
+    if let Ok(cwd) = std::env::current_dir() {
+        let _ = engine.refresh_centrality(&cwd).await;
+    }
     let results = engine.recall(query, limit.min(20)).await?;
     if !results.is_empty() {
         print!("{}", format_recall_cli(&results));

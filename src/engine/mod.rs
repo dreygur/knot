@@ -1,4 +1,5 @@
 pub mod graph;
+pub mod hybrid;
 pub mod lance;
 pub mod learnings;
 mod memory_ops;
@@ -11,11 +12,15 @@ use anyhow::Result;
 use graph::GraphStore;
 use lance::VectorStore;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+use std::collections::HashMap;
 use std::str::FromStr;
+use std::sync::Arc;
+use tokio::sync::RwLock;
 
 pub struct StorageEngine {
     pub graph: GraphStore,
     pub vectors: VectorStore,
+    centrality: Arc<RwLock<HashMap<String, f64>>>,
 }
 
 impl StorageEngine {
@@ -37,8 +42,30 @@ impl StorageEngine {
 
         let graph = GraphStore::new(pool.clone()).await?;
         let vectors = VectorStore::new(pool).await?;
+        let centrality = Arc::new(RwLock::new(HashMap::new()));
 
-        Ok(Self { graph, vectors })
+        Ok(Self {
+            graph,
+            vectors,
+            centrality,
+        })
+    }
+
+    pub async fn set_centrality(&self, scores: HashMap<String, f64>) {
+        let mut lock = self.centrality.write().await;
+        *lock = scores;
+    }
+
+    pub async fn get_centrality_snapshot(&self) -> HashMap<String, f64> {
+        let lock = self.centrality.read().await;
+        lock.clone()
+    }
+
+    pub async fn refresh_centrality(&self, repo_root: &std::path::Path) -> Result<()> {
+        let code_graph = crate::ast::CodeGraph::build(repo_root)?;
+        let scores = crate::ast::compute_pagerank(&code_graph);
+        self.set_centrality(scores).await;
+        Ok(())
     }
 }
 
@@ -62,7 +89,12 @@ mod tests {
             .unwrap();
         let graph = GraphStore::new(pool.clone()).await.unwrap();
         let vectors = VectorStore::new(pool).await.unwrap();
-        StorageEngine { graph, vectors }
+        let centrality = Arc::new(RwLock::new(HashMap::new()));
+        StorageEngine {
+            graph,
+            vectors,
+            centrality,
+        }
     }
 
     fn session() -> &'static str {
@@ -513,5 +545,86 @@ mod tests {
         let engine = test_engine().await;
         let result = engine.delete_skill("ghost-skill", false).await.unwrap();
         assert!(matches!(result, DeleteSkillResult::NotFound));
+    }
+
+    #[tokio::test]
+    async fn hybrid_recall_retrieves_exact_lexical_keywords() {
+        let engine = test_engine().await;
+
+        let node1 = engine
+            .save(req(
+                "ConfigWatcher::reload parses yaml and updates worker threads",
+                vec!["config", "concurrency"],
+                None,
+                crate::memory::MemoryScope::Project("p1".into()),
+                None,
+            ))
+            .await
+            .unwrap();
+
+        let _node2 = engine
+            .save(req(
+                "general background task scheduler periodic runner",
+                vec!["scheduler"],
+                None,
+                crate::memory::MemoryScope::Project("p1".into()),
+                None,
+            ))
+            .await
+            .unwrap();
+
+        let results = engine
+            .recall("ConfigWatcher::reload", 5)
+            .await
+            .unwrap();
+
+        assert!(!results.is_empty());
+        assert_eq!(results[0].node.id, node1.id);
+        assert!(results[0].distance < 0.65);
+    }
+
+    #[tokio::test]
+    async fn hybrid_recall_centrality_boosts_hub_node() {
+        let engine = test_engine().await;
+
+        let hub_path = "src/core/hub.rs#Dispatcher";
+        let leaf_path = "src/util/leaf.rs#helper";
+
+        let hub_node = engine
+            .save(req(
+                "event dispatch router pipeline",
+                vec!["router"],
+                Some(hub_path.to_string()),
+                crate::memory::MemoryScope::Project("p1".into()),
+                None,
+            ))
+            .await
+            .unwrap();
+
+        let leaf_node = engine
+            .save(req(
+                "event dispatch router pipeline",
+                vec!["router"],
+                Some(leaf_path.to_string()),
+                crate::memory::MemoryScope::Project("p1".into()),
+                None,
+            ))
+            .await
+            .unwrap();
+
+        let mut centrality = HashMap::new();
+        centrality.insert(hub_path.to_string(), 0.85);
+        centrality.insert(leaf_path.to_string(), 0.05);
+        engine.set_centrality(centrality).await;
+
+        let results = engine
+            .recall("event dispatch router", 5)
+            .await
+            .unwrap();
+
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].node.id, hub_node.id);
+        assert_eq!(results[1].node.id, leaf_node.id);
+        assert!(results[0].distance < results[1].distance);
     }
 }
