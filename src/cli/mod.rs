@@ -446,6 +446,11 @@ async fn cli_check(base_ref: Option<&str>, check_remote: bool) -> Result<()> {
     }
 }
 
+async fn cli_explore(query: Option<&str>) -> Result<()> {
+    let cwd = std::env::current_dir()?;
+    crate::ui::run_explorer(&cwd, query)
+}
+
 pub async fn run_mcp_server() -> Result<()> {
     let filter = std::env::var("KNOT_LOG").unwrap_or_else(|_| "knot=info".into());
     let data_dir = std::env::var("KNOT_DATA_DIR").unwrap_or_else(|_| resolve_data_dir());
@@ -500,6 +505,7 @@ pub fn print_help() {
     println!("  knot blast <symbol> [--depth N]         Transitive blast radius analysis");
     println!("  knot skeleton <file>                    File API outline (signatures and line spans)");
     println!("  knot check [--base <ref>] [--remote]    Audit git diff against repo learnings");
+    println!("  knot explore [query]                    Interactive terminal TUI code graph explorer");
     println!("  knot viz                                Launch interactive code graph visualizer");
     println!("  knot status                             Vault health check");
     println!("  knot logs [--follow|-f]                 View activity log");
@@ -579,6 +585,10 @@ pub async fn run() -> Result<()> {
                 }
             }
             cli_check(base_ref.as_deref(), check_remote).await
+        }
+        Some("explore") => {
+            let query = args.next();
+            cli_explore(query.as_deref()).await
         }
         Some("viz") => cli_viz().await,
         Some("--help") | Some("-h") => {
