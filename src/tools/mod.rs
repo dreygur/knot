@@ -173,6 +173,8 @@ pub struct FileApiInput {
 pub struct CheckInput {
     /// Optional git base ref, e.g. "origin/main" or "HEAD~1"
     pub base_ref: Option<String>,
+    /// Optional flag to check for collisions against remote tracking branches
+    pub check_remote: Option<bool>,
 }
 
 // ── Tool implementations ──────────────────────────────────────────────────────
@@ -460,7 +462,7 @@ impl KnotServer {
         }
     }
 
-    #[tool(description = "Audit the current git diff against team learnings and recorded decisions in .knot/learnings/ ($0, in-process libgit2). Flags reintroduced ruled-out approaches and contradictory changes before commit.")]
+    #[tool(description = "Audit the current git diff against team learnings and recorded decisions in .knot/learnings/ ($0, in-process libgit2). Flags reintroduced ruled-out approaches, contradictory changes, and remote branch collisions before commit.")]
     async fn knot_check(
         &self,
         #[tool(aggr)] input: CheckInput,
@@ -468,16 +470,40 @@ impl KnotServer {
         let cwd = std::env::current_dir().map_err(|e| mcp_err(e.into()))?;
         let report = crate::check::check_git_diff(&cwd, input.base_ref.as_deref()).map_err(mcp_err)?;
 
+        let mut out = String::new();
+        if input.check_remote.unwrap_or(false) {
+            if let Ok(remote_report) = crate::check::detect_remote_collisions(&cwd) {
+                if !remote_report.collisions.is_empty() {
+                    out.push_str(&format!(
+                        "WARNING: {} remote branch collision(s) detected with teammates:\n\n",
+                        remote_report.collisions.len()
+                    ));
+                    for c in &remote_report.collisions {
+                        out.push_str(&format!(
+                            "• [COLLISION] {} modified in branch '{}' by '{}'\n  Commit: {} ({})\n\n",
+                            c.file, c.branch, c.author, c.summary, &c.commit_oid[..7.min(c.commit_oid.len())]
+                        ));
+                    }
+                }
+            }
+        }
+
         if report.ok {
-            Ok(CallToolResult::success(vec![Content::text(format!(
+            let msg = format!(
                 "Check passed: {} files audited against repo learnings, 0 conflicts found.",
                 report.checked_files.len()
-            ))]))
+            );
+            if out.is_empty() {
+                Ok(CallToolResult::success(vec![Content::text(msg)]))
+            } else {
+                out.push_str(&msg);
+                Ok(CallToolResult::success(vec![Content::text(out)]))
+            }
         } else {
-            let mut out = format!(
+            out.push_str(&format!(
                 "FAIL: {} conflict(s) detected with repo learnings:\n\n",
                 report.findings.len()
-            );
+            ));
             for f in &report.findings {
                 out.push_str(&format!(
                     "• [{}] {}:L{}\n  Decision: \"{}\" ({})\n  Evidence: {}\n  Diff:     {}\n\n",

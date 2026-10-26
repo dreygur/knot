@@ -391,9 +391,39 @@ async fn cli_skeleton(file: &str) -> Result<()> {
     Ok(())
 }
 
-async fn cli_check(base_ref: Option<&str>) -> Result<()> {
+async fn cli_check(base_ref: Option<&str>, check_remote: bool) -> Result<()> {
     let cwd = std::env::current_dir()?;
     let report = crate::check::check_git_diff(&cwd, base_ref)?;
+
+    let mut remote_collisions = Vec::new();
+    if check_remote {
+        match crate::check::detect_remote_collisions(&cwd) {
+            Ok(remote_report) => {
+                remote_collisions = remote_report.collisions;
+            }
+            Err(e) => {
+                tracing::debug!("Remote branch scan skipped: {e}");
+            }
+        }
+    }
+
+    if !remote_collisions.is_empty() {
+        eprintln!(
+            "[KNOT] WARNING: {} remote branch collision(s) detected with teammates:\n",
+            remote_collisions.len()
+        );
+        for c in &remote_collisions {
+            eprintln!(
+                "  • [COLLISION] {} modified in branch '{}' by '{}'",
+                c.file, c.branch, c.author
+            );
+            eprintln!(
+                "    Commit: {} ({})\n",
+                c.summary,
+                &c.commit_oid[..7.min(c.commit_oid.len())]
+            );
+        }
+    }
 
     if report.ok {
         println!(
@@ -446,6 +476,10 @@ pub async fn run_mcp_server() -> Result<()> {
         }
     }
 
+    let _branch_monitor = std::env::current_dir()
+        .ok()
+        .map(|cwd| crate::check::start_branch_monitor(cwd, None));
+
     let server = KnotServer::new(engine, session_id);
     let running = server.serve(stdio()).await?;
     running.waiting().await?;
@@ -465,7 +499,7 @@ pub fn print_help() {
     println!("  knot callees <symbol>                   Find direct callees of a symbol");
     println!("  knot blast <symbol> [--depth N]         Transitive blast radius analysis");
     println!("  knot skeleton <file>                    File API outline (signatures and line spans)");
-    println!("  knot check [--base <ref>]               Audit git diff against repo learnings");
+    println!("  knot check [--base <ref>] [--remote]    Audit git diff against repo learnings");
     println!("  knot viz                                Launch interactive code graph visualizer");
     println!("  knot status                             Vault health check");
     println!("  knot logs [--follow|-f]                 View activity log");
@@ -534,14 +568,17 @@ pub async fn run() -> Result<()> {
         }
         Some("check") => {
             let mut base_ref = None;
+            let mut check_remote = false;
             while let Some(arg) = args.next() {
                 if arg == "--base" || arg == "-b" {
                     base_ref = args.next();
                 } else if let Some(r) = arg.strip_prefix("--base=") {
                     base_ref = Some(r.to_string());
+                } else if arg == "--remote" || arg == "-r" {
+                    check_remote = true;
                 }
             }
-            cli_check(base_ref.as_deref()).await
+            cli_check(base_ref.as_deref(), check_remote).await
         }
         Some("viz") => cli_viz().await,
         Some("--help") | Some("-h") => {

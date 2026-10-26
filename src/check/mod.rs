@@ -1,3 +1,10 @@
+pub mod remote;
+
+pub use remote::{
+    detect_remote_collisions, start_branch_monitor, BranchMonitorHandle, RemoteCheckReport,
+    RemoteCollision,
+};
+
 use anyhow::{Context, Result};
 use git2::{DiffOptions, Repository};
 use serde::{Deserialize, Serialize};
