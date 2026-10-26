@@ -369,6 +369,31 @@ async fn cli_skeleton(file: &str) -> Result<()> {
     Ok(())
 }
 
+async fn cli_check(base_ref: Option<&str>) -> Result<()> {
+    let cwd = std::env::current_dir()?;
+    let report = crate::check::check_git_diff(&cwd, base_ref)?;
+
+    if report.ok {
+        println!(
+            "[KNOT] Check passed: {} files audited against repo learnings, 0 conflicts found.",
+            report.checked_files.len()
+        );
+        Ok(())
+    } else {
+        eprintln!(
+            "[KNOT] FAIL: {} conflict(s) detected with repo learnings:\n",
+            report.findings.len()
+        );
+        for f in &report.findings {
+            eprintln!("  • [{}] {}:L{}", f.kind.as_str(), f.file, f.line);
+            eprintln!("    Decision: \"{}\" ({})", f.learning_title, f.learning_file);
+            eprintln!("    Evidence: {}", f.evidence);
+            eprintln!("    Diff:     {}\n", f.diff_snippet);
+        }
+        std::process::exit(1);
+    }
+}
+
 pub async fn run_mcp_server() -> Result<()> {
     let filter = std::env::var("KNOT_LOG").unwrap_or_else(|_| "knot=info".into());
     let data_dir = std::env::var("KNOT_DATA_DIR").unwrap_or_else(|_| resolve_data_dir());
@@ -418,6 +443,7 @@ pub fn print_help() {
     println!("  knot callees <symbol>                   Find direct callees of a symbol");
     println!("  knot blast <symbol> [--depth N]         Transitive blast radius analysis");
     println!("  knot skeleton <file>                    File API outline (signatures and line spans)");
+    println!("  knot check [--base <ref>]               Audit git diff against repo learnings");
     println!("  knot status                             Vault health check");
     println!("  knot logs [--follow|-f]                 View activity log");
     println!("  knot init                               Register binary directory in PATH");
@@ -482,6 +508,17 @@ pub async fn run() -> Result<()> {
                 std::process::exit(1);
             }
             cli_skeleton(&file).await
+        }
+        Some("check") => {
+            let mut base_ref = None;
+            while let Some(arg) = args.next() {
+                if arg == "--base" || arg == "-b" {
+                    base_ref = args.next();
+                } else if let Some(r) = arg.strip_prefix("--base=") {
+                    base_ref = Some(r.to_string());
+                }
+            }
+            cli_check(base_ref.as_deref()).await
         }
         Some("--help") | Some("-h") => {
             print_help();

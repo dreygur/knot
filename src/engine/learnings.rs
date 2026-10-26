@@ -229,6 +229,7 @@ pub fn scan_repo_learnings(repo_root: &Path) -> Result<Vec<RepoLearning>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::memory::MemoryScope;
     use tempfile::tempdir;
 
     #[test]

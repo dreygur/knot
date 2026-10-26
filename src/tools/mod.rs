@@ -169,6 +169,12 @@ pub struct FileApiInput {
     pub file: String,
 }
 
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct CheckInput {
+    /// Optional git base ref, e.g. "origin/main" or "HEAD~1"
+    pub base_ref: Option<String>,
+}
+
 // ── Tool implementations ──────────────────────────────────────────────────────
 
 #[tool(tool_box)]
@@ -445,6 +451,34 @@ impl KnotServer {
                 out.push_str(&format!(
                     "L{:>4}-L{:<4} {:<10} {}\n",
                     item.span.0, item.span.1, item.kind.as_str(), item.signature
+                ));
+            }
+            Ok(CallToolResult::success(vec![Content::text(out)]))
+        }
+    }
+
+    #[tool(description = "Audit the current git diff against team learnings and recorded decisions in .knot/learnings/ ($0, in-process libgit2). Flags reintroduced ruled-out approaches and contradictory changes before commit.")]
+    async fn knot_check(
+        &self,
+        #[tool(aggr)] input: CheckInput,
+    ) -> Result<CallToolResult, McpError> {
+        let cwd = std::env::current_dir().map_err(|e| mcp_err(e.into()))?;
+        let report = crate::check::check_git_diff(&cwd, input.base_ref.as_deref()).map_err(mcp_err)?;
+
+        if report.ok {
+            Ok(CallToolResult::success(vec![Content::text(format!(
+                "Check passed: {} files audited against repo learnings, 0 conflicts found.",
+                report.checked_files.len()
+            ))]))
+        } else {
+            let mut out = format!(
+                "FAIL: {} conflict(s) detected with repo learnings:\n\n",
+                report.findings.len()
+            );
+            for f in &report.findings {
+                out.push_str(&format!(
+                    "• [{}] {}:L{}\n  Decision: \"{}\" ({})\n  Evidence: {}\n  Diff:     {}\n\n",
+                    f.kind.as_str(), f.file, f.line, f.learning_title, f.learning_file, f.evidence, f.diff_snippet
                 ));
             }
             Ok(CallToolResult::success(vec![Content::text(out)]))
