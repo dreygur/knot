@@ -387,6 +387,80 @@ async fn cli_blast(symbol: &str, depth: usize) -> Result<()> {
     Ok(())
 }
 
+/// Options for `knot ask`, parsed from everything after the subcommand.
+struct AskArgs {
+    query: String,
+    limit: usize,
+    json: bool,
+    source: bool,
+    ranking: crate::ask::Ranking,
+}
+
+fn parse_ask_args(args: impl Iterator<Item = String>) -> AskArgs {
+    let mut parsed = AskArgs {
+        query: String::new(),
+        limit: 8,
+        json: false,
+        source: false,
+        ranking: crate::ask::Ranking::Hybrid,
+    };
+    let mut words = Vec::new();
+    let mut args = args.peekable();
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--json" => parsed.json = true,
+            "--source" => parsed.source = true,
+            "--no-graph" => parsed.ranking = crate::ask::Ranking::LexicalOnly,
+            "-n" | "--limit" => {
+                if let Some(n) = args.next().and_then(|s| s.parse().ok()) {
+                    parsed.limit = n;
+                }
+            }
+            _ => words.push(arg),
+        }
+    }
+    parsed.query = words.join(" ");
+    parsed
+}
+
+async fn cli_ask(args: AskArgs) -> Result<()> {
+    let cwd = std::env::current_dir()?;
+    let hits = crate::ask::ask(&cwd, &args.query, args.limit, args.ranking)?;
+
+    if args.json {
+        let json_hits: Vec<serde_json::Value> = hits
+            .iter()
+            .map(|h| {
+                serde_json::json!({
+                    "pointer": h.pointer(),
+                    "title": format!("{} · {}", h.name, h.kind),
+                    "snippet": h.signature,
+                    "score": h.score,
+                })
+            })
+            .collect();
+        println!("{}", serde_json::json!({ "query": args.query, "hits": json_hits }));
+        return Ok(());
+    }
+
+    if hits.is_empty() {
+        println!("[KNOT] No code matched '{}'.", args.query);
+        return Ok(());
+    }
+    println!("[KNOT] {} hit(s) for '{}':", hits.len(), args.query);
+    for (rank, h) in hits.iter().enumerate() {
+        println!("  {:>2}. {} · {}  {}", rank + 1, h.name, h.kind, h.pointer());
+        if args.source {
+            for line in h.crux.lines() {
+                println!("        {line}");
+            }
+        } else {
+            println!("        {}", h.signature);
+        }
+    }
+    Ok(())
+}
+
 async fn cli_skeleton(file: &str) -> Result<()> {
     let cwd = std::env::current_dir()?;
     let graph = CodeGraph::build(&cwd)?;
@@ -527,6 +601,7 @@ pub fn print_help() {
     println!("  knot callers <symbol>                   Find direct callers of a symbol");
     println!("  knot callees <symbol>                   Find direct callees of a symbol");
     println!("  knot blast <symbol> [--depth N]         Transitive blast radius analysis");
+    println!("  knot ask <question> [--source] [--json] Ranked code answers with file:line spans");
     println!("  knot skeleton <file>                    File API outline (signatures and line spans)");
     println!("  knot check [--base <ref>] [--remote]    Audit git diff against repo learnings");
     println!("  knot explore [query]                    Interactive terminal TUI code graph explorer");
@@ -587,6 +662,14 @@ pub async fn run() -> Result<()> {
             }
             let depth = parse_limit_args(args);
             cli_blast(&symbol, depth).await
+        }
+        Some("ask") => {
+            let ask_args = parse_ask_args(args);
+            if ask_args.query.trim().is_empty() {
+                eprintln!("Usage: knot ask <question> [--json] [--source] [-n N] [--no-graph]");
+                std::process::exit(1);
+            }
+            cli_ask(ask_args).await
         }
         Some("skeleton") => {
             let file = args.next().unwrap_or_default();

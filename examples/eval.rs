@@ -5,7 +5,8 @@
 //! file-only results never score. Spans come from parsing the corpus, not from
 //! either tool's index.
 //!
-//!   cargo run --release --example eval -- [--engine trail|knot]... [--corpus NAME]
+//!   cargo run --release --example eval -- [--engine trail|knot|knot-lexical]...
+//!       [--corpus NAME] [--questions eval/holdout.json]
 
 use anyhow::{bail, Context, Result};
 use knot::ast::{extract_file_symbols, SupportedLang};
@@ -133,10 +134,13 @@ fn engine_command(engine: &str, query: &str, corpus_root: &Path) -> Command {
             cmd.args(["ask", query, "--json", "--no-refresh", "-n", &limit]).arg(corpus_root);
             cmd
         }
-        _ => {
+        knot_variant => {
             let knot = std::env::current_dir().unwrap_or_default().join("target/release/knot");
             let mut cmd = Command::new(knot);
             cmd.args(["ask", query, "--json", "-n", &limit]).current_dir(corpus_root);
+            if knot_variant == "knot-lexical" {
+                cmd.arg("--no-graph");
+            }
             cmd
         }
     }
@@ -166,21 +170,27 @@ fn median(mut values: Vec<Duration>) -> Duration {
     values[values.len() / 2]
 }
 
-fn parse_args() -> (Vec<String>, Option<String>) {
-    let mut engines = Vec::new();
-    let mut corpus = None;
+struct Args {
+    engines: Vec<String>,
+    corpus: Option<String>,
+    questions: String,
+}
+
+fn parse_args() -> Args {
+    let mut parsed = Args { engines: Vec::new(), corpus: None, questions: QUESTIONS_PATH.to_string() };
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
-            "--engine" => engines.extend(args.next()),
-            "--corpus" => corpus = args.next(),
+            "--engine" => parsed.engines.extend(args.next()),
+            "--corpus" => parsed.corpus = args.next(),
+            "--questions" => parsed.questions = args.next().unwrap_or(parsed.questions),
             other => eprintln!("[!] ignoring argument {other}"),
         }
     }
-    if engines.is_empty() {
-        engines = ENGINES.iter().map(|e| e.to_string()).collect();
+    if parsed.engines.is_empty() {
+        parsed.engines = ENGINES.iter().map(|e| e.to_string()).collect();
     }
-    (engines, corpus)
+    parsed
 }
 
 fn print_report(scores: &BTreeMap<(String, String), Score>) {
@@ -202,8 +212,8 @@ fn print_report(scores: &BTreeMap<(String, String), Score>) {
 }
 
 fn main() -> Result<()> {
-    let (engines, only_corpus) = parse_args();
-    let set: QuestionSet = serde_json::from_str(&std::fs::read_to_string(QUESTIONS_PATH)?)?;
+    let Args { engines, corpus: only_corpus, questions } = parse_args();
+    let set: QuestionSet = serde_json::from_str(&std::fs::read_to_string(&questions)?)?;
     let mut scores: BTreeMap<(String, String), Score> = BTreeMap::new();
 
     for question in &set.questions {
@@ -239,8 +249,10 @@ fn main() -> Result<()> {
                 score.file_at_k += 1;
             }
             score.reciprocal_rank += rank.map_or(0.0, |r| 1.0 / r as f64);
-            if rank.is_none() {
-                eprintln!("[*] {engine} miss: {:?} top={:?}", question.q, pointers.first());
+            match rank {
+                None => eprintln!("[*] {engine} miss: {:?} top={:?}", question.q, pointers.first()),
+                Some(r) if r > 1 => eprintln!("[*] {engine} rank {r}: {:?} top={:?}", question.q, pointers.first()),
+                _ => {}
             }
         }
     }

@@ -77,14 +77,25 @@ pub fn compute_pagerank(graph: &CodeGraph) -> HashMap<String, f64> {
 /// how central each symbol is to the seeded part of the graph rather than the whole repo.
 /// Unknown seeds are ignored; with no known seeds this falls back to global PageRank.
 pub fn compute_personalized_pagerank(graph: &CodeGraph, seeds: &[String]) -> HashMap<String, f64> {
-    let known: Vec<&String> = seeds.iter().filter(|s| graph.symbols.contains_key(*s)).collect();
-    if known.is_empty() {
+    let weights: HashMap<String, f64> = seeds.iter().map(|s| (s.clone(), 1.0)).collect();
+    compute_weighted_pagerank(graph, &weights)
+}
+
+/// Personalized PageRank with a restart weight per seed, so stronger seeds pull
+/// more rank toward their neighborhood. Weights need not sum to one.
+pub fn compute_weighted_pagerank(graph: &CodeGraph, seed_weights: &HashMap<String, f64>) -> HashMap<String, f64> {
+    let known: Vec<(&String, f64)> = seed_weights
+        .iter()
+        .filter(|(id, w)| graph.symbols.contains_key(*id) && **w > 0.0)
+        .map(|(id, w)| (id, *w))
+        .collect();
+    let total: f64 = known.iter().map(|(_, w)| w).sum();
+    if known.is_empty() || total <= 0.0 {
         return compute_pagerank(graph);
     }
 
     let ids: Vec<String> = graph.symbols.keys().cloned().collect();
-    let weight = 1.0 / known.len() as f64;
-    let teleport: HashMap<String, f64> = known.into_iter().map(|id| (id.clone(), weight)).collect();
+    let teleport: HashMap<String, f64> = known.into_iter().map(|(id, w)| (id.clone(), w / total)).collect();
     run_pagerank(&ids, &graph.callers, &graph.callees, &teleport)
 }
 
