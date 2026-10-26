@@ -86,6 +86,17 @@ pub struct BlastRadiusReport {
     pub impacted_files: Vec<String>,
 }
 
+/// One name brought into a file's scope by an import statement.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ImportRef {
+    /// Name used in this file (the alias, if renamed).
+    pub local: String,
+    /// Name as defined in the source module; `*` for wildcard imports.
+    pub name: String,
+    /// Module as written: `crate::engine::hybrid`, `pkg.sub`, `./utils`.
+    pub module: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SkeletonItem {
     pub name: String,

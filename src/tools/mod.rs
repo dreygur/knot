@@ -12,9 +12,12 @@ use rmcp::{
 };
 use schemars::JsonSchema;
 use serde::Deserialize;
+use std::collections::HashSet;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use uuid::Uuid;
+
+use crate::check::{BranchMonitorHandle, RemoteCollision};
 
 #[derive(Clone)]
 pub struct KnotServer {
@@ -22,6 +25,9 @@ pub struct KnotServer {
     session_id: String,
     /// True when KNOT_READ_ONLY env var is set - write tools return an error.
     read_only: bool,
+    branch_monitor: Option<Arc<BranchMonitorHandle>>,
+    /// Collisions already shown to the agent, keyed by (file, commit), so each is reported once.
+    reported_collisions: Arc<std::sync::Mutex<HashSet<(String, String)>>>,
 }
 
 impl KnotServer {
@@ -34,8 +40,57 @@ impl KnotServer {
             engine: Arc::new(Mutex::new(engine)),
             session_id,
             read_only,
+            branch_monitor: None,
+            reported_collisions: Arc::new(std::sync::Mutex::new(HashSet::new())),
         }
     }
+
+    /// Attach the background remote branch monitor so tool results carry its alerts.
+    pub fn with_branch_monitor(mut self, monitor: BranchMonitorHandle) -> Self {
+        self.branch_monitor = Some(Arc::new(monitor));
+        self
+    }
+
+    /// Collisions the monitor found that have not yet been shown to the agent.
+    fn new_collision_alert(&self) -> Option<String> {
+        let collisions = self.branch_monitor.as_ref()?.get_collisions();
+        let mut reported = self.reported_collisions.lock().ok()?;
+        let fresh: Vec<&RemoteCollision> = collisions
+            .iter()
+            .filter(|c| reported.insert((c.file.clone(), c.commit_oid.clone())))
+            .collect();
+        if fresh.is_empty() {
+            return None;
+        }
+        Some(format_collisions(&fresh))
+    }
+
+    /// Append any new branch collision alert to a tool's text output.
+    fn with_alerts(&self, text: String) -> CallToolResult {
+        let text = match self.new_collision_alert() {
+            Some(alert) => format!("{alert}\n{text}"),
+            None => text,
+        };
+        CallToolResult::success(vec![Content::text(text)])
+    }
+}
+
+fn format_collisions(collisions: &[&RemoteCollision]) -> String {
+    let mut out = format!(
+        "[KNOT] REMOTE COLLISION: {} file(s) you have changed locally are also changed on teammates' branches:\n",
+        collisions.len()
+    );
+    for c in collisions {
+        out.push_str(&format!(
+            "  • {} on '{}' by {}: {} ({})\n",
+            c.file,
+            c.branch,
+            c.author,
+            c.summary,
+            &c.commit_oid[..7.min(c.commit_oid.len())]
+        ));
+    }
+    out
 }
 
 // ── Input schemas ─────────────────────────────────────────────────────────────
@@ -246,9 +301,7 @@ impl KnotServer {
         let results = engine.recall(&input.query, limit).await.map_err(mcp_err)?;
 
         if results.is_empty() {
-            return Ok(CallToolResult::success(vec![Content::text(
-                "No matching memories found.",
-            )]));
+            return Ok(self.with_alerts("No matching memories found.".into()));
         }
 
         let full = input.full_content.unwrap_or(false);
@@ -257,7 +310,7 @@ impl KnotServer {
         } else {
             format_recall_results(&results)
         };
-        Ok(CallToolResult::success(vec![Content::text(text)]))
+        Ok(self.with_alerts(text))
     }
 
     #[tool(description = "Run Jit-V on a specific node. \
@@ -375,9 +428,17 @@ impl KnotServer {
     async fn knot_status(&self) -> Result<CallToolResult, McpError> {
         let engine = self.engine.lock().await;
         let status = engine.knot_status().await.map_err(mcp_err)?;
-        Ok(CallToolResult::success(vec![Content::text(
-            format_status_report(&status),
-        )]))
+        let mut text = format_status_report(&status);
+        // Status always lists current collisions, not only ones not yet reported.
+        if let Some(monitor) = &self.branch_monitor {
+            let current = monitor.get_collisions();
+            let refs: Vec<&RemoteCollision> = current.iter().collect();
+            if !refs.is_empty() {
+                text.push('\n');
+                text.push_str(&format_collisions(&refs));
+            }
+        }
+        Ok(CallToolResult::success(vec![Content::text(text)]))
     }
 
     #[tool(description = "Trace callers, callees, and transitive blast radius of any code symbol using native Tree-sitter AST analysis ($0, no LLM). Run before refactoring to discover all affected code.")]
@@ -488,30 +549,25 @@ impl KnotServer {
             }
         }
 
+        let conflicts = report.conflict_count();
+        let warnings = report.findings.len() - conflicts;
         if report.ok {
-            let msg = format!(
-                "Check passed: {} files audited against repo learnings, 0 conflicts found.",
+            out.push_str(&format!(
+                "Check passed: {} files audited against repo learnings, 0 conflicts, {warnings} warning(s).\n\n",
                 report.checked_files.len()
-            );
-            if out.is_empty() {
-                Ok(CallToolResult::success(vec![Content::text(msg)]))
-            } else {
-                out.push_str(&msg);
-                Ok(CallToolResult::success(vec![Content::text(out)]))
-            }
+            ));
         } else {
             out.push_str(&format!(
-                "FAIL: {} conflict(s) detected with repo learnings:\n\n",
-                report.findings.len()
+                "FAIL: {conflicts} conflict(s), {warnings} warning(s) against repo learnings:\n\n"
             ));
-            for f in &report.findings {
-                out.push_str(&format!(
-                    "• [{}] {}:L{}\n  Decision: \"{}\" ({})\n  Evidence: {}\n  Diff:     {}\n\n",
-                    f.kind.as_str(), f.file, f.line, f.learning_title, f.learning_file, f.evidence, f.diff_snippet
-                ));
-            }
-            Ok(CallToolResult::success(vec![Content::text(out)]))
         }
+        for f in &report.findings {
+            out.push_str(&format!(
+                "• [{}] {}:L{}\n  Decision: \"{}\" ({})\n  Evidence: {}\n  Diff:     {}\n\n",
+                f.kind.as_str(), f.file, f.line, f.learning_title, f.learning_file, f.evidence, f.diff_snippet
+            ));
+        }
+        Ok(CallToolResult::success(vec![Content::text(out.trim_end().to_string())]))
     }
 
     #[tool(
@@ -825,6 +881,20 @@ fn format_commit_report(r: &CommitReport) -> String {
                 rec.content_preview,
                 rec.detail,
             ));
+        }
+    }
+
+    if !r.learnings_written.is_empty() {
+        out.push_str("\nLearnings written (commit these):\n");
+        for path in &r.learnings_written {
+            out.push_str(&format!("  +  {}\n", path.display()));
+        }
+    }
+
+    if !r.learnings_held.is_empty() {
+        out.push_str("\nPromoted but kept out of .knot/learnings/ by the quality gate:\n");
+        for (id, issues) in &r.learnings_held {
+            out.push_str(&format!("  !  {id}: {}\n", issues.join("; ")));
         }
     }
 

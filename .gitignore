@@ -2,8 +2,9 @@
 /target/
 **/*.rs.bk
 
-# Knot local runtime data
-.knot/
+# Knot local runtime data (team learnings are committed)
+.knot/*
+!.knot/learnings/
 *.db
 *.db-wal
 *.db-shm

@@ -69,6 +69,10 @@ pub struct CommitReport {
     pub project_id: String,
     pub promoted: Vec<Uuid>,
     pub rejected: Vec<RejectionRecord>,
+    /// Learning files written to `.knot/learnings/` for promoted nodes.
+    pub learnings_written: Vec<std::path::PathBuf>,
+    /// Promoted nodes kept out of `.knot/learnings/` by the quality gate, with reasons.
+    pub learnings_held: Vec<(Uuid, Vec<String>)>,
 }
 
 impl CommitReport {

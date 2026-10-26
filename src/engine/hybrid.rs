@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::path::Path;
 
 const WEIGHT_VECTOR: f32 = 0.40;
 const WEIGHT_LEXICAL: f32 = 0.35;
@@ -64,40 +65,54 @@ pub fn compute_effective_distance(hybrid_score: f32) -> f32 {
     (1.0 - hybrid_score).clamp(0.0, 1.0)
 }
 
-/// Look up centrality score for a path or symbol from the precomputed PageRank map.
+/// Look up centrality for a memory's verification target in PageRank scores keyed by
+/// symbol id (`src/file.rs::Name`).
+///
+/// Targets may be absolute or repo-relative and may name a symbol with `#` or `::`.
+/// A symbol target matches its own id (or a method qualified under it); a file target
+/// takes the best score among the file's symbols.
 pub fn resolve_centrality(
     scores: &HashMap<String, f64>,
     verification_path: Option<&str>,
+    repo_root: Option<&Path>,
 ) -> f32 {
-    let Some(path) = verification_path else {
+    let Some(target) = verification_path else {
         return DEFAULT_CENTRALITY;
     };
-
     if scores.is_empty() {
         return DEFAULT_CENTRALITY;
     }
 
-    if let Some(&score) = scores.get(path) {
-        return normalize_pagerank(score, scores.len());
-    }
+    let (file, symbol) = crate::jitv::parse_target(target);
+    let file = file.replace('\\', "/");
+    let file = match repo_root.map(|r| r.to_string_lossy().replace('\\', "/")) {
+        Some(root) => file.strip_prefix(&root).map(str::to_string).unwrap_or(file),
+        None => file,
+    };
+    let file = file.trim_start_matches("./").trim_start_matches('/');
+    let file_prefix = format!("{file}::");
 
-    let prefix = format!("{path}#");
-    let mut best_score = 0.0f64;
-    let mut found = false;
-
-    for (key, &score) in scores.iter() {
-        if key.starts_with(&prefix) || path.starts_with(key) {
-            found = true;
-            if score > best_score {
-                best_score = score;
+    let best = scores
+        .iter()
+        .filter(|(key, _)| {
+            let Some(name) = key.strip_prefix(&file_prefix) else {
+                return false;
+            };
+            match symbol {
+                None => true,
+                Some(sym) => {
+                    name == sym
+                        || name.ends_with(&format!("::{sym}"))
+                        || name.ends_with(&format!(".{sym}"))
+                }
             }
-        }
-    }
+        })
+        .map(|(_, &score)| score)
+        .fold(None, |acc: Option<f64>, s| Some(acc.map_or(s, |a| a.max(s))));
 
-    if found {
-        normalize_pagerank(best_score, scores.len())
-    } else {
-        DEFAULT_CENTRALITY
+    match best {
+        Some(score) => normalize_pagerank(score, scores.len()),
+        None => DEFAULT_CENTRALITY,
     }
 }
 
@@ -143,15 +158,24 @@ mod tests {
     #[test]
     fn test_resolve_centrality_matches_symbol_and_prefix() {
         let mut scores = HashMap::new();
-        scores.insert("src/lib.rs#CodeGraph".to_string(), 0.80);
-        scores.insert("src/lib.rs#helper".to_string(), 0.10);
+        scores.insert("src/lib.rs::CodeGraph".to_string(), 0.80);
+        scores.insert("src/lib.rs::CodeGraph::build".to_string(), 0.60);
+        scores.insert("src/lib.rs::helper".to_string(), 0.01);
+        scores.insert("src/lib.rs.bak::helper".to_string(), 0.90);
+        let root = Path::new("/repo");
 
-        let direct = resolve_centrality(&scores, Some("src/lib.rs#CodeGraph"));
-        let file_prefix = resolve_centrality(&scores, Some("src/lib.rs"));
-        let unknown = resolve_centrality(&scores, Some("src/other.rs"));
+        let direct = resolve_centrality(&scores, Some("src/lib.rs#CodeGraph"), None);
+        let colon = resolve_centrality(&scores, Some("src/lib.rs::CodeGraph"), None);
+        let method = resolve_centrality(&scores, Some("/repo/src/lib.rs#build"), Some(root));
+        let file = resolve_centrality(&scores, Some("/repo/src/lib.rs"), Some(root));
+        let leaf = resolve_centrality(&scores, Some("src/lib.rs#helper"), None);
+        let unknown = resolve_centrality(&scores, Some("src/other.rs"), None);
 
         assert!(direct > DEFAULT_CENTRALITY);
-        assert!(file_prefix > DEFAULT_CENTRALITY);
+        assert_eq!(direct, colon);
+        assert!(method > DEFAULT_CENTRALITY);
+        assert_eq!(file, direct, "file target takes its best symbol");
+        assert!(leaf < direct);
         assert_eq!(unknown, DEFAULT_CENTRALITY);
     }
 

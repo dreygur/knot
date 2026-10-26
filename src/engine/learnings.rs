@@ -153,6 +153,53 @@ fn parse_yaml_frontmatter(content: &str) -> Option<(LearningFrontmatter, String)
     Some((fm, body))
 }
 
+/// Phrases that state why a decision was made, not only what was decided.
+const CAUSAL_MARKERS: &[&str] = &[
+    "because", "since ", "so that", "caused", "causes", "due to", "otherwise", "to avoid",
+    "to prevent", "which means", "led to", "leads to", "results in", "resulted in", "breaks",
+    "fails", "failed", "instead of", "the reason",
+];
+
+/// Quality gate for team learnings committed to Git.
+///
+/// A learning must say why (a causal statement or a "Tried and ruled out" section) and
+/// every `touches` entry must point at an existing file and, when given, an existing symbol.
+/// Returns the problems found; an empty list means the learning passes.
+pub fn quality_issues(content: &str, touches: &[String], repo_root: &Path) -> Vec<String> {
+    let mut issues = Vec::new();
+    let lower = content.to_lowercase();
+
+    let has_ruled_out = lower
+        .split("## tried and ruled out")
+        .nth(1)
+        .map(|rest| !rest.split("\n## ").next().unwrap_or("").trim().is_empty())
+        .unwrap_or(false);
+    if !has_ruled_out && !CAUSAL_MARKERS.iter().any(|m| lower.contains(m)) {
+        issues.push("no causal why: say why (e.g. \"because ...\") or add a \"## Tried and ruled out\" section".into());
+    }
+
+    for touch in touches {
+        let (path, symbol) = crate::jitv::parse_target(touch);
+        let abs = if Path::new(path).is_absolute() {
+            PathBuf::from(path)
+        } else {
+            repo_root.join(path)
+        };
+        if !abs.exists() {
+            issues.push(format!("touches '{touch}': path does not exist"));
+            continue;
+        }
+        if let Some(sym) = symbol {
+            let target = format!("{}#{sym}", abs.to_string_lossy());
+            if let Some(err) = crate::jitv::target_error(&target) {
+                issues.push(format!("touches '{touch}': {err}"));
+            }
+        }
+    }
+
+    issues
+}
+
 pub fn learnings_dir(repo_root: &Path) -> PathBuf {
     repo_root.join(".knot").join("learnings")
 }
@@ -231,6 +278,36 @@ mod tests {
     use super::*;
     use crate::memory::MemoryScope;
     use tempfile::tempdir;
+
+    #[test]
+    fn test_quality_gate_requires_causal_why() {
+        let dir = tempdir().unwrap();
+        assert!(!quality_issues("Use WAL mode.", &[], dir.path()).is_empty());
+        assert!(quality_issues("Use WAL mode because readers block the writer.", &[], dir.path()).is_empty());
+        assert!(quality_issues(
+            "Use WAL.\n\n## Tried and ruled out\nDELETE journal mode.",
+            &[],
+            dir.path()
+        )
+        .is_empty());
+        assert!(!quality_issues("Use WAL.\n\n## Tried and ruled out\n\n## Watch out\nx", &[], dir.path()).is_empty());
+    }
+
+    #[test]
+    fn test_quality_gate_validates_touched_symbols() {
+        let dir = tempdir().unwrap();
+        fs::create_dir_all(dir.path().join("src")).unwrap();
+        fs::write(dir.path().join("src/db.rs"), "pub fn open_pool() {}\n").unwrap();
+        let why = "Pool opens lazily because startup must stay fast.";
+
+        assert!(quality_issues(why, &["src/db.rs#open_pool".into()], dir.path()).is_empty());
+        assert!(quality_issues(why, &["src/db.rs".into()], dir.path()).is_empty());
+
+        let missing_sym = quality_issues(why, &["src/db.rs#close_pool".into()], dir.path());
+        assert!(missing_sym[0].contains("close_pool"));
+        let missing_file = quality_issues(why, &["src/gone.rs".into()], dir.path());
+        assert!(missing_file[0].contains("does not exist"));
+    }
 
     #[test]
     fn test_write_and_read_learning_markdown() -> Result<()> {

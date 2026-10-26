@@ -8,7 +8,8 @@ use std::time::Duration;
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
 
-const DEFAULT_POLL_INTERVAL_SECS: u64 = 60;
+const DEFAULT_POLL_INTERVAL_SECS: u64 = 180;
+const FETCH_TIMEOUT: Duration = Duration::from_secs(30);
 const REMOTE_HEAD_SUFFIX: &str = "/HEAD";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -173,6 +174,35 @@ impl BranchMonitorHandle {
     }
 }
 
+/// Refresh remote-tracking refs so collision checks see teammates' latest pushes.
+///
+/// Uses the `git` CLI so the user's credential helpers and SSH config apply. Prompts are
+/// disabled and the fetch is bounded by a timeout so a missing credential never hangs
+/// the monitor. Set `KNOT_NO_FETCH=1` to only inspect refs already fetched.
+async fn fetch_remotes(repo_root: &Path) -> Result<()> {
+    if std::env::var_os("KNOT_NO_FETCH").is_some() {
+        return Ok(());
+    }
+
+    let mut cmd = tokio::process::Command::new("git");
+    cmd.args(["fetch", "--all", "--prune", "--no-tags", "--quiet"])
+        .current_dir(repo_root)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_SSH_COMMAND", "ssh -o BatchMode=yes")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true);
+
+    let output = tokio::time::timeout(FETCH_TIMEOUT, cmd.output())
+        .await
+        .context("git fetch timed out")??;
+    if !output.status.success() {
+        anyhow::bail!("git fetch failed: {}", String::from_utf8_lossy(&output.stderr).trim());
+    }
+    Ok(())
+}
+
 /// Spawn a background task to periodically check for collisions with remote branches.
 pub fn start_branch_monitor(
     repo_root: PathBuf,
@@ -191,6 +221,9 @@ pub fn start_branch_monitor(
                     break;
                 }
                 _ = ticker.tick() => {
+                    if let Err(e) = fetch_remotes(&repo_root).await {
+                        tracing::debug!("Remote fetch skipped: {e}");
+                    }
                     match detect_remote_collisions(&repo_root) {
                         Ok(report) => {
                             for col in &report.collisions {
@@ -296,6 +329,46 @@ mod tests {
         assert_eq!(report.collisions[0].branch, "origin/feature_shared");
         assert_eq!(report.collisions[0].author, "Teammate");
 
+        Ok(())
+    }
+
+    fn git(dir: &Path, args: &[&str]) {
+        let status = std::process::Command::new("git")
+            .args(["-c", "user.name=Teammate", "-c", "user.email=t@example.com"])
+            .args(args)
+            .current_dir(dir)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .unwrap();
+        assert!(status.success(), "git {args:?} failed");
+    }
+
+    #[tokio::test]
+    async fn test_fetch_picks_up_teammate_push() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let origin = temp_dir.path().join("origin.git");
+        let mine = temp_dir.path().join("mine");
+        let theirs = temp_dir.path().join("theirs");
+
+        let seed = Repository::init(temp_dir.path().join("seed"))?;
+        create_commit(&seed, "src/shared.rs", "pub fn v1() {}", "initial")?;
+        git(temp_dir.path(), &["clone", "--quiet", "--bare", "seed", "origin.git"]);
+        git(temp_dir.path(), &["clone", "--quiet", origin.to_str().unwrap(), "mine"]);
+        git(temp_dir.path(), &["clone", "--quiet", origin.to_str().unwrap(), "theirs"]);
+
+        fs::write(theirs.join("src/shared.rs"), "pub fn v2() {}")?;
+        git(&theirs, &["checkout", "--quiet", "-b", "feature"]);
+        git(&theirs, &["commit", "--quiet", "-am", "teammate change"]);
+        git(&theirs, &["push", "--quiet", "origin", "feature"]);
+
+        fs::write(mine.join("src/shared.rs"), "pub fn my_edit() {}")?;
+        assert!(detect_remote_collisions(&mine)?.collisions.is_empty(), "push not fetched yet");
+
+        fetch_remotes(&mine).await?;
+        let report = detect_remote_collisions(&mine)?;
+        assert_eq!(report.collisions.len(), 1);
+        assert_eq!(report.collisions[0].branch, "origin/feature");
         Ok(())
     }
 }

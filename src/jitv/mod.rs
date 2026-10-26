@@ -29,17 +29,62 @@ pub fn hash_target(target: &str) -> Option<String> {
     }
 
     if let Some(symbol_name) = symbol_opt {
-        let lang = SupportedLang::from_path(path)?;
-        let content = std::fs::read_to_string(path).ok()?;
-        let symbols = extract_file_symbols(file_path, &content, lang).ok()?;
-
-        let matched = symbols.iter().find(|s| {
-            s.name == symbol_name || s.name.ends_with(&format!("::{symbol_name}")) || s.name.ends_with(&format!(".{symbol_name}"))
-        })?;
-
-        Some(matched.hash.clone())
+        match lookup_symbol(path, symbol_name)? {
+            SymbolLookup::Found(hash) => Some(hash),
+            SymbolLookup::Missing | SymbolLookup::Ambiguous(_) => None,
+        }
     } else {
         hash_path(file_path)
+    }
+}
+
+/// Result of resolving the symbol half of a `file#symbol` target.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SymbolLookup {
+    Found(String),
+    Missing,
+    /// Several symbols share the name; holds their qualified names.
+    Ambiguous(Vec<String>),
+}
+
+/// Resolve `symbol_name` in `path`. An exact qualified name (`Type::method`) wins;
+/// otherwise a bare name must match exactly one symbol, since hashing an arbitrary
+/// one of several would verify the wrong code.
+pub fn lookup_symbol(path: &Path, symbol_name: &str) -> Option<SymbolLookup> {
+    let lang = SupportedLang::from_path(path)?;
+    let content = std::fs::read_to_string(path).ok()?;
+    let symbols = extract_file_symbols(&path.to_string_lossy(), &content, lang).ok()?;
+
+    if let Some(exact) = symbols.iter().find(|s| s.name == symbol_name) {
+        return Some(SymbolLookup::Found(exact.hash.clone()));
+    }
+
+    let candidates: Vec<_> = symbols
+        .iter()
+        .filter(|s| s.name.ends_with(&format!("::{symbol_name}")) || s.name.ends_with(&format!(".{symbol_name}")))
+        .collect();
+
+    Some(match candidates.as_slice() {
+        [] => SymbolLookup::Missing,
+        [only] => SymbolLookup::Found(only.hash.clone()),
+        many => SymbolLookup::Ambiguous(many.iter().map(|s| s.name.clone()).collect()),
+    })
+}
+
+/// Explain why a `file#symbol` target cannot be hashed, or `None` when it can.
+pub fn target_error(target: &str) -> Option<String> {
+    let (file_path, symbol) = parse_target(target);
+    let path = Path::new(file_path);
+    if !path.exists() {
+        return Some(format!("path does not exist: {file_path}"));
+    }
+    match symbol.and_then(|sym| lookup_symbol(path, sym).map(|l| (sym, l))) {
+        Some((sym, SymbolLookup::Missing)) => Some(format!("symbol '{sym}' not found in {file_path}")),
+        Some((sym, SymbolLookup::Ambiguous(names))) => Some(format!(
+            "symbol '{sym}' is ambiguous in {file_path}; qualify it as one of: {}",
+            names.join(", ")
+        )),
+        _ => None,
     }
 }
 
@@ -97,7 +142,7 @@ pub fn verify(node: &KnowledgeNode) -> VerificationResult {
                 VerificationResult {
                     node_id: node.id,
                     status: VerificationStatus::StaleMissing,
-                    detail: format!("Symbol '{sym}' not found in {file_path}"),
+                    detail: target_error(raw_target).unwrap_or_else(|| format!("Symbol '{sym}' not found in {file_path}")),
                 }
             } else {
                 VerificationResult {
@@ -198,6 +243,32 @@ pub fn validate_jwt(token: &str) -> bool {
         let res3 = verify(&node);
         assert_eq!(res3.status, VerificationStatus::StaleModified);
 
+        Ok(())
+    }
+
+    #[test]
+    fn ambiguous_bare_symbol_requires_qualification() -> anyhow::Result<()> {
+        let dir = tempdir()?;
+        let file_path = dir.path().join("types.rs");
+        std::fs::write(
+            &file_path,
+            "struct A;\nimpl A { fn new() -> Self { A } }\nstruct B;\nimpl B { fn new() -> Self { B } }\n",
+        )?;
+        let base = file_path.to_string_lossy().to_string();
+
+        assert!(hash_target(&format!("{base}#new")).is_none());
+        assert!(target_error(&format!("{base}#new")).unwrap().contains("A::new, B::new"));
+
+        let b_target = format!("{base}#B::new");
+        let node = make_node(Some(b_target.clone()), hash_target(&b_target));
+        assert!(node.content_hash.is_some());
+        assert_eq!(verify(&node).status, VerificationStatus::Verified);
+
+        std::fs::write(
+            &file_path,
+            "struct A;\nimpl A { fn new() -> Self { A } }\nstruct B;\nimpl B { fn new() -> Self { B {} } }\n",
+        )?;
+        assert_eq!(verify(&node).status, VerificationStatus::StaleModified);
         Ok(())
     }
 }

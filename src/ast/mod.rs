@@ -4,6 +4,6 @@ pub mod resolve;
 pub mod types;
 
 pub use extract::{extract_file_skeleton, extract_file_symbols, SupportedLang};
-pub use pagerank::{compute_pagerank, top_hubs};
+pub use pagerank::{compute_pagerank, compute_personalized_pagerank, top_hubs};
 pub use resolve::CodeGraph;
 pub use types::{BlastRadiusReport, CallEdge, EdgeKind, SkeletonItem, SymbolKind, SymbolNode};

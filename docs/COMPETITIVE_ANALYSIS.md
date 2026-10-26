@@ -4,16 +4,16 @@ An empirical comparison between Knot 2.0 and Trail-Code based on code architectu
 
 ## Benchmark Numbers
 
-Measured on Apple Silicon using `tests/benchmark.rs` against `reference/trail-code/src`:
+Knot numbers are measured on Apple Silicon with `cargo test --release --test benchmark -- --nocapture` against `reference/trail-code/src`. Trail-Code numbers have **not** been measured: the benchmark only times Knot. Treat the Trail-Code column as estimates until the same corpus is run through `trail build`.
 
-| Metric | Trail-Code (Node.js) | Knot 2.0 (Rust) | Delta |
-| :--- | :--- | :--- | :--- |
-| **Parsing 344 Files** | ~2,400 ms (single thread) | 1,010 ms (Rayon multicore) | 2.4x faster |
-| **PageRank Calculation (3,745 nodes)** | ~380 ms | 186 ms | 2.0x faster |
-| **Process Startup** | ~180 ms (Node V8 boot) | < 5 ms | 36x faster |
-| **Binary / Distribution** | npm package + node_modules (100MB+) | 14MB single static binary | Zero runtime dependencies |
-| **Memory Footprint** | ~120MB to 220MB | ~15MB to 28MB | 8x lower RAM |
-| **Skeleton Token Reduction** | ~88% | 91.9% (925k source tokens to 74k tokens) | Comparable |
+| Metric | Trail-Code (Node.js), estimated | Knot 2.0 (Rust), measured |
+| :--- | :--- | :--- |
+| **Parsing 344 Files** | not measured | 268 ms (Rayon multicore, release build) |
+| **PageRank Calculation (3,745 nodes)** | not measured | 27 ms |
+| **Process Startup** | ~180 ms (typical Node boot) | < 10 ms (`knot --help`) |
+| **Binary / Distribution** | npm package + node_modules | 14MB binary; links only macOS system libraries |
+| **Memory Footprint** | not measured | not measured |
+| **Skeleton Token Reduction** | not measured | 91.9% (925k source tokens to 74k tokens) |
 
 ## Where Knot Leads
 
@@ -51,7 +51,7 @@ Knot resolves call targets by matching bare identifiers against qualified symbol
 Trail-Code includes directory heuristics that assign subproject labels (`[scope/]`) to ranked hits and allows filtering via `--in <scope>/`. Knot indexes the workspace as a unified graph root.
 
 ### 4. Production Dogfooding
-Trail-Code has undergone months of testing across large open source repositories with diverse edge cases. Knot 2.0 is newly implemented. While backed by 48 passing unit and benchmark tests, it has not yet accumulated production mileage on codebases exceeding 100,000 lines.
+Trail-Code has undergone months of testing across large open source repositories with diverse edge cases. Knot 2.0 is newly implemented. While backed by 67 passing unit and benchmark tests, it has not yet accumulated production mileage on codebases exceeding 100,000 lines.
 
 ## Plan to Close the Remaining Gaps
 

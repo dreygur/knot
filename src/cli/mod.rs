@@ -45,12 +45,16 @@ fn format_recall_cli(results: &[RecallResult]) -> String {
 }
 
 fn format_commit_cli(r: &CommitReport) -> String {
-    format!(
+    let mut out = format!(
         "[KNOT] commit: {} promoted, {} rejected (project={})\n",
         r.promoted_count(),
         r.rejected_count(),
         r.project_id,
-    )
+    );
+    for (id, issues) in &r.learnings_held {
+        out.push_str(&format!("[KNOT] learning not written for {id}: {}\n", issues.join("; ")));
+    }
+    out
 }
 
 fn format_status_cli(r: &StatusReport) -> String {
@@ -328,6 +332,14 @@ async fn cli_callers(symbol: &str) -> Result<()> {
             println!("  • {} ({}:L{}-L{})", c.name, c.file, c.span.0, c.span.1);
         }
     }
+
+    let importers = graph.get_importers(symbol);
+    if !importers.is_empty() {
+        println!("[KNOT] Imported by ({} file{}):", importers.len(), if importers.len() == 1 { "" } else { "s" });
+        for file in importers {
+            println!("  • {file}");
+        }
+    }
     Ok(())
 }
 
@@ -425,23 +437,24 @@ async fn cli_check(base_ref: Option<&str>, check_remote: bool) -> Result<()> {
         }
     }
 
+    let conflicts = report.conflict_count();
+    let warnings = report.findings.len() - conflicts;
+
+    for f in &report.findings {
+        eprintln!("  • [{}] {}:L{}", f.kind.as_str(), f.file, f.line);
+        eprintln!("    Decision: \"{}\" ({})", f.learning_title, f.learning_file);
+        eprintln!("    Evidence: {}", f.evidence);
+        eprintln!("    Diff:     {}\n", f.diff_snippet);
+    }
+
     if report.ok {
         println!(
-            "[KNOT] Check passed: {} files audited against repo learnings, 0 conflicts found.",
+            "[KNOT] Check passed: {} files audited against repo learnings, 0 conflicts, {warnings} warning(s).",
             report.checked_files.len()
         );
         Ok(())
     } else {
-        eprintln!(
-            "[KNOT] FAIL: {} conflict(s) detected with repo learnings:\n",
-            report.findings.len()
-        );
-        for f in &report.findings {
-            eprintln!("  • [{}] {}:L{}", f.kind.as_str(), f.file, f.line);
-            eprintln!("    Decision: \"{}\" ({})", f.learning_title, f.learning_file);
-            eprintln!("    Evidence: {}", f.evidence);
-            eprintln!("    Diff:     {}\n", f.diff_snippet);
-        }
+        eprintln!("[KNOT] FAIL: {conflicts} conflict(s), {warnings} warning(s) against repo learnings.");
         std::process::exit(1);
     }
 }
@@ -481,11 +494,22 @@ pub async fn run_mcp_server() -> Result<()> {
         }
     }
 
-    let _branch_monitor = std::env::current_dir()
+    if let Some(root) = std::env::current_dir()
         .ok()
-        .map(|cwd| crate::check::start_branch_monitor(cwd, None));
+        .and_then(|cwd| git2::Repository::discover(cwd).ok())
+        .and_then(|repo| repo.workdir().map(|p| p.to_path_buf()))
+    {
+        match engine.sync_repo_learnings(&root).await {
+            Ok(0) => {}
+            Ok(n) => tracing::info!("Indexed {n} repo learning(s) from {}", root.display()),
+            Err(e) => tracing::warn!("Repo learnings sync failed: {e}"),
+        }
+    }
 
-    let server = KnotServer::new(engine, session_id);
+    let mut server = KnotServer::new(engine, session_id);
+    if let Ok(cwd) = std::env::current_dir() {
+        server = server.with_branch_monitor(crate::check::start_branch_monitor(cwd, None));
+    }
     let running = server.serve(stdio()).await?;
     running.waiting().await?;
 

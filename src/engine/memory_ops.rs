@@ -18,6 +18,14 @@ impl StorageEngine {
         // Path traversal firewall - reject any verification_path containing ../
         if let Some(ref p) = req.verification_path {
             check_path_traversal(p)?;
+            // A missing or ambiguous symbol in an existing file would be saved without a
+            // hash and could never go stale, so refuse it. A missing file reports as stale.
+            let (file, symbol) = jitv::parse_target(p);
+            if symbol.is_some() && std::path::Path::new(file).exists() {
+                if let Some(err) = jitv::target_error(p) {
+                    anyhow::bail!("Invalid verification_path: {err}");
+                }
+            }
         }
 
         let effective_scope = match req.command_exit_code {
@@ -90,7 +98,7 @@ impl StorageEngine {
             }
         }
 
-        let centrality_scores = self.get_centrality_snapshot().await;
+        let (centrality_scores, repo_root) = self.query_centrality(query).await;
         let query_vec = super::lance::embed(query);
 
         let mut results = Vec::new();
@@ -147,6 +155,7 @@ impl StorageEngine {
             let pagerank_score = super::hybrid::resolve_centrality(
                 &centrality_scores,
                 node.verification_path.as_deref(),
+                repo_root.as_deref(),
             );
 
             let hybrid_score = super::hybrid::compute_hybrid_score(
@@ -207,6 +216,23 @@ impl StorageEngine {
     /// promotion and every rejection with a reason. Nothing crosses the boundary
     /// silently.
     pub async fn commit_session(&self, session_id: &str, project_id: &str) -> Result<CommitReport> {
+        let repo_root = std::env::current_dir().ok().map(|cwd| {
+            git2::Repository::discover(&cwd)
+                .ok()
+                .and_then(|repo| repo.workdir().map(|p| p.to_path_buf()))
+                .unwrap_or(cwd)
+        });
+        self.commit_session_to(session_id, project_id, repo_root.as_deref()).await
+    }
+
+    /// Promote session nodes and write passing ones to `<repo_root>/.knot/learnings/`.
+    /// With no repo root, nodes are promoted but no learning files are written.
+    pub async fn commit_session_to(
+        &self,
+        session_id: &str,
+        project_id: &str,
+        repo_root: Option<&std::path::Path>,
+    ) -> Result<CommitReport> {
         let session_nodes = self.graph.get_session_nodes(session_id).await?;
 
         let mut report = CommitReport {
@@ -214,6 +240,8 @@ impl StorageEngine {
             project_id: project_id.to_string(),
             promoted: Vec::new(),
             rejected: Vec::new(),
+            learnings_written: Vec::new(),
+            learnings_held: Vec::new(),
         };
 
         for mut node in session_nodes {
@@ -256,9 +284,18 @@ impl StorageEngine {
             node.scope = MemoryScope::Project(project_id.to_string());
             self.graph.update_node(&node).await?;
 
-            if let Ok(cwd) = std::env::current_dir() {
-                let author = std::env::var("USER").unwrap_or_else(|_| "knot".into());
-                let _ = crate::engine::learnings::write_learning_file(&cwd, &node, &author);
+            if let Some(root) = repo_root {
+                let touches: Vec<String> = node.verification_path.iter().cloned().collect();
+                let issues = crate::engine::learnings::quality_issues(&node.content, &touches, root);
+                if issues.is_empty() {
+                    let author = std::env::var("USER").unwrap_or_else(|_| "knot".into());
+                    match crate::engine::learnings::write_learning_file(root, &node, &author) {
+                        Ok(path) => report.learnings_written.push(path),
+                        Err(e) => tracing::warn!("Failed to write learning for {}: {e}", node.id),
+                    }
+                } else {
+                    report.learnings_held.push((node.id, issues));
+                }
             }
 
             tracing::info!(
@@ -276,26 +313,81 @@ impl StorageEngine {
         Ok(report)
     }
 
+    /// Index `.knot/learnings/*.md` into SQLite so recall can find them.
+    ///
+    /// Learnings are keyed by their frontmatter id: edited files update the existing
+    /// node, new files insert one. Returns the number of learnings indexed.
     pub async fn sync_repo_learnings(&self, repo_root: &std::path::Path) -> Result<usize> {
         let repo_learnings = crate::engine::learnings::scan_repo_learnings(repo_root)?;
-        let count = repo_learnings.len();
+        let project_id = repo_root
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| "project".into());
+
+        let mut count = 0;
         for l in repo_learnings {
-            let node = KnowledgeNode {
-                id: l.frontmatter.id,
-                content: l.body,
-                tags: l.frontmatter.tags,
-                verification_path: l.frontmatter.touches.into_iter().next(),
-                content_hash: None,
-                utility_score: 0.5,
-                scope: MemoryScope::Project(l.frontmatter.scope),
-                is_stale: false,
-                parent_id: None,
-                origin_agent: Some(l.frontmatter.author),
-                created_at: chrono::Utc::now(),
-                updated_at: chrono::Utc::now(),
+            let issues = crate::engine::learnings::quality_issues(&l.body, &l.frontmatter.touches, repo_root);
+            if !issues.is_empty() {
+                tracing::warn!("Learning {} fails quality gate: {}", l.file_path.display(), issues.join("; "));
+            }
+
+            // Touches are repo-relative; Jit-V resolves paths against the process cwd.
+            let verification_path = l.frontmatter.touches.first().map(|t| {
+                if std::path::Path::new(t).is_absolute() {
+                    t.clone()
+                } else {
+                    repo_root.join(t).to_string_lossy().to_string()
+                }
+            });
+            // Files written by commit_session already open with the title line.
+            let body = l.body.trim();
+            let content = if body.starts_with(l.frontmatter.title.as_str()) {
+                body.to_string()
+            } else {
+                format!("{}\n\n{body}", l.frontmatter.title)
             };
-            let _ = self.graph.insert_node(&node).await;
-            let _ = self.vectors.upsert(node.id, &node.content).await;
+
+            let result = match self.graph.get_node(l.frontmatter.id).await? {
+                Some(mut existing) => {
+                    if existing.content == content
+                        && existing.tags == l.frontmatter.tags
+                        && existing.verification_path == verification_path
+                    {
+                        count += 1;
+                        continue;
+                    }
+                    existing.content = content;
+                    existing.tags = l.frontmatter.tags;
+                    existing.verification_path = verification_path;
+                    existing.updated_at = chrono::Utc::now();
+                    self.graph.update_node(&existing).await.map(|_| existing)
+                }
+                None => {
+                    let node = KnowledgeNode {
+                        id: l.frontmatter.id,
+                        content,
+                        tags: l.frontmatter.tags,
+                        verification_path,
+                        content_hash: None,
+                        utility_score: 0.5,
+                        scope: MemoryScope::Project(project_id.clone()),
+                        is_stale: false,
+                        parent_id: None,
+                        origin_agent: Some(l.frontmatter.author),
+                        created_at: chrono::Utc::now(),
+                        updated_at: chrono::Utc::now(),
+                    };
+                    self.graph.insert_node(&node).await.map(|_| node)
+                }
+            };
+
+            match result {
+                Ok(node) => {
+                    self.vectors.upsert(node.id, &node.content).await?;
+                    count += 1;
+                }
+                Err(e) => tracing::warn!("Failed to index learning {}: {e}", l.file_path.display()),
+            }
         }
         Ok(count)
     }
