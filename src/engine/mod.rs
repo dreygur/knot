@@ -1,5 +1,6 @@
 pub mod graph;
 pub mod lance;
+pub mod learnings;
 mod memory_ops;
 mod skill_ops;
 mod types;

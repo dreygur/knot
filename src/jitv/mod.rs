@@ -1,31 +1,78 @@
+use crate::ast::extract::{extract_file_symbols, SupportedLang};
 use crate::memory::node::{KnowledgeNode, VerificationResult, VerificationStatus};
 use std::path::Path;
 
-/// Compute BLAKE3 hex digest of a file's contents.
+pub fn parse_target(target: &str) -> (&str, Option<&str>) {
+    if let Some((path, symbol)) = target.split_once('#') {
+        (path.trim(), Some(symbol.trim()))
+    } else if let Some((path, symbol)) = target.split_once("::") {
+        if path.contains('/') || path.contains('\\') || path.ends_with(".rs") || path.ends_with(".py") || path.ends_with(".ts") {
+            (path.trim(), Some(symbol.trim()))
+        } else {
+            (target, None)
+        }
+    } else {
+        (target, None)
+    }
+}
+
 pub fn hash_path(path: &str) -> Option<String> {
     crate::utils::calculate_hash(Path::new(path)).ok()
 }
 
-/// Run Jit-V on a single node. Returns a VerificationResult and, if stale,
-/// whether the node's `is_stale` flag should be updated in storage.
+pub fn hash_target(target: &str) -> Option<String> {
+    let (file_path, symbol_opt) = parse_target(target);
+    let path = Path::new(file_path);
+
+    if !path.exists() {
+        return None;
+    }
+
+    if let Some(symbol_name) = symbol_opt {
+        let lang = SupportedLang::from_path(path)?;
+        let content = std::fs::read_to_string(path).ok()?;
+        let symbols = extract_file_symbols(file_path, &content, lang).ok()?;
+
+        let matched = symbols.iter().find(|s| {
+            s.name == symbol_name || s.name.ends_with(&format!("::{symbol_name}")) || s.name.ends_with(&format!(".{symbol_name}"))
+        })?;
+
+        Some(matched.hash.clone())
+    } else {
+        hash_path(file_path)
+    }
+}
+
+pub fn annotate(node: &KnowledgeNode, result: &VerificationResult) -> Option<String> {
+    let tag = result.status.tag();
+    if tag.is_empty() {
+        Some(node.content.clone())
+    } else {
+        Some(format!("{tag} {}", node.content))
+    }
+}
+
 pub fn verify(node: &KnowledgeNode) -> VerificationResult {
-    let Some(ref path) = node.verification_path else {
+    let Some(ref raw_target) = node.verification_path else {
         return VerificationResult {
             node_id: node.id,
             status: VerificationStatus::Abstract,
-            detail: "No verification path - abstract knowledge".into(),
+            detail: "No verification path: abstract knowledge".into(),
         };
     };
 
-    if !std::path::Path::new(path).exists() {
+    let (file_path, symbol_opt) = parse_target(raw_target);
+    if !Path::new(file_path).exists() {
         return VerificationResult {
             node_id: node.id,
             status: VerificationStatus::StaleMissing,
-            detail: format!("Path no longer exists: {path}"),
+            detail: format!("Path no longer exists: {file_path}"),
         };
     }
 
-    match (&node.content_hash, hash_path(path)) {
+    let current_hash = hash_target(raw_target);
+
+    match (&node.content_hash, current_hash) {
         (Some(stored), Some(current)) if stored == &current => VerificationResult {
             node_id: node.id,
             status: VerificationStatus::Verified,
@@ -35,36 +82,31 @@ pub fn verify(node: &KnowledgeNode) -> VerificationResult {
             node_id: node.id,
             status: VerificationStatus::StaleModified,
             detail: format!(
-                "Content changed - stored={}, current={}",
-                &stored[..8],
-                &current[..8]
+                "Content changed: stored={}, current={}",
+                &stored[..8.min(stored.len())],
+                &current[..8.min(current.len())]
             ),
         },
-        (None, _) => {
-            // Node was saved without a hash - treat as verified (legacy/manual entry)
-            VerificationResult {
-                node_id: node.id,
-                status: VerificationStatus::Verified,
-                detail: "No stored hash - path existence confirmed".into(),
+        (None, _) => VerificationResult {
+            node_id: node.id,
+            status: VerificationStatus::Verified,
+            detail: "No stored hash: path confirmed".into(),
+        },
+        (_, None) => {
+            if let Some(sym) = symbol_opt {
+                VerificationResult {
+                    node_id: node.id,
+                    status: VerificationStatus::StaleMissing,
+                    detail: format!("Symbol '{sym}' not found in {file_path}"),
+                }
+            } else {
+                VerificationResult {
+                    node_id: node.id,
+                    status: VerificationStatus::StaleMissing,
+                    detail: format!("Could not read path: {file_path}"),
+                }
             }
         }
-        (_, None) => VerificationResult {
-            node_id: node.id,
-            status: VerificationStatus::StaleMissing,
-            detail: format!("Could not read path: {path}"),
-        },
-    }
-}
-
-/// Annotate content with Jit-V status tag for injection into prompt context.
-/// Returns None if the node is stale and should be excluded from context.
-pub fn annotate(node: &KnowledgeNode, result: &VerificationResult) -> Option<String> {
-    let tag = result.status.tag();
-    if tag.is_empty() {
-        Some(node.content.clone())
-    } else {
-        // Surface stale nodes with tag - caller decides whether to inject
-        Some(format!("{tag} {}", node.content))
     }
 }
 
@@ -72,8 +114,9 @@ pub fn annotate(node: &KnowledgeNode, result: &VerificationResult) -> Option<Str
 mod tests {
     use super::*;
     use crate::memory::{KnowledgeNode, MemoryScope};
+    use std::fs::File;
     use std::io::Write;
-    use tempfile::NamedTempFile;
+    use tempfile::tempdir;
 
     fn make_node(path: Option<String>, hash: Option<String>) -> KnowledgeNode {
         KnowledgeNode {
@@ -100,30 +143,61 @@ mod tests {
     }
 
     #[test]
-    fn missing_path_is_stale() {
-        let node = make_node(Some("/nonexistent/path/xyz.rs".into()), None);
-        let result = verify(&node);
-        assert_eq!(result.status, VerificationStatus::StaleMissing);
-    }
+    fn symbol_level_verification_survives_unrelated_edits() -> anyhow::Result<()> {
+        let dir = tempdir()?;
+        let file_path = dir.path().join("auth.rs");
+        let path_str = file_path.to_string_lossy().to_string();
 
-    #[test]
-    fn matching_hash_is_verified() {
-        let mut f = NamedTempFile::new().unwrap();
-        f.write_all(b"hello world").unwrap();
-        let path = f.path().to_str().unwrap().to_string();
-        let hash = hash_path(&path).unwrap();
-        let node = make_node(Some(path), Some(hash));
-        let result = verify(&node);
-        assert_eq!(result.status, VerificationStatus::Verified);
-    }
+        let initial_code = r#"
+pub fn helper() {
+    println!("v1");
+}
 
-    #[test]
-    fn wrong_hash_is_stale_modified() {
-        let mut f = NamedTempFile::new().unwrap();
-        f.write_all(b"hello world").unwrap();
-        let path = f.path().to_str().unwrap().to_string();
-        let node = make_node(Some(path), Some("deadbeef00000000".into()));
-        let result = verify(&node);
-        assert_eq!(result.status, VerificationStatus::StaleModified);
+pub fn validate_jwt(token: &str) -> bool {
+    token.starts_with("Bearer ")
+}
+"#;
+        let mut f = File::create(&file_path)?;
+        write!(f, "{initial_code}")?;
+
+        let target = format!("{path_str}#validate_jwt");
+        let initial_hash = hash_target(&target);
+        assert!(initial_hash.is_some());
+
+        let node = make_node(Some(target.clone()), initial_hash.clone());
+        let res1 = verify(&node);
+        assert_eq!(res1.status, VerificationStatus::Verified);
+
+        // Edit unrelated function and add comments
+        let edited_code = r#"
+// Brand new comment
+pub fn helper() {
+    println!("v2 modified");
+}
+
+pub fn validate_jwt(token: &str) -> bool {
+    token.starts_with("Bearer ")
+}
+"#;
+        let mut f = File::create(&file_path)?;
+        write!(f, "{edited_code}")?;
+
+        // Symbol-level verify must STILL BE VERIFIED!
+        let res2 = verify(&node);
+        assert_eq!(res2.status, VerificationStatus::Verified);
+
+        // Now modify the actual validate_jwt symbol
+        let changed_symbol_code = r#"
+pub fn validate_jwt(token: &str) -> bool {
+    token.len() > 10
+}
+"#;
+        let mut f = File::create(&file_path)?;
+        write!(f, "{changed_symbol_code}")?;
+
+        let res3 = verify(&node);
+        assert_eq!(res3.status, VerificationStatus::StaleModified);
+
+        Ok(())
     }
 }

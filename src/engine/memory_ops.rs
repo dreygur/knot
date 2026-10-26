@@ -29,7 +29,7 @@ impl StorageEngine {
         };
 
         let clean_content = privacy::scrub(&req.content);
-        let content_hash = req.verification_path.as_deref().and_then(jitv::hash_path);
+        let content_hash = req.verification_path.as_deref().and_then(jitv::hash_target);
 
         // Register content → path mapping for future relink operations.
         if let (Some(ref hash), Some(ref path)) = (&content_hash, &req.verification_path) {
@@ -210,6 +210,11 @@ impl StorageEngine {
             node.scope = MemoryScope::Project(project_id.to_string());
             self.graph.update_node(&node).await?;
 
+            if let Ok(cwd) = std::env::current_dir() {
+                let author = std::env::var("USER").unwrap_or_else(|_| "knot".into());
+                let _ = crate::engine::learnings::write_learning_file(&cwd, &node, &author);
+            }
+
             tracing::info!(
                 "commit_session PROMOTED node {} → project/{project_id}",
                 node.id
@@ -223,6 +228,30 @@ impl StorageEngine {
             report.rejected.len()
         );
         Ok(report)
+    }
+
+    pub async fn sync_repo_learnings(&self, repo_root: &std::path::Path) -> Result<usize> {
+        let repo_learnings = crate::engine::learnings::scan_repo_learnings(repo_root)?;
+        let count = repo_learnings.len();
+        for l in repo_learnings {
+            let node = KnowledgeNode {
+                id: l.frontmatter.id,
+                content: l.body,
+                tags: l.frontmatter.tags,
+                verification_path: l.frontmatter.touches.into_iter().next(),
+                content_hash: None,
+                utility_score: 0.5,
+                scope: MemoryScope::Project(l.frontmatter.scope),
+                is_stale: false,
+                parent_id: None,
+                origin_agent: Some(l.frontmatter.author),
+                created_at: chrono::Utc::now(),
+                updated_at: chrono::Utc::now(),
+            };
+            let _ = self.graph.insert_node(&node).await;
+            let _ = self.vectors.upsert(node.id, &node.content).await;
+        }
+        Ok(count)
     }
 
     /// Force Jit-V on a specific node. Returns the updated node and a detail string.
