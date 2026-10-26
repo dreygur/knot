@@ -384,26 +384,26 @@ pub struct VerificationTarget {
 ## 8. Actionable Implementation Checklist
 
 ### Phase 1: Code Graph & Tree-Sitter
-- [ ] Add `tree-sitter` and language grammar dependencies to `Cargo.toml`.
-- [ ] Implement `knot/src/engine/ast/extract.rs` for Rust, TypeScript/JavaScript, and Python.
-- [ ] Implement `knot/src/engine/ast/resolve.rs` to compute call and import edges.
-- [ ] Expose CLI subcommands: `knot callers`, `knot callees`, `knot blast`, `knot skeleton`.
-- [ ] Expose corresponding MCP tools: `knot_trace_calls`, `knot_file_api`.
+- [x] Add `tree-sitter` and language grammar dependencies to `Cargo.toml`.
+- [x] Implement `src/ast/extract.rs` for Rust, TypeScript/JavaScript, and Python.
+- [x] Implement `src/ast/resolve.rs` to compute call and import edges.
+- [x] Expose CLI subcommands: `knot callers`, `knot callees`, `knot blast`, `knot skeleton`.
+- [x] Expose corresponding MCP tools: `knot_trace_calls`, `knot_file_api`.
 
 ### Phase 2: Symbol-Level Jit-V & Git Learnings
-- [ ] Upgrade `knot/src/jitv/mod.rs` to support `VerificationTarget` with AST-level hashing.
-- [ ] Implement `.knot/learnings/*.md` file parser and serializer with YAML frontmatter.
-- [ ] Create SQLite synchronization layer that indexes repository learnings on start.
-- [ ] Implement quality gate `gate_note` to enforce causal "why" statements and valid symbol names.
+- [x] Upgrade `src/jitv/mod.rs` to support `file#symbol` with AST-level hashing.
+- [x] Implement `.knot/learnings/*.md` file parser and serializer with YAML frontmatter.
+- [x] Create SQLite synchronization layer that indexes repository learnings on start.
+- [x] Implement quality gate to enforce causal why statements and valid symbol names.
 
 ### Phase 3: GraphRank & Guardrails
-- [ ] Implement Personalized PageRank algorithm in `knot/src/engine/pagerank.rs`.
-- [ ] Integrate SQLite FTS5 for BM25 lexical token scoring.
-- [ ] Build `knot check` using `git2` to audit unified diffs against recorded learnings.
-- [ ] Add `knot check` GitHub Action workflow and pre-commit hook integration.
+- [x] Implement Personalized PageRank algorithm in `src/ast/pagerank.rs`.
+- [x] Integrate SQLite FTS5 for BM25 lexical token scoring in `src/engine/hybrid.rs`.
+- [x] Build `knot check` using `git2` to audit unified diffs against recorded learnings.
+- [x] Combine vector distance, FTS5 lexical ranking, and PageRank in `recall`.
 
 ### Phase 4: Host Ecosystem, TUI & Visualizer
-- [ ] Implement `knot init` auto-configurator for Claude, Cursor, Antigravity, and Codex.
-- [ ] Build terminal TUI browser (`knot explore`) with `ratatui`.
-- [ ] Build embedded web server visualizer (`knot viz`) with `axum` and D3.
-- [ ] Implement background remote branch fetcher and conflict notifier.
+- [x] Implement `knot init` auto-configurator for Claude, Cursor, Antigravity, and Codex.
+- [x] Build terminal TUI browser (`knot explore`) with `ratatui`.
+- [x] Build interactive web visualizer (`knot viz`) with standalone HTML graph.
+- [x] Implement background remote branch monitor and collision notifier.
