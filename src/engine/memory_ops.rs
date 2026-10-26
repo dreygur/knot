@@ -331,13 +331,14 @@ impl StorageEngine {
                 tracing::warn!("Learning {} fails quality gate: {}", l.file_path.display(), issues.join("; "));
             }
 
-            // Touches are repo-relative; Jit-V resolves paths against the process cwd.
-            let verification_path = l.frontmatter.touches.first().map(|t| {
-                if std::path::Path::new(t).is_absolute() {
-                    t.clone()
-                } else {
-                    repo_root.join(t).to_string_lossy().to_string()
+            // Learning files come from anyone who can push, so a touch may only point
+            // inside the repo; otherwise Jit-V would hash files like ~/.ssh on our behalf.
+            let verification_path = l.frontmatter.touches.first().and_then(|t| {
+                let target = contained_target(repo_root, t);
+                if target.is_none() {
+                    tracing::warn!("Learning {} touches a path outside the repo: {t}", l.file_path.display());
                 }
+                target
             });
             // Files written by commit_session already open with the title line.
             let body = l.body.trim();
@@ -348,6 +349,16 @@ impl StorageEngine {
             };
 
             let result = match self.graph.get_node(l.frontmatter.id).await? {
+                // A planted file reusing another memory's id must not rewrite it.
+                Some(existing) if existing.scope != MemoryScope::Project(project_id.clone()) => {
+                    tracing::warn!(
+                        "Learning {} reuses id {} of a {} memory; skipped",
+                        l.file_path.display(),
+                        existing.id,
+                        existing.scope.scope_type()
+                    );
+                    continue;
+                }
                 Some(mut existing) => {
                     if existing.content == content
                         && existing.tags == l.frontmatter.tags
@@ -618,4 +629,15 @@ fn check_path_traversal(path: &str) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Resolve a learning's `touches` entry to an absolute target inside `repo_root`.
+/// Returns `None` for `..` segments or absolute paths that leave the repo.
+fn contained_target(repo_root: &std::path::Path, touch: &str) -> Option<String> {
+    check_path_traversal(touch).ok()?;
+    let path = std::path::Path::new(touch);
+    if path.is_absolute() {
+        return path.starts_with(repo_root).then(|| touch.to_string());
+    }
+    Some(repo_root.join(touch).to_string_lossy().to_string())
 }

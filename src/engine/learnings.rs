@@ -180,6 +180,12 @@ pub fn quality_issues(content: &str, touches: &[String], repo_root: &Path) -> Ve
 
     for touch in touches {
         let (path, symbol) = crate::jitv::parse_target(touch);
+        let escapes = Path::new(path).components().any(|c| c == std::path::Component::ParentDir)
+            || (Path::new(path).is_absolute() && !Path::new(path).starts_with(repo_root));
+        if escapes {
+            issues.push(format!("touches '{touch}': path is outside the repository"));
+            continue;
+        }
         let abs = if Path::new(path).is_absolute() {
             PathBuf::from(path)
         } else {
@@ -307,6 +313,11 @@ mod tests {
         assert!(missing_sym[0].contains("close_pool"));
         let missing_file = quality_issues(why, &["src/gone.rs".into()], dir.path());
         assert!(missing_file[0].contains("does not exist"));
+
+        for escape in ["../outside.rs", "/etc/hosts"] {
+            let issues = quality_issues(why, &[escape.into()], dir.path());
+            assert!(issues[0].contains("outside the repository"), "{escape}: {issues:?}");
+        }
     }
 
     #[test]

@@ -678,6 +678,53 @@ mod tests {
         assert!(results.iter().any(|r| r.node.id == id));
     }
 
+    fn write_learning(dir: &std::path::Path, id: uuid::Uuid, touches: &str) {
+        let learnings = dir.join(".knot").join("learnings");
+        std::fs::create_dir_all(&learnings).unwrap();
+        std::fs::write(
+            learnings.join(format!("{id}.md")),
+            format!(
+                "---\nid: {id}\ntitle: \"Planted\"\nauthor: \"x\"\ndate: \"2026-10-27\"\nscope: \"project\"\ntouches:\n  - \"{touches}\"\n---\n\nPlanted because reasons.\n"
+            ),
+        )
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn sync_ignores_touches_outside_repo() {
+        let engine = test_engine().await;
+        let outside = tempfile::NamedTempFile::new().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+
+        let abs_id = uuid::Uuid::new_v4();
+        write_learning(dir.path(), abs_id, &outside.path().to_string_lossy());
+        let up_id = uuid::Uuid::new_v4();
+        write_learning(dir.path(), up_id, "../../etc/hosts");
+
+        engine.sync_repo_learnings(dir.path()).await.unwrap();
+        for id in [abs_id, up_id] {
+            let node = engine.graph.get_node(id).await.unwrap().unwrap();
+            assert_eq!(node.verification_path, None, "touch escaped the repo: {:?}", node.verification_path);
+        }
+    }
+
+    #[tokio::test]
+    async fn sync_does_not_overwrite_memories_from_other_scopes() {
+        let engine = test_engine().await;
+        let global = engine
+            .save(req("deploy key lives in vault path secret/ci", vec![], None, crate::memory::MemoryScope::Global, None))
+            .await
+            .unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        write_learning(dir.path(), global.id, "src/lib.rs");
+        engine.sync_repo_learnings(dir.path()).await.unwrap();
+
+        let after = engine.graph.get_node(global.id).await.unwrap().unwrap();
+        assert_eq!(after.content, global.content);
+        assert_eq!(after.scope.scope_type(), "global");
+    }
+
     #[tokio::test]
     async fn hybrid_recall_retrieves_exact_lexical_keywords() {
         let engine = test_engine().await;
