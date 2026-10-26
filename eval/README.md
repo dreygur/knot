@@ -31,12 +31,26 @@ cargo run --release --example eval -- --engine trail --corpus requests
 Misses print to stderr with the engine's top result, which is how ground truth
 gets reviewed: an equally valid answer is added to `expect`, a wrong one stays a miss.
 
-## Baseline, 2026-10-27
+## Results, 2026-10-27
 
-Trail 0.26.0, before `knot ask` exists.
+Trail 0.26.0 against `knot ask` (BM25F plus graph rerank, warm cache).
+`questions.json` is the tuning set; `holdout.json` was written before any tuning
+and never used to choose settings, so it is the number to trust.
 
-| engine | corpus | hit@1 | hit@5 | file@5 | MRR@10 | median ms |
+| set | engine | asked | hit@1 | hit@5 | file@5 | MRR@10 |
 |---|---|---|---|---|---|---|
-| trail | knot (Rust) | 60% | 70% | 90% | 0.643 | 281 |
-| trail | requests (Python) | 47% | 80% | 100% | 0.622 | 275 |
-| trail | trail-code (TS) | 44% | 50% | 67% | 0.479 | 504 |
+| tuning | knot | 53 | 60% | 83% | 92% | 0.706 |
+| tuning | trail | 53 | 51% | 66% | 85% | 0.581 |
+| held out | knot | 21 | 52% | 86% | 95% | 0.644 |
+| held out | trail | 21 | 38% | 43% | 76% | 0.405 |
+
+Per corpus on the tuning set, knot leads on MRR everywhere but trails Trail on
+hit@1 for Trail's own TypeScript code (39% vs 44%). Median latency, warm: knot
+36 ms (Rust), 53 ms (Python), 190 ms (TS, 863 files); Trail 275 to 500 ms.
+
+Tried and rejected on the tuning set (overall MRR, baseline 0.706): extra question
+stop words with class bodies dropped (0.690), per field IDF (0.625), graph weight
+0.15 / 0.40 / 0.55 (0.675 / 0.677 / 0.655), undirected graph walk (0.698).
+
+With 7 held out questions per corpus, one question moves a corpus score by 14
+points. Read per corpus held out rows as direction, not magnitude.

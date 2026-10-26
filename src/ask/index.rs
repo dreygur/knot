@@ -1,8 +1,8 @@
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::path::Path;
 
 use super::tokenize::tokenize;
-use crate::ast::{CodeGraph, SymbolNode};
+use crate::ast::SymbolNode;
 
 /// Fields per symbol, in this order: name, signature, doc comment, path, body.
 const FIELD_COUNT: usize = 5;
@@ -23,7 +23,7 @@ const COMMENT_PREFIXES: &[&str] = &["///", "//!", "//", "/**", "/*", "*/", "*", 
 const ANNOTATION_PREFIXES: &[&str] = &["#[", "#![", "@"];
 
 /// Searchable text of one symbol, split into fields.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SymbolDoc {
     pub id: String,
     pub is_test: bool,
@@ -104,7 +104,7 @@ fn is_test_symbol(sym: &SymbolNode, annotated_test: bool) -> bool {
         || file.rsplit('/').next().is_some_and(|f| f.starts_with("test_"))
 }
 
-fn build_doc(sym: &SymbolNode, lines: &[&str]) -> SymbolDoc {
+pub(super) fn build_doc(sym: &SymbolNode, lines: &[&str]) -> SymbolDoc {
     let (comment, annotated_test) = leading_comment(lines, sym.span.0);
     let doc_text = format!("{comment}\n{}", docstring(lines, sym.span));
 
@@ -128,30 +128,7 @@ fn build_doc(sym: &SymbolNode, lines: &[&str]) -> SymbolDoc {
 }
 
 impl LexicalIndex {
-    /// Index every symbol in `graph`, reading sources under `root` for comments and bodies.
-    pub fn build(graph: &CodeGraph, root: &Path) -> Self {
-        let mut docs = Vec::with_capacity(graph.symbols.len());
-        let mut files: Vec<&String> = graph.file_to_ids.keys().collect();
-        files.sort();
-
-        for file in files {
-            let Ok(source) = std::fs::read_to_string(root.join(file)) else {
-                continue;
-            };
-            let lines: Vec<&str> = source.lines().collect();
-            let mut ids = graph.file_to_ids[file].clone();
-            ids.sort();
-            for id in ids {
-                if let Some(sym) = graph.symbols.get(&id) {
-                    docs.push(build_doc(sym, &lines));
-                }
-            }
-        }
-
-        Self::from_docs(docs)
-    }
-
-    fn from_docs(docs: Vec<SymbolDoc>) -> Self {
+    pub(super) fn from_docs(docs: Vec<SymbolDoc>) -> Self {
         let mut postings: HashMap<String, Vec<Posting>> = HashMap::new();
         let mut total_len = [0usize; FIELD_COUNT];
 
@@ -241,7 +218,7 @@ mod tests {
         let src = "/// Normalizes ranks.\n#[inline]\npub fn norm() {}\n\n#[test]\nfn checks() {}\n";
         let lines: Vec<&str> = src.lines().collect();
         assert_eq!(leading_comment(&lines, 3), ("/// Normalizes ranks.".to_string(), false));
-        assert_eq!(leading_comment(&lines, 6).1, true);
+        assert!(leading_comment(&lines, 6).1);
     }
 
     #[test]

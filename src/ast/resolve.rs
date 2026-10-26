@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use rayon::prelude::*;
+use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 
@@ -14,7 +15,7 @@ const ALWAYS_SKIPPED_DIRS: &[&str] = &[
 /// List supported source files under `root`, honoring `.gitignore`, `.ignore` and git
 /// exclude files. Ignore files above `root` are not consulted, so indexing an ignored
 /// directory directly (e.g. a vendored reference checkout) still works.
-fn list_supported_files(root: &Path) -> Result<Vec<PathBuf>> {
+pub fn list_supported_files(root: &Path) -> Result<Vec<PathBuf>> {
     let mut files = Vec::new();
     let walker = ignore::WalkBuilder::new(root)
         .follow_links(false)
@@ -33,6 +34,27 @@ fn list_supported_files(root: &Path) -> Result<Vec<PathBuf>> {
     }
 
     Ok(files)
+}
+
+/// One source file's extraction result, the unit the ask cache stores.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ParsedFile {
+    pub rel_path: String,
+    pub symbols: Vec<SymbolNode>,
+    pub imports: Vec<ImportRef>,
+}
+
+/// Parse one file under `repo_root` into symbols and imports.
+pub fn parse_file(repo_root: &Path, abs_path: &Path) -> Result<ParsedFile> {
+    let rel_path = abs_path
+        .strip_prefix(repo_root)
+        .unwrap_or(abs_path)
+        .to_string_lossy()
+        .replace('\\', "/");
+    let lang = SupportedLang::from_path(abs_path).context("Unsupported language for file")?;
+    let content = std::fs::read_to_string(abs_path)?;
+    let (symbols, imports) = extract_file(&rel_path, &content, lang)?;
+    Ok(ParsedFile { rel_path, symbols, imports })
 }
 
 /// Cheap change detector for indexed sources: file count, total size, newest mtime.
@@ -207,55 +229,43 @@ impl CodeGraph {
 
     pub fn build(repo_root: &Path) -> Result<Self> {
         let files = list_supported_files(repo_root)?;
-
-        type ParsedFile = (String, Vec<SymbolNode>, Vec<ImportRef>);
-        let extracted_results: Vec<Result<ParsedFile>> = files
+        let parsed: Vec<ParsedFile> = files
             .par_iter()
-            .map(|abs_path| {
-                let rel_path = abs_path
-                    .strip_prefix(repo_root)
-                    .unwrap_or(abs_path)
-                    .to_string_lossy()
-                    .replace('\\', "/");
-
-                let lang = SupportedLang::from_path(abs_path)
-                    .context("Unsupported language for file")?;
-                let content = std::fs::read_to_string(abs_path)?;
-                let (file_symbols, imports) = extract_file(&rel_path, &content, lang)?;
-                Ok((rel_path, file_symbols, imports))
-            })
+            .filter_map(|abs_path| parse_file(repo_root, abs_path).ok())
             .collect();
+        Ok(Self::from_parsed(parsed))
+    }
 
+    /// Assemble the graph from already parsed files, e.g. ones loaded from a cache.
+    pub fn from_parsed(parsed: Vec<ParsedFile>) -> Self {
         let mut symbols = HashMap::new();
         let mut name_to_ids: HashMap<String, Vec<String>> = HashMap::new();
         let mut file_to_ids: HashMap<String, Vec<String>> = HashMap::new();
         let mut file_imports: HashMap<String, Vec<ImportRef>> = HashMap::new();
 
-        for res in extracted_results {
-            if let Ok((rel_path, file_symbols, imports)) = res {
-                file_imports.insert(rel_path, imports);
-                for sym in file_symbols {
-                    let id = sym.id.clone();
-                    let file = sym.file.clone();
-                    let name = sym.name.clone();
+        for ParsedFile { rel_path, symbols: file_symbols, imports } in parsed {
+            file_imports.insert(rel_path, imports);
+            for sym in file_symbols {
+                let id = sym.id.clone();
+                let file = sym.file.clone();
+                let name = sym.name.clone();
 
-                    let bare_name = name
-                        .split("::")
-                        .last()
-                        .unwrap_or(&name)
-                        .split('.')
-                        .last()
-                        .unwrap_or(&name)
-                        .to_string();
+                let bare_name = name
+                    .split("::")
+                    .last()
+                    .unwrap_or(&name)
+                    .split('.')
+                    .last()
+                    .unwrap_or(&name)
+                    .to_string();
 
-                    name_to_ids.entry(bare_name.clone()).or_default().push(id.clone());
-                    if bare_name != name {
-                        name_to_ids.entry(name).or_default().push(id.clone());
-                    }
-
-                    file_to_ids.entry(file).or_default().push(id.clone());
-                    symbols.insert(id, sym);
+                name_to_ids.entry(bare_name.clone()).or_default().push(id.clone());
+                if bare_name != name {
+                    name_to_ids.entry(name).or_default().push(id.clone());
                 }
+
+                file_to_ids.entry(file).or_default().push(id.clone());
+                symbols.insert(id, sym);
             }
         }
 
@@ -303,7 +313,7 @@ impl CodeGraph {
         graph.callers = callers;
         graph.callees = callees;
         graph.importers = importers;
-        Ok(graph)
+        graph
     }
 
     pub fn resolve_symbol(&self, query: &str) -> Vec<String> {

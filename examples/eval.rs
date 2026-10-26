@@ -209,6 +209,29 @@ fn print_report(scores: &BTreeMap<(String, String), Score>) {
             s.failures,
         );
     }
+
+    let mut totals: BTreeMap<&str, Score> = BTreeMap::new();
+    for ((engine, _), s) in scores {
+        let total = totals.entry(engine.as_str()).or_default();
+        total.asked += s.asked;
+        total.hit_at_1 += s.hit_at_1;
+        total.hit_at_k += s.hit_at_k;
+        total.file_at_k += s.file_at_k;
+        total.reciprocal_rank += s.reciprocal_rank;
+        total.failures += s.failures;
+    }
+    for (engine, s) in totals {
+        let n = s.asked.max(1) as f64;
+        println!(
+            "| **{engine}** | **all** | {} | {:.0}% | {:.0}% | {:.0}% | **{:.3}** | | {} |",
+            s.asked,
+            100.0 * s.hit_at_1 as f64 / n,
+            100.0 * s.hit_at_k as f64 / n,
+            100.0 * s.file_at_k as f64 / n,
+            s.reciprocal_rank / n,
+            s.failures,
+        );
+    }
 }
 
 fn main() -> Result<()> {

@@ -425,7 +425,8 @@ fn parse_ask_args(args: impl Iterator<Item = String>) -> AskArgs {
 
 async fn cli_ask(args: AskArgs) -> Result<()> {
     let cwd = std::env::current_dir()?;
-    let hits = crate::ask::ask(&cwd, &args.query, args.limit, args.ranking)?;
+    let cache_root = crate::ask::default_cache_root();
+    let hits = crate::ask::ask(&cwd, Some(&cache_root), &args.query, args.limit, args.ranking)?;
 
     if args.json {
         let json_hits: Vec<serde_json::Value> = hits

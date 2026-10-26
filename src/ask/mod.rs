@@ -1,6 +1,8 @@
+mod cache;
 mod index;
 mod tokenize;
 
+pub use cache::{load_corpus, Corpus, LoadStats};
 pub use index::LexicalIndex;
 pub use tokenize::tokenize;
 
@@ -116,11 +118,25 @@ pub fn rank(graph: &CodeGraph, index: &LexicalIndex, query: &str, limit: usize, 
         .collect()
 }
 
-/// Build the graph and index for `root` and answer one query.
-pub fn ask(root: &Path, query: &str, limit: usize, ranking: Ranking) -> anyhow::Result<Vec<AskHit>> {
-    let graph = CodeGraph::build(root)?;
-    let index = LexicalIndex::build(&graph, root);
-    Ok(rank(&graph, &index, query, limit, ranking))
+/// Where the ask cache lives: `$KNOT_DATA_DIR`, else `~/.knot`, matching the vault.
+pub fn default_cache_root() -> std::path::PathBuf {
+    std::env::var_os("KNOT_DATA_DIR")
+        .map(std::path::PathBuf::from)
+        .or_else(|| dirs::home_dir().map(|h| h.join(".knot")))
+        .unwrap_or_else(|| std::path::PathBuf::from(".knot"))
+}
+
+/// Load (or refresh) the corpus for `root` and answer one query. With a cache
+/// root, only files changed since the last call are parsed.
+pub fn ask(
+    root: &Path,
+    cache_root: Option<&Path>,
+    query: &str,
+    limit: usize,
+    ranking: Ranking,
+) -> anyhow::Result<Vec<AskHit>> {
+    let (corpus, _) = load_corpus(root, cache_root)?;
+    Ok(rank(&corpus.graph, &corpus.index, query, limit, ranking))
 }
 
 #[cfg(test)]
@@ -149,7 +165,7 @@ mod tests {
             "#[test]\nfn follows_redirects_test() { resolve_redirects(); }\n",
         );
 
-        let hits = ask(root, "follow http redirects", 5, Ranking::Hybrid).unwrap();
+        let hits = ask(root, None, "follow http redirects", 5, Ranking::Hybrid).unwrap();
         assert_eq!(hits[0].name, "resolve_redirects");
         assert_eq!(hits[0].pointer(), "src/http.rs:L2-L2");
         let test_rank = hits.iter().position(|h| h.name == "follows_redirects_test");
@@ -160,7 +176,7 @@ mod tests {
     fn empty_or_unmatched_query_returns_nothing() {
         let dir = tempfile::tempdir().unwrap();
         write(dir.path(), "src/a.rs", "pub fn alpha() {}\n");
-        assert!(ask(dir.path(), "zzzz qqqq", 5, Ranking::Hybrid).unwrap().is_empty());
-        assert!(ask(dir.path(), "", 5, Ranking::LexicalOnly).unwrap().is_empty());
+        assert!(ask(dir.path(), None, "zzzz qqqq", 5, Ranking::Hybrid).unwrap().is_empty());
+        assert!(ask(dir.path(), None, "", 5, Ranking::LexicalOnly).unwrap().is_empty());
     }
 }

@@ -82,6 +82,30 @@ impl KnotServer {
     }
 }
 
+const DEFAULT_ASK_LIMIT: usize = 8;
+const MAX_ASK_LIMIT: usize = 25;
+
+/// Text answer for `knot_ask`: ranked hits with pointers and excerpts.
+fn ask_text(root: &std::path::Path, cache_root: Option<&std::path::Path>, input: &AskInput) -> Result<String> {
+    let limit = input.limit.unwrap_or(DEFAULT_ASK_LIMIT).min(MAX_ASK_LIMIT);
+    let hits = crate::ask::ask(root, cache_root, &input.question, limit, crate::ask::Ranking::Hybrid)?;
+    if hits.is_empty() {
+        return Ok(format!("No code matched '{}'.", input.question));
+    }
+
+    let with_source = input.source.unwrap_or(true);
+    let mut out = format!("{} hit(s) for '{}':\n\n", hits.len(), input.question);
+    for (rank, hit) in hits.iter().enumerate() {
+        out.push_str(&format!("{}. {} · {}  {}\n", rank + 1, hit.name, hit.kind, hit.pointer()));
+        let excerpt = if with_source { &hit.crux } else { &hit.signature };
+        for line in excerpt.lines() {
+            out.push_str(&format!("    {line}\n"));
+        }
+        out.push('\n');
+    }
+    Ok(out)
+}
+
 const MAX_COLLISION_FIELD_CHARS: usize = 80;
 
 /// Flatten text from someone else's commit to one short line with no control
@@ -242,6 +266,16 @@ pub struct TraceCallsInput {
     pub direction: Option<String>,
     /// Transitive depth for blast radius (default 1 = direct edges; >1 = blast radius)
     pub depth: Option<usize>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct AskInput {
+    /// What you want to find or understand, in plain words or identifiers
+    pub question: String,
+    /// Max results (default 8, max 25)
+    pub limit: Option<usize>,
+    /// Inline each hit's code excerpt (default true)
+    pub source: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -531,6 +565,17 @@ impl KnotServer {
                 Ok(CallToolResult::success(vec![Content::text(out)]))
             }
         }
+    }
+
+    #[tool(description = "Find the code that answers a question. Returns ranked symbols with exact file:line spans and their code excerpts, ranked by text match plus call-graph proximity ($0, no LLM). Use before grepping or opening files; the top hit with its excerpt is usually the answer.")]
+    async fn knot_ask(
+        &self,
+        #[tool(aggr)] input: AskInput,
+    ) -> Result<CallToolResult, McpError> {
+        let cwd = std::env::current_dir().map_err(|e| mcp_err(e.into()))?;
+        let cache_root = crate::ask::default_cache_root();
+        let text = ask_text(&cwd, Some(&cache_root), &input).map_err(mcp_err)?;
+        Ok(self.with_alerts(text))
     }
 
     #[tool(description = "Signatures-only view of one file — returns every function, struct, and method signature with exact line spans (~10x token savings vs reading the full file).")]
@@ -1044,6 +1089,25 @@ fn format_status_report(r: &StatusReport) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ask_text_lists_hits_with_pointers_and_excerpts() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("src")).unwrap();
+        std::fs::write(
+            dir.path().join("src/retry.rs"),
+            "/// Retry a failed request with exponential backoff.\npub fn retry_with_backoff() {\n    sleep_ms(100);\n}\n",
+        )
+        .unwrap();
+        let input = |q: &str| AskInput { question: q.into(), limit: None, source: None };
+
+        let out = ask_text(dir.path(), None, &input("retry with backoff")).unwrap();
+        assert!(out.contains("1. retry_with_backoff · function  src/retry.rs:L2-L4"), "{out}");
+        assert!(out.contains("sleep_ms(100);"), "excerpt missing: {out}");
+
+        let none = ask_text(dir.path(), None, &input("zzqq unknown")).unwrap();
+        assert_eq!(none, "No code matched 'zzqq unknown'.");
+    }
 
     #[tokio::test]
     async fn read_only_blocks_every_write_tool() {
