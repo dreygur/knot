@@ -290,7 +290,26 @@ fn cli_init() -> Result<()> {
         .parent()
         .ok_or_else(|| anyhow::anyhow!("Cannot determine binary directory"))?;
 
-    register_path(bin_dir)
+    register_path(bin_dir)?;
+
+    let cwd = std::env::current_dir()?;
+    if let Ok(targets) = crate::hosts::configure_agent_hosts(&cwd) {
+        if !targets.is_empty() {
+            println!("[KNOT] Configured agent hosts:");
+            for t in targets {
+                println!("  • {t}");
+            }
+        }
+    }
+    Ok(())
+}
+
+async fn cli_viz() -> Result<()> {
+    let cwd = std::env::current_dir()?;
+    let out_path = crate::ui::viz::render_and_launch_viz(&cwd)?;
+    println!("[KNOT] Code graph visualizer generated: {}", out_path.display());
+    println!("[KNOT] Opened in default web browser.");
+    Ok(())
 }
 
 async fn cli_callers(symbol: &str) -> Result<()> {
@@ -444,6 +463,7 @@ pub fn print_help() {
     println!("  knot blast <symbol> [--depth N]         Transitive blast radius analysis");
     println!("  knot skeleton <file>                    File API outline (signatures and line spans)");
     println!("  knot check [--base <ref>]               Audit git diff against repo learnings");
+    println!("  knot viz                                Launch interactive code graph visualizer");
     println!("  knot status                             Vault health check");
     println!("  knot logs [--follow|-f]                 View activity log");
     println!("  knot init                               Register binary directory in PATH");
@@ -520,6 +540,7 @@ pub async fn run() -> Result<()> {
             }
             cli_check(base_ref.as_deref()).await
         }
+        Some("viz") => cli_viz().await,
         Some("--help") | Some("-h") => {
             print_help();
             Ok(())
