@@ -57,6 +57,15 @@ tracing-appender = "0.2"
 # Cross-platform path helpers
 dirs = "5"
 
+# AST and Code Graph Engine
+tree-sitter = "0.24"
+tree-sitter-rust = "0.23"
+tree-sitter-python = "0.23"
+tree-sitter-typescript = "0.23"
+rayon = "1.10"
+petgraph = "0.7"
+walkdir = "2"
+
 [target.'cfg(windows)'.dependencies]
 winreg = "0.52"
 

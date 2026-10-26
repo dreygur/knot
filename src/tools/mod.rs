@@ -153,6 +153,22 @@ pub struct DeleteSkillInput {
     pub force: Option<bool>,
 }
 
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct TraceCallsInput {
+    /// Target symbol name, e.g. "validate_jwt" or "src/auth.rs::validate_jwt"
+    pub symbol: String,
+    /// Direction: "in" (default) for callers / dependents; "out" for callees / dependencies
+    pub direction: Option<String>,
+    /// Transitive depth for blast radius (default 1 = direct edges; >1 = blast radius)
+    pub depth: Option<usize>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct FileApiInput {
+    /// Repo-relative file path, e.g. "src/engine/graph.rs"
+    pub file: String,
+}
+
 // ── Tool implementations ──────────────────────────────────────────────────────
 
 #[tool(tool_box)]
@@ -351,6 +367,88 @@ impl KnotServer {
         Ok(CallToolResult::success(vec![Content::text(
             format_status_report(&status),
         )]))
+    }
+
+    #[tool(description = "Trace callers, callees, and transitive blast radius of any code symbol using native Tree-sitter AST analysis ($0, no LLM). Run before refactoring to discover all affected code.")]
+    async fn knot_trace_calls(
+        &self,
+        #[tool(aggr)] input: TraceCallsInput,
+    ) -> Result<CallToolResult, McpError> {
+        let cwd = std::env::current_dir().map_err(|e| mcp_err(e.into()))?;
+        let graph = crate::ast::CodeGraph::build(&cwd).map_err(mcp_err)?;
+        let direction = input.direction.as_deref().unwrap_or("in");
+        let depth = input.depth.unwrap_or(1);
+
+        if depth > 1 {
+            let report = graph.blast_radius(&input.symbol, Some(depth));
+            let mut out = format!(
+                "Blast radius for '{}' (depth={}): {} impacted symbols, {} files:\n\n",
+                input.symbol, depth, report.impacted_symbols.len(), report.impacted_files.len()
+            );
+            for s in &report.impacted_symbols {
+                out.push_str(&format!("• {} ({}:L{}-L{})\n", s.name, s.file, s.span.0, s.span.1));
+            }
+            if !report.impacted_files.is_empty() {
+                out.push_str("\nAffected files:\n");
+                for f in &report.impacted_files {
+                    out.push_str(&format!("- {f}\n"));
+                }
+            }
+            return Ok(CallToolResult::success(vec![Content::text(out)]));
+        }
+
+        if direction == "out" {
+            let callees = graph.get_callees(&input.symbol);
+            if callees.is_empty() {
+                Ok(CallToolResult::success(vec![Content::text(format!(
+                    "No callees found for symbol '{}'", input.symbol
+                ))]))
+            } else {
+                let mut out = format!("Callees of '{}' ({}):\n\n", input.symbol, callees.len());
+                for c in callees {
+                    out.push_str(&format!("• {} ({}:L{}-L{})\n", c.name, c.file, c.span.0, c.span.1));
+                }
+                Ok(CallToolResult::success(vec![Content::text(out)]))
+            }
+        } else {
+            let callers = graph.get_callers(&input.symbol);
+            if callers.is_empty() {
+                Ok(CallToolResult::success(vec![Content::text(format!(
+                    "No callers found for symbol '{}'", input.symbol
+                ))]))
+            } else {
+                let mut out = format!("Callers of '{}' ({}):\n\n", input.symbol, callers.len());
+                for c in callers {
+                    out.push_str(&format!("• {} ({}:L{}-L{})\n", c.name, c.file, c.span.0, c.span.1));
+                }
+                Ok(CallToolResult::success(vec![Content::text(out)]))
+            }
+        }
+    }
+
+    #[tool(description = "Signatures-only view of one file — returns every function, struct, and method signature with exact line spans (~10x token savings vs reading the full file).")]
+    async fn knot_file_api(
+        &self,
+        #[tool(aggr)] input: FileApiInput,
+    ) -> Result<CallToolResult, McpError> {
+        let cwd = std::env::current_dir().map_err(|e| mcp_err(e.into()))?;
+        let graph = crate::ast::CodeGraph::build(&cwd).map_err(mcp_err)?;
+        let items = graph.file_skeleton(&input.file);
+
+        if items.is_empty() {
+            Ok(CallToolResult::success(vec![Content::text(format!(
+                "No definitions found in file '{}'", input.file
+            ))]))
+        } else {
+            let mut out = format!("Skeleton for '{}' ({} definitions):\n\n", input.file, items.len());
+            for item in items {
+                out.push_str(&format!(
+                    "L{:>4}-L{:<4} {:<10} {}\n",
+                    item.span.0, item.span.1, item.kind.as_str(), item.signature
+                ));
+            }
+            Ok(CallToolResult::success(vec![Content::text(out)]))
+        }
     }
 
     #[tool(
