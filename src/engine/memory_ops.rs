@@ -319,10 +319,12 @@ impl StorageEngine {
     /// node, new files insert one. Returns the number of learnings indexed.
     pub async fn sync_repo_learnings(&self, repo_root: &std::path::Path) -> Result<usize> {
         let repo_learnings = crate::engine::learnings::scan_repo_learnings(repo_root)?;
-        let project_id = repo_root
-            .file_name()
-            .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_else(|| "project".into());
+        // Keyed on the canonical path, not the folder name: two repos both called
+        // `app` must not be able to update each other's learnings.
+        let project_id = std::fs::canonicalize(repo_root)
+            .unwrap_or_else(|_| repo_root.to_path_buf())
+            .to_string_lossy()
+            .to_string();
 
         let mut count = 0;
         for l in repo_learnings {
@@ -631,13 +633,14 @@ fn check_path_traversal(path: &str) -> Result<()> {
     Ok(())
 }
 
-/// Resolve a learning's `touches` entry to an absolute target inside `repo_root`.
-/// Returns `None` for `..` segments or absolute paths that leave the repo.
+/// Resolve a learning's `touches` entry (`file` or `file#symbol`) to an absolute
+/// Jit-V target inside `repo_root`, or `None` if the file would leave the repo.
 fn contained_target(repo_root: &std::path::Path, touch: &str) -> Option<String> {
-    check_path_traversal(touch).ok()?;
-    let path = std::path::Path::new(touch);
-    if path.is_absolute() {
-        return path.starts_with(repo_root).then(|| touch.to_string());
-    }
-    Some(repo_root.join(touch).to_string_lossy().to_string())
+    let (file, symbol) = jitv::parse_target(touch);
+    let path = crate::engine::learnings::contained_path(repo_root, file)?;
+    let path = path.to_string_lossy();
+    Some(match symbol {
+        Some(sym) => format!("{path}#{sym}"),
+        None => path.to_string(),
+    })
 }

@@ -663,7 +663,7 @@ mod tests {
         let node = engine.graph.get_node(id).await.unwrap().unwrap();
         assert!(node.content.starts_with("Use WAL journaling"));
         assert!(node.scope.scope_type() == "project");
-        let expected_path = dir.path().join("src/db.rs").to_string_lossy().to_string();
+        let expected_path = std::fs::canonicalize(dir.path()).unwrap().join("src/db.rs").to_string_lossy().to_string();
         assert_eq!(node.verification_path.as_deref(), Some(expected_path.as_str()));
 
         // Re-sync of an unchanged file must not fail on the existing primary key.
@@ -706,6 +706,48 @@ mod tests {
             let node = engine.graph.get_node(id).await.unwrap().unwrap();
             assert_eq!(node.verification_path, None, "touch escaped the repo: {:?}", node.verification_path);
         }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn sync_ignores_touches_through_symlinks_out_of_repo() {
+        let engine = test_engine().await;
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("id_rsa"), "secret").unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        std::os::unix::fs::symlink(outside.path(), dir.path().join("link")).unwrap();
+
+        let id = uuid::Uuid::new_v4();
+        write_learning(dir.path(), id, "link/id_rsa");
+        engine.sync_repo_learnings(dir.path()).await.unwrap();
+
+        let node = engine.graph.get_node(id).await.unwrap().unwrap();
+        assert_eq!(node.verification_path, None, "symlink escaped: {:?}", node.verification_path);
+    }
+
+    #[tokio::test]
+    async fn sync_keeps_same_named_repos_apart() {
+        let engine = test_engine().await;
+        let a = tempfile::tempdir().unwrap();
+        let b = tempfile::tempdir().unwrap();
+        let (repo_a, repo_b) = (a.path().join("app"), b.path().join("app"));
+
+        let id = uuid::Uuid::new_v4();
+        write_learning(&repo_a, id, "src/lib.rs");
+        engine.sync_repo_learnings(&repo_a).await.unwrap();
+        let original = engine.graph.get_node(id).await.unwrap().unwrap();
+
+        let learnings = repo_b.join(".knot").join("learnings");
+        std::fs::create_dir_all(&learnings).unwrap();
+        std::fs::write(
+            learnings.join("planted.md"),
+            format!("---\nid: {id}\ntitle: \"Hijack\"\nauthor: \"m\"\ndate: \"2026-10-27\"\nscope: \"project\"\n---\n\nHijacked because yes.\n"),
+        )
+        .unwrap();
+        engine.sync_repo_learnings(&repo_b).await.unwrap();
+
+        let after = engine.graph.get_node(id).await.unwrap().unwrap();
+        assert_eq!(after.content, original.content);
     }
 
     #[tokio::test]

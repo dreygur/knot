@@ -160,6 +160,37 @@ const CAUSAL_MARKERS: &[&str] = &[
     "fails", "failed", "instead of", "the reason",
 ];
 
+/// Resolve a path from a learning file to an absolute path inside `repo_root`.
+///
+/// Learning files come from anyone who can push, so `..`, absolute paths elsewhere
+/// and committed symlinks pointing out of the repo are all rejected. The deepest
+/// existing ancestor is canonicalized, which resolves a symlinked directory even
+/// when the file under it does not exist yet.
+pub fn contained_path(repo_root: &Path, path: &str) -> Option<PathBuf> {
+    let candidate = Path::new(path);
+    if candidate.components().any(|c| c == std::path::Component::ParentDir) {
+        return None;
+    }
+
+    let joined = if candidate.is_absolute() {
+        candidate.to_path_buf()
+    } else {
+        repo_root.join(candidate)
+    };
+    let root = fs::canonicalize(repo_root).ok()?;
+
+    let mut existing = joined.as_path();
+    let mut missing = Vec::new();
+    while !existing.exists() {
+        missing.push(existing.file_name()?);
+        existing = existing.parent()?;
+    }
+    let mut resolved = fs::canonicalize(existing).ok()?;
+    resolved.extend(missing.iter().rev());
+
+    resolved.starts_with(&root).then_some(resolved)
+}
+
 /// Quality gate for team learnings committed to Git.
 ///
 /// A learning must say why (a causal statement or a "Tried and ruled out" section) and
@@ -180,16 +211,9 @@ pub fn quality_issues(content: &str, touches: &[String], repo_root: &Path) -> Ve
 
     for touch in touches {
         let (path, symbol) = crate::jitv::parse_target(touch);
-        let escapes = Path::new(path).components().any(|c| c == std::path::Component::ParentDir)
-            || (Path::new(path).is_absolute() && !Path::new(path).starts_with(repo_root));
-        if escapes {
+        let Some(abs) = contained_path(repo_root, path) else {
             issues.push(format!("touches '{touch}': path is outside the repository"));
             continue;
-        }
-        let abs = if Path::new(path).is_absolute() {
-            PathBuf::from(path)
-        } else {
-            repo_root.join(path)
         };
         if !abs.exists() {
             issues.push(format!("touches '{touch}': path does not exist"));
