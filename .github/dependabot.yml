@@ -1,0 +1,13 @@
+version: 2
+updates:
+  - package-ecosystem: "cargo"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    ignore:
+      # rand 0.8.x is only an optional transitive dep from sqlx-mysql/sqlx-postgres,
+      # which are disabled via default-features = false. It is never compiled into our
+      # binary. A semver-incompatible rand 0.9.3+ upgrade is not possible here; this
+      # will resolve when sqlx 0.9 stable ships.
+      - dependency-name: "rand"
+        versions: ["0.8.*"]

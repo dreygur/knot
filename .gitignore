@@ -1,0 +1,24 @@
+# Rust build artifacts
+/target/
+**/*.rs.bk
+
+# Knot local runtime data
+.knot/
+*.db
+*.db-wal
+*.db-shm
+
+# Reference codebases (kept locally for comparison & benchmarks)
+reference/
+
+# macOS system and AppleDouble metadata files
+.DS_Store
+._*
+.Spotlight-V100
+.Trashes
+
+# Editor & IDE configs
+.idea/
+.vscode/
+*.swp
+*.swo

@@ -1,0 +1,9 @@
+{
+  "redaction_patterns": [
+    { "name": "Generic_API_Key", "regex": "[a-zA-Z0-9]{32,}" },
+    { "name": "Bearer_Token", "regex": "Bearer [a-zA-Z0-9\\-\\._~\\+\\/]+=*" },
+    { "name": "Env_Variable", "regex": "([A-Z_]{3,15})=.*" },
+    { "name": "Private_Key", "regex": "-----BEGIN [A-Z ]+ PRIVATE KEY-----" }
+  ],
+  "action": "mask_with_asterisks"
+}

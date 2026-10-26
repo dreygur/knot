@@ -1,0 +1,64 @@
+[package]
+name = "knot"
+version = "0.3.0"
+edition = "2021"
+description = "Persistent memory pool MCP server - eliminate Context Rot with hierarchical knowledge, skill execution, and semantic drift detection"
+
+[package.metadata.knot]
+short_description = "Knot - persistent memory pool MCP server for Claude Code"
+
+[[bin]]
+name = "knot"
+path = "src/main.rs"
+
+[lib]
+name = "knot"
+path = "src/lib.rs"
+
+[dependencies]
+# MCP transport
+rmcp = { version = "0.1", features = ["server", "transport-io"] }
+schemars = "0.8"
+
+# Graph/metadata store (also hosts vectors as JSON blobs in Phase 1)
+# Phase 2: replace with lancedb + candle once protoc is available
+sqlx = { version = "0.8", default-features = false, features = [
+    "runtime-tokio-native-tls",
+    "sqlite",
+    "uuid",
+    "chrono",
+] }
+
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Utilities
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+anyhow = "1"
+thiserror = "1"
+
+# Hashing (Jit-V content verification)
+blake3 = "1"
+
+# Privacy scrubber
+regex = "1"
+once_cell = "1"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+tracing-appender = "0.2"
+
+# Cross-platform path helpers
+dirs = "5"
+
+[target.'cfg(windows)'.dependencies]
+winreg = "0.52"
+
+[dev-dependencies]
+tempfile = "3"
