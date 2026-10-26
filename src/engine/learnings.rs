@@ -179,9 +179,14 @@ pub fn contained_path(repo_root: &Path, path: &str) -> Option<PathBuf> {
     };
     let root = fs::canonicalize(repo_root).ok()?;
 
+    // `exists()` follows links, so a dangling symlink would look like a missing file
+    // and be appended unresolved; any link entry at all among the missing parts is refused.
     let mut existing = joined.as_path();
     let mut missing = Vec::new();
     while !existing.exists() {
+        if fs::symlink_metadata(existing).is_ok() {
+            return None;
+        }
         missing.push(existing.file_name()?);
         existing = existing.parent()?;
     }
@@ -337,6 +342,14 @@ mod tests {
         assert!(missing_sym[0].contains("close_pool"));
         let missing_file = quality_issues(why, &["src/gone.rs".into()], dir.path());
         assert!(missing_file[0].contains("does not exist"));
+
+        #[cfg(unix)]
+        {
+            let outside = tempdir().unwrap();
+            std::os::unix::fs::symlink(outside.path().join("later"), dir.path().join("dangling")).unwrap();
+            assert_eq!(contained_path(dir.path(), "dangling/id_rsa"), None);
+            assert_eq!(contained_path(dir.path(), "dangling"), None);
+        }
 
         for escape in ["../outside.rs", "/etc/hosts"] {
             let issues = quality_issues(why, &[escape.into()], dir.path());
