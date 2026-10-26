@@ -13,7 +13,7 @@ fn generate_graph_html(graph_data_json: &str) -> String {
 <head>
   <meta charset="UTF-8">
   <title>Knot Code Graph Visualizer</title>
-  <script type="text/javascript" src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"></script>
+  <script type="text/javascript" src="https://unpkg.com/vis-network@9.1.9/standalone/umd/vis-network.min.js"></script>
   <style>
     body {{ margin: 0; padding: 0; background-color: #0f172a; color: #f8fafc; font-family: system-ui, sans-serif; }}
     #header {{ padding: 12px 20px; background-color: #1e293b; border-bottom: 1px solid #334155; display: flex; justify-content: space-between; align-items: center; }}
@@ -107,7 +107,14 @@ pub fn export_graph_html(graph: &CodeGraph, output_path: &Path) -> Result<()> {
         "edges": edges,
     });
 
-    let html_content = generate_graph_html(&payload.to_string());
+    // Symbol text comes from the indexed repo; escaping <, > and & keeps a signature
+    // containing `</script>` from ending the inline script. JSON reads the escapes back.
+    let safe_json = payload
+        .to_string()
+        .replace('<', "\\u003c")
+        .replace('>', "\\u003e")
+        .replace('&', "\\u0026");
+    let html_content = generate_graph_html(&safe_json);
     if let Some(parent) = output_path.parent() {
         fs::create_dir_all(parent)?;
     }
@@ -143,6 +150,33 @@ mod tests {
         assert!(html.contains("Knot Code Graph Visualizer"));
         assert!(html.contains("vis.Network"));
 
+        Ok(())
+    }
+
+    #[test]
+    fn test_symbol_text_cannot_close_the_script_tag() -> Result<()> {
+        let dir = tempdir()?;
+        let mut graph = CodeGraph::default();
+        graph.symbols.insert(
+            "evil.ts::x".into(),
+            crate::ast::types::SymbolNode {
+                id: "evil.ts::x".into(),
+                file: "evil.ts".into(),
+                name: "x".into(),
+                kind: crate::ast::types::SymbolKind::Function,
+                signature: "function x() { return '</script><script>alert(1)</script>' }".into(),
+                span: (1, 1),
+                crux: String::new(),
+                hash: String::new(),
+                outgoing_calls: vec![],
+            },
+        );
+        let out_file = dir.path().join("g.html");
+        export_graph_html(&graph, &out_file)?;
+
+        let html = fs::read_to_string(&out_file)?;
+        assert_eq!(html.matches("</script>").count(), 2, "only the page's own script tags may close");
+        assert!(!html.contains("<script>alert"));
         Ok(())
     }
 }

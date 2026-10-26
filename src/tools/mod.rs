@@ -65,6 +65,13 @@ impl KnotServer {
         Some(format_collisions(&fresh))
     }
 
+    /// The refusal every state-changing tool returns when KNOT_READ_ONLY is set.
+    fn read_only_refusal(&self) -> Option<CallToolResult> {
+        self.read_only.then(|| {
+            CallToolResult::success(vec![Content::text("[KNOT] WARN:  Vault is locked (Read-Only Mode)")])
+        })
+    }
+
     /// Append any new branch collision alert to a tool's text output.
     fn with_alerts(&self, text: String) -> CallToolResult {
         let text = match self.new_collision_alert() {
@@ -362,6 +369,9 @@ impl KnotServer {
         &self,
         #[tool(aggr)] input: CommitSessionInput,
     ) -> Result<CallToolResult, McpError> {
+        if let Some(refusal) = self.read_only_refusal() {
+            return Ok(refusal);
+        }
         let engine = self.engine.lock().await;
         let report = engine
             .commit_session(&self.session_id, &input.project_id)
@@ -417,6 +427,9 @@ impl KnotServer {
         &self,
         #[tool(aggr)] input: LinkNodesInput,
     ) -> Result<CallToolResult, McpError> {
+        if let Some(refusal) = self.read_only_refusal() {
+            return Ok(refusal);
+        }
         let src = parse_uuid(&input.source_id)?;
         let tgt = parse_uuid(&input.target_id)?;
         let et = EdgeType::from_str(&input.edge_type).ok_or_else(|| {
@@ -435,6 +448,9 @@ impl KnotServer {
         &self,
         #[tool(aggr)] input: ForgetNodeInput,
     ) -> Result<CallToolResult, McpError> {
+        if let Some(refusal) = self.read_only_refusal() {
+            return Ok(refusal);
+        }
         let id = parse_uuid(&input.node_id)?;
         let engine = self.engine.lock().await;
         engine.forget(id).await.map_err(mcp_err)?;
@@ -553,17 +569,10 @@ impl KnotServer {
         let mut out = String::new();
         if input.check_remote.unwrap_or(false) {
             if let Ok(remote_report) = crate::check::detect_remote_collisions(&cwd) {
-                if !remote_report.collisions.is_empty() {
-                    out.push_str(&format!(
-                        "WARNING: {} remote branch collision(s) detected with teammates:\n\n",
-                        remote_report.collisions.len()
-                    ));
-                    for c in &remote_report.collisions {
-                        out.push_str(&format!(
-                            "• [COLLISION] {} modified in branch '{}' by '{}'\n  Commit: {} ({})\n\n",
-                            c.file, c.branch, c.author, c.summary, &c.commit_oid[..7.min(c.commit_oid.len())]
-                        ));
-                    }
+                let refs: Vec<&RemoteCollision> = remote_report.collisions.iter().collect();
+                if !refs.is_empty() {
+                    out.push_str(&format_collisions(&refs));
+                    out.push('\n');
                 }
             }
         }
@@ -637,6 +646,9 @@ impl KnotServer {
         &self,
         #[tool(aggr)] input: ExecuteSkillInput,
     ) -> Result<CallToolResult, McpError> {
+        if let Some(refusal) = self.read_only_refusal() {
+            return Ok(refusal);
+        }
         let engine = self.engine.lock().await;
         let variables: Vec<(String, String)> = input
             .variables
@@ -1032,6 +1044,38 @@ fn format_status_report(r: &StatusReport) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn read_only_blocks_every_write_tool() {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = StorageEngine::new(&dir.path().to_string_lossy()).await.unwrap();
+        let kept = engine
+            .save(SaveRequest {
+                content: "keep me".into(),
+                tags: vec![],
+                verification_path: None,
+                scope: MemoryScope::Global,
+                command_exit_code: None,
+                session_id: "s".into(),
+                parent_id: None,
+                origin_agent: None,
+            })
+            .await
+            .unwrap();
+        let mut server = KnotServer::new(engine, "s".into());
+        server.read_only = true;
+
+        let id = kept.id.to_string();
+        server.forget_node(ForgetNodeInput { node_id: id.clone() }).await.unwrap();
+        server
+            .link_nodes(LinkNodesInput { source_id: id.clone(), target_id: id.clone(), edge_type: "refines".into() })
+            .await
+            .unwrap();
+
+        let engine = server.engine.lock().await;
+        assert!(engine.graph.get_node(kept.id).await.unwrap().is_some(), "forget_node ran in read-only mode");
+        assert!(engine.graph.get_edges_from(kept.id).await.unwrap().is_empty(), "link_nodes ran in read-only mode");
+    }
 
     #[test]
     fn collision_alert_neutralizes_commit_metadata() {
