@@ -1,3 +1,8 @@
+mod agent;
+
+pub use agent::{Agent, Target};
+
+use agent::{ANTIGRAVITY_SKILL, CURSOR_RULE};
 use anyhow::Result;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -92,40 +97,25 @@ pub fn install_antigravity_skill(home_dir: &Path) -> Result<PathBuf> {
     Ok(target)
 }
 
-pub fn configure_agent_hosts(repo_root: &Path) -> Result<Vec<String>> {
-    let mut configured = Vec::new();
-
-    // 1. AGENTS.md (Codex, OpenCode, universal CLIs)
-    let agents_file = repo_root.join("AGENTS.md");
-    if upsert_block_into_file(&agents_file, KNOT_PROTOCOL_BLOCK)? {
-        configured.push("AGENTS.md".into());
+fn write_target(target: Target, repo_root: &Path, home: &Path) -> Result<()> {
+    match target {
+        CURSOR_RULE => install_cursor_rule(repo_root).map(drop),
+        ANTIGRAVITY_SKILL => install_antigravity_skill(home).map(drop),
+        Target::Repo(path) => upsert_block_into_file(&repo_root.join(path), KNOT_PROTOCOL_BLOCK).map(drop),
+        Target::Home(path) => anyhow::bail!("no writer for ~/{path}"),
     }
+}
 
-    // 2. GEMINI.md (Antigravity IDE)
-    let gemini_file = repo_root.join("GEMINI.md");
-    if upsert_block_into_file(&gemini_file, KNOT_PROTOCOL_BLOCK)? {
-        configured.push("GEMINI.md".into());
-    }
-
-    // 3. CLAUDE.md (Claude Code)
-    let claude_file = repo_root.join("CLAUDE.md");
-    if upsert_block_into_file(&claude_file, KNOT_PROTOCOL_BLOCK)? {
-        configured.push("CLAUDE.md".into());
-    }
-
-    // 4. Cursor rule (.cursor/rules/knot.mdc)
-    if let Ok(_) = install_cursor_rule(repo_root) {
-        configured.push(".cursor/rules/knot.mdc".into());
-    }
-
-    // 5. Global Antigravity skill
-    if let Some(home) = dirs::home_dir() {
-        if let Ok(_) = install_antigravity_skill(&home) {
-            configured.push("~/.gemini/skills/knot/SKILL.md".into());
+/// Write Knot's instructions for `agents` and nothing else. A file two of them read
+/// (AGENTS.md for Codex and OpenCode) is written once.
+pub fn configure_agents(repo_root: &Path, home: &Path, agents: &[Agent]) -> Result<()> {
+    let mut written = std::collections::HashSet::new();
+    for target in agents.iter().flat_map(|a| a.targets()) {
+        if written.insert(*target) {
+            write_target(*target, repo_root, home)?;
         }
     }
-
-    Ok(configured)
+    Ok(())
 }
 
 #[cfg(test)]
@@ -134,23 +124,46 @@ mod tests {
     use tempfile::tempdir;
 
     #[test]
-    fn test_host_protocol_injection() -> Result<()> {
-        let dir = tempdir()?;
-        let configured = configure_agent_hosts(dir.path())?;
-        assert!(configured.contains(&"AGENTS.md".to_string()));
-        assert!(configured.contains(&"GEMINI.md".to_string()));
-        assert!(configured.contains(&"CLAUDE.md".to_string()));
+    fn writes_only_the_picked_agents_files() -> Result<()> {
+        let repo = tempdir()?;
+        let home = tempdir()?;
+        configure_agents(repo.path(), home.path(), &[Agent::Claude, Agent::Codex])?;
 
-        let content = fs::read_to_string(dir.path().join("AGENTS.md"))?;
+        assert!(repo.path().join("CLAUDE.md").is_file());
+        assert!(repo.path().join("AGENTS.md").is_file());
+        assert!(!repo.path().join("GEMINI.md").exists());
+        assert!(!repo.path().join(".cursor").exists());
+        assert!(!home.path().join(".gemini").exists());
+
+        let content = fs::read_to_string(repo.path().join("AGENTS.md"))?;
         assert!(content.contains("<!-- knot:start -->"));
         assert!(content.contains("knot callers"));
+        Ok(())
+    }
 
-        // Idempotency check: running again updates in place
-        let reconfigured = configure_agent_hosts(dir.path())?;
-        assert!(reconfigured.contains(&"AGENTS.md".to_string()));
-        let content2 = fs::read_to_string(dir.path().join("AGENTS.md"))?;
-        assert_eq!(content2.matches("<!-- knot:start -->").count(), 1);
+    #[test]
+    fn rerun_updates_the_block_in_place_and_keeps_other_text() -> Result<()> {
+        let repo = tempdir()?;
+        let home = tempdir()?;
+        fs::write(repo.path().join("AGENTS.md"), "# House rules\n")?;
+        configure_agents(repo.path(), home.path(), &[Agent::Codex, Agent::OpenCode])?;
+        configure_agents(repo.path(), home.path(), &[Agent::Codex])?;
 
+        let content = fs::read_to_string(repo.path().join("AGENTS.md"))?;
+        assert_eq!(content.matches("<!-- knot:start -->").count(), 1);
+        assert!(content.starts_with("# House rules"));
+        Ok(())
+    }
+
+    #[test]
+    fn antigravity_also_gets_its_machine_wide_skill() -> Result<()> {
+        let repo = tempdir()?;
+        let home = tempdir()?;
+        configure_agents(repo.path(), home.path(), &[Agent::Antigravity, Agent::Cursor])?;
+
+        assert!(repo.path().join("GEMINI.md").is_file());
+        assert!(repo.path().join(".cursor/rules/knot.mdc").is_file());
+        assert!(home.path().join(".gemini/skills/knot/SKILL.md").is_file());
         Ok(())
     }
 }

@@ -7,7 +7,9 @@ pub mod savings;
 pub mod session;
 mod tokenize;
 
-pub use cache::{claim_reindex, index_status, load_corpus, release_reindex, Corpus, IndexStatus, LoadStats};
+pub use cache::{
+    claim_reindex, create_state_dir, index_status, load_corpus, release_reindex, Corpus, IndexStatus, LoadStats,
+};
 pub use index::LexicalIndex;
 pub use learnings::{flatten, related_learnings, LearningHit};
 pub use tokenize::tokenize;
@@ -124,12 +126,16 @@ pub fn rank(graph: &CodeGraph, index: &LexicalIndex, query: &str, limit: usize, 
         .collect()
 }
 
-/// Where the ask cache lives: `$KNOT_DATA_DIR`, else `~/.knot`, matching the vault.
-pub fn default_cache_root() -> std::path::PathBuf {
-    std::env::var_os("KNOT_DATA_DIR")
-        .map(std::path::PathBuf::from)
-        .or_else(|| dirs::home_dir().map(|h| h.join(".knot")))
-        .unwrap_or_else(|| std::path::PathBuf::from(".knot"))
+/// Where a repository's code index lives: its own `.knot/`, beside its learnings, so
+/// the index sits with the code it describes the way `.trail/` does.
+pub fn index_root(repo_root: &Path) -> std::path::PathBuf {
+    repo_root.join(".knot")
+}
+
+/// A repository's local, never committed state: index, savings ledger, sessions and
+/// the fetch marker, all in `.knot/cache/`. Only the vault and log stay in `~/.knot`.
+pub fn state_dir(repo_root: &Path) -> std::path::PathBuf {
+    cache::state_dir_in(&index_root(repo_root))
 }
 
 /// The repository `dir` belongs to: its git work tree, canonicalized, or `dir` itself
@@ -151,7 +157,7 @@ pub fn current_repo_root() -> std::io::Result<std::path::PathBuf> {
 /// The code graph for `root`, reparsing only files changed since the last load, so
 /// every caller sees the working tree as it is without a separate build step.
 pub fn load_graph(root: &Path) -> anyhow::Result<crate::ast::CodeGraph> {
-    let (corpus, _) = load_corpus(root, Some(&default_cache_root()))?;
+    let (corpus, _) = load_corpus(root, Some(&index_root(root)))?;
     Ok(corpus.graph)
 }
 

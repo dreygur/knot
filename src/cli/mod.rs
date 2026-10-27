@@ -1,4 +1,6 @@
 mod hook;
+mod init;
+mod picker;
 
 use anyhow::Result;
 use rmcp::{transport::stdio, ServiceExt};
@@ -175,16 +177,22 @@ fn inject_block(content: &str, block: &str) -> String {
     format!("{content}{block}")
 }
 
+/// What [`register_path`] did, for `knot init` to report in one line.
+enum PathChange {
+    /// The folder was on `PATH` or in the shell file already; nothing was written.
+    Present,
+    /// `place` gained the entry; `activate` makes it live in the current shell.
+    Added { place: String, activate: String },
+}
+
 #[cfg(unix)]
-fn register_path_fish(bin_dir: &Path, home: &Path) -> Result<()> {
+fn register_path_fish(bin_dir: &Path, home: &Path) -> Result<PathChange> {
     let config = home.join(".config/fish/config.fish");
     let entry = format!("fish_add_path \"{}\"", bin_dir.display());
     let existing = std::fs::read_to_string(&config).unwrap_or_default();
 
     if existing.contains(&entry) {
-        println!("[KNOT] INFO:  {} is already registered in {}", bin_dir.display(), config.display());
-        println!("[KNOT] INFO:  Run: source ~/.config/fish/config.fish");
-        return Ok(());
+        return Ok(PathChange::Present);
     }
 
     if let Some(parent) = config.parent() {
@@ -194,60 +202,45 @@ fn register_path_fish(bin_dir: &Path, home: &Path) -> Result<()> {
         "{existing}\n{BLOCK_START}\n{entry}\n{BLOCK_END}\n"
     );
     std::fs::write(&config, updated)?;
-    println!("[KNOT] INFO:  Registered {} in {}", bin_dir.display(), config.display());
-    println!("[KNOT] SUCCESS: Run the following to activate immediately:");
-    println!("         source ~/.config/fish/config.fish");
-    Ok(())
+    Ok(PathChange::Added {
+        place: "~/.config/fish/config.fish".into(),
+        activate: "source ~/.config/fish/config.fish".into(),
+    })
 }
 
 #[cfg(unix)]
-fn register_path(bin_dir: &Path) -> Result<()> {
+fn register_path(bin_dir: &Path) -> Result<PathChange> {
+    if is_in_path(bin_dir) {
+        return Ok(PathChange::Present);
+    }
     let home = dirs::home_dir().ok_or_else(|| anyhow::anyhow!("Cannot determine home directory"))?;
     let shell = std::env::var("SHELL").unwrap_or_default();
 
-    let (config, source_cmd) = if shell.ends_with("zsh") {
-        (home.join(".zshrc"), "source ~/.zshrc")
-    } else if shell.ends_with("bash") {
-        if cfg!(target_os = "macos") {
-            (home.join(".bash_profile"), "source ~/.bash_profile")
-        } else {
-            (home.join(".bashrc"), "source ~/.bashrc")
-        }
+    let rc = if shell.ends_with("zsh") {
+        ".zshrc"
+    } else if shell.ends_with("bash") && cfg!(target_os = "macos") {
+        ".bash_profile"
     } else if shell.ends_with("fish") {
         return register_path_fish(bin_dir, &home);
     } else {
-        (home.join(".bashrc"), "source ~/.bashrc")
+        ".bashrc"
     };
+    let config = home.join(rc);
 
     let existing = std::fs::read_to_string(&config).unwrap_or_default();
-
-    if existing.contains(BLOCK_START) {
-        let block = path_block(bin_dir);
-        if existing.contains(&format!("export PATH=\"{}:$PATH\"", bin_dir.display())) {
-            println!("[KNOT] INFO:  {} is already registered in {}", bin_dir.display(), config.display());
-            println!("[KNOT] INFO:  Run: {source_cmd}");
-            return Ok(());
-        }
-        let updated = inject_block(&existing, &block);
-        std::fs::write(&config, updated)?;
-        println!("[KNOT] INFO:  Updated PATH entry in {}", config.display());
-    } else {
-        if let Some(parent) = config.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        let block = path_block(bin_dir);
-        let updated = inject_block(&existing, &block);
-        std::fs::write(&config, updated)?;
-        println!("[KNOT] INFO:  Registered {} in {}", bin_dir.display(), config.display());
+    if existing.contains(&format!("export PATH=\"{}:$PATH\"", bin_dir.display())) {
+        return Ok(PathChange::Present);
     }
 
-    println!("[KNOT] SUCCESS: Run the following to activate immediately:");
-    println!("         {source_cmd}");
-    Ok(())
+    if let Some(parent) = config.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(&config, inject_block(&existing, &path_block(bin_dir)))?;
+    Ok(PathChange::Added { place: format!("~/{rc}"), activate: format!("source ~/{rc}") })
 }
 
 #[cfg(windows)]
-fn register_path(bin_dir: &Path) -> Result<()> {
+fn register_path(bin_dir: &Path) -> Result<PathChange> {
     use winreg::enums::{HKEY_CURRENT_USER, KEY_READ, KEY_WRITE};
     use winreg::RegKey;
 
@@ -257,8 +250,7 @@ fn register_path(bin_dir: &Path) -> Result<()> {
 
     let dir_str = bin_dir.to_string_lossy();
     if current.split(';').any(|p| p.trim() == dir_str.as_ref()) {
-        println!("[KNOT] INFO:  {} is already in the User PATH.", bin_dir.display());
-        return Ok(());
+        return Ok(PathChange::Present);
     }
 
     let new_path = if current.is_empty() {
@@ -268,9 +260,7 @@ fn register_path(bin_dir: &Path) -> Result<()> {
     };
     env.set_value("PATH", &new_path)?;
 
-    println!("[KNOT] INFO:  Registered {} in User PATH (registry).", bin_dir.display());
-    println!("[KNOT] SUCCESS: Open a new terminal window to pick up the change.");
-    Ok(())
+    Ok(PathChange::Added { place: "the User PATH".into(), activate: "open a new terminal".into() })
 }
 
 async fn cli_recall(query: &str, limit: usize) -> Result<()> {
@@ -371,47 +361,6 @@ async fn cli_logs(follow: bool) -> Result<()> {
         }
         Ok(())
     }
-}
-
-fn cli_init() -> Result<()> {
-    let bin = std::env::current_exe()?;
-    let bin_dir = bin
-        .parent()
-        .ok_or_else(|| anyhow::anyhow!("Cannot determine binary directory"))?;
-
-    register_path(bin_dir)?;
-
-    let cwd = crate::ask::current_repo_root()?;
-    match crate::hosts::configure_agent_hosts(&cwd) {
-        Ok(targets) if !targets.is_empty() => {
-            println!("[KNOT] Configured agent hosts:");
-            for t in targets {
-                println!("  • {t}");
-            }
-        }
-        Ok(_) => {}
-        Err(e) => eprintln!("[KNOT] WARN:  Agent host setup skipped: {e}"),
-    }
-
-    // Index now so the first question an agent asks is answered from a warm cache
-    let cache_root = crate::ask::default_cache_root();
-    let started = std::time::Instant::now();
-    match crate::ask::load_corpus(&cwd, Some(&cache_root)) {
-        Ok((corpus, stats)) if stats.parsed + stats.reused > 0 => println!(
-            "[KNOT] Indexed {}, {} in {} ms.",
-            count(stats.parsed + stats.reused, "file"),
-            count(corpus.graph.symbols.len(), "symbol"),
-            started.elapsed().as_millis()
-        ),
-        Ok(_) => println!("[KNOT] No {SUPPORTED_LANGUAGES} files here yet; code commands index on first use."),
-        Err(e) => eprintln!("[KNOT] WARN:  Indexing skipped: {e}"),
-    }
-
-    println!();
-    println!("[KNOT] Next:");
-    println!("  knot ask \"<question>\"      find the code that answers a question");
-    println!("  restart your agent         it loads Knot's MCP tools, hooks and status line on start");
-    Ok(())
 }
 
 async fn cli_viz() -> Result<()> {
@@ -694,7 +643,7 @@ fn parse_ask_args(args: impl Iterator<Item = String>) -> AskArgs {
 
 async fn cli_ask(args: AskArgs) -> Result<()> {
     let cwd = crate::ask::current_repo_root()?;
-    let cache_root = crate::ask::default_cache_root();
+    let cache_root = crate::ask::index_root(&cwd);
     let hits = crate::ask::ask(&cwd, Some(&cache_root), &args.query, args.limit, args.ranking)?;
     let learnings = crate::ask::related_learnings(&cwd, &args.query, &hits);
 
@@ -782,7 +731,7 @@ fn cli_grep(opts: &crate::ask::grep::GrepOptions, json: bool) -> Result<()> {
     if let Some(within) = &opts.within {
         opts.within = Some(repo_relative(&here, &root, within)?);
     }
-    let report = crate::ask::grep::grep(&root, Some(&crate::ask::default_cache_root()), &opts)?;
+    let report = crate::ask::grep::grep(&root, Some(&crate::ask::index_root(&root)), &opts)?;
     if json {
         println!("{}", serde_json::to_string(&report)?);
     } else {
@@ -794,7 +743,7 @@ fn cli_grep(opts: &crate::ask::grep::GrepOptions, json: bool) -> Result<()> {
 
 fn cli_map(max_dirs: usize, json: bool) -> Result<()> {
     let cwd = crate::ask::current_repo_root()?;
-    let map = crate::ask::map::map(&cwd, Some(&crate::ask::default_cache_root()), max_dirs)?;
+    let map = crate::ask::map::map(&cwd, Some(&crate::ask::index_root(&cwd)), max_dirs)?;
     if json {
         println!("{}", serde_json::to_string(&map)?);
     } else {
@@ -807,10 +756,10 @@ fn cli_map(max_dirs: usize, json: bool) -> Result<()> {
 /// this on their own; running it ahead of time only makes the next one fast.
 fn cli_index(quiet: bool) -> Result<()> {
     let cwd = crate::ask::current_repo_root()?;
-    let cache_root = crate::ask::default_cache_root();
+    let cache_root = crate::ask::index_root(&cwd);
     let started = std::time::Instant::now();
     let result = crate::ask::load_corpus(&cwd, Some(&cache_root));
-    crate::ask::release_reindex(&cwd, &cache_root);
+    crate::ask::release_reindex(&cache_root);
     let (corpus, stats) = result?;
     if !quiet {
         println!(
@@ -899,10 +848,10 @@ fn cli_statusline() -> Result<()> {
         Some(dir) => dir,
         None => std::env::current_dir()?,
     });
-    let cache_root = crate::ask::default_cache_root();
+    let cache_root = crate::ask::index_root(&dir);
     let status = crate::ask::index_status(&dir, &cache_root)?;
 
-    if status.stale > 0 && crate::ask::claim_reindex(&dir, &cache_root) {
+    if status.stale > 0 && crate::ask::claim_reindex(&cache_root) {
         let spawned = std::env::current_exe().and_then(|bin| {
             std::process::Command::new(bin)
                 .args(["index", "--quiet"])
@@ -914,7 +863,7 @@ fn cli_statusline() -> Result<()> {
                 .spawn()
         });
         if spawned.is_err() {
-            crate::ask::release_reindex(&dir, &cache_root);
+            crate::ask::release_reindex(&cache_root);
         }
     }
 
@@ -1108,7 +1057,8 @@ pub fn print_help() {
     println!("  knot viz                                Launch interactive code graph visualizer");
     println!("  knot status                             Vault health check");
     println!("  knot logs [--follow|-f]                 View activity log");
-    println!("  knot init                               Add knot to PATH, wire agent hosts, index this repo");
+    println!("  knot init [--agents <ids>] [-y|--yes]   Pick agents, write their instructions, index this repo");
+    println!("                                          (agents: claude, codex, opencode, gemini, antigravity, cursor)");
     println!("  knot --version                          Print the version");
     println!();
     println!("Code commands read {SUPPORTED_LANGUAGES} across the git repository you are in.");
@@ -1136,7 +1086,7 @@ pub async fn run() -> Result<()> {
             let follow = args.any(|a| a == "--follow" || a == "-f");
             cli_logs(follow).await
         }
-        Some("init") => cli_init(),
+        Some("init") => init::run(args),
         Some("callers") => {
             let symbol = args.next().unwrap_or_default();
             if symbol.is_empty() {
@@ -1232,11 +1182,11 @@ pub async fn run() -> Result<()> {
             Ok(())
         }
         Some(cmd) => {
-            eprintln!("[KNOT] ERROR: Unknown command '{cmd}'.");
+            eprintln!("✗ unknown command '{cmd}'");
             if let Some(suggestion) = closest_command(cmd) {
-                eprintln!("       Did you mean 'knot {suggestion}'?");
+                eprintln!("  did you mean 'knot {suggestion}'?");
             }
-            eprintln!("       Run 'knot --help' for all commands.");
+            eprintln!("  run 'knot --help' for all commands");
             std::process::exit(2);
         }
         None => run_mcp_server().await,

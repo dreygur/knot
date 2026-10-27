@@ -1,0 +1,268 @@
+use std::io::IsTerminal;
+use std::path::Path;
+
+use anyhow::{bail, Result};
+
+use super::picker::{self, Picker, Row};
+use super::{count, register_path, PathChange, SUPPORTED_LANGUAGES};
+use crate::hosts::{Agent, Target};
+
+const USAGE: &str = "knot init [--agents <id,id...>] [-y|--yes]";
+const PICKER_TITLE: &str = "knot init · pick the agents you use:";
+const LABEL_WIDTH: usize = 12;
+const DONE: char = '✓';
+const NOTE: char = '·';
+const FAILED: char = '✗';
+
+/// Which agents to wire, as the command line asked.
+#[derive(Debug, PartialEq, Eq)]
+enum Selection {
+    /// No flag: the picker on a terminal, the detected agents otherwise.
+    Ask,
+    /// `--yes`: every agent found on this machine, no prompt.
+    Detected,
+    /// `--agents`: exactly these.
+    Named(Vec<Agent>),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Terminal {
+    Interactive,
+    Piped,
+}
+
+fn known_ids() -> String {
+    Agent::ALL.map(Agent::id).join(", ")
+}
+
+fn parse_ids(value: &str, into: &mut Vec<Agent>) -> Result<()> {
+    for id in value.split(',').map(str::trim).filter(|id| !id.is_empty()) {
+        let Some(agent) = Agent::from_id(id) else {
+            bail!("unknown agent '{id}'; known: {}", known_ids());
+        };
+        if !into.contains(&agent) {
+            into.push(agent);
+        }
+    }
+    Ok(())
+}
+
+fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Selection> {
+    let mut args = args.into_iter().peekable();
+    let mut named: Option<Vec<Agent>> = None;
+    let mut yes = false;
+
+    while let Some(arg) = args.next() {
+        if arg == "-y" || arg == "--yes" {
+            yes = true;
+            continue;
+        }
+        // `--agents claude,codex`, `--agents claude codex` and `--agents=claude` all work
+        let value = if arg == "--agents" {
+            let mut values = Vec::new();
+            while let Some(next) = args.next_if(|a| !a.starts_with('-')) {
+                values.push(next);
+            }
+            values.join(",")
+        } else if let Some(value) = arg.strip_prefix("--agents=") {
+            value.to_string()
+        } else {
+            bail!("unknown option '{arg}'\nusage: {USAGE}");
+        };
+        let list = named.get_or_insert_with(Vec::new);
+        parse_ids(&value, list)?;
+        if list.is_empty() {
+            bail!("--agents needs at least one id; known: {}", known_ids());
+        }
+    }
+
+    Ok(match (named, yes) {
+        (Some(list), _) => Selection::Named(list),
+        (None, true) => Selection::Detected,
+        (None, false) => Selection::Ask,
+    })
+}
+
+/// What wiring `agent` writes: repo files first, then anything under `~`.
+fn summary(agent: Agent) -> String {
+    let repo: Vec<String> = agent
+        .targets()
+        .iter()
+        .filter(|t| matches!(t, Target::Repo(_)))
+        .map(|t| t.display())
+        .collect();
+    let home = agent.targets().iter().filter(|t| matches!(t, Target::Home(_))).map(|t| format!("+ {}", t.display()));
+    std::iter::once(repo.join(", ")).chain(home).collect::<Vec<_>>().join(" · ")
+}
+
+fn picker_rows(found: &[(Agent, bool)]) -> Vec<Row> {
+    found
+        .iter()
+        .map(|&(agent, detected)| Row {
+            label: agent.id().to_string(),
+            detected,
+            summary: summary(agent),
+            machine_wide: agent.targets().iter().any(|t| matches!(t, Target::Home(_))),
+        })
+        .collect()
+}
+
+/// The agents to wire, or `None` when the person cancelled the picker.
+fn choose(selection: Selection, found: &[(Agent, bool)], terminal: Terminal) -> Result<Option<Vec<Agent>>> {
+    let detected = || found.iter().filter(|(_, d)| *d).map(|(a, _)| *a).collect();
+    match (selection, terminal) {
+        (Selection::Named(list), _) => Ok(Some(list)),
+        (Selection::Detected, _) | (Selection::Ask, Terminal::Piped) => Ok(Some(detected())),
+        (Selection::Ask, Terminal::Interactive) => {
+            let picked = picker::run(Picker::new(PICKER_TITLE, picker_rows(found)))?;
+            Ok(picked.map(|rows| rows.into_iter().map(|i| found[i].0).collect()))
+        }
+    }
+}
+
+fn line(mark: char, label: &str, detail: &str) -> String {
+    format!("{mark} {label:<LABEL_WIDTH$}  {detail}").trim_end().to_string()
+}
+
+fn tilde(path: &Path, home: &Path) -> String {
+    match path.strip_prefix(home) {
+        Ok(rest) => format!("~/{}", rest.display()),
+        Err(_) => path.display().to_string(),
+    }
+}
+
+/// Write the picked agents' files and index the repo, returning one report line each.
+fn wire(root: &Path, home: &Path, agents: &[Agent]) -> Result<Vec<String>> {
+    crate::hosts::configure_agents(root, home, agents)?;
+    let mut lines: Vec<String> = agents.iter().map(|a| line(DONE, a.id(), &summary(*a))).collect();
+    if agents.is_empty() {
+        lines.push(line(NOTE, "agents", "none picked · knot init --agents <id> wires one by name"));
+    }
+
+    // Index now so the first question an agent asks is answered from a warm cache
+    let started = std::time::Instant::now();
+    lines.push(match crate::ask::load_corpus(root, Some(&crate::ask::index_root(root))) {
+        Ok((corpus, stats)) if stats.parsed + stats.reused > 0 => line(
+            DONE,
+            "index",
+            &format!(
+                "{}, {} in {} ms · .knot/cache/",
+                count(stats.parsed + stats.reused, "file"),
+                count(corpus.graph.symbols.len(), "symbol"),
+                started.elapsed().as_millis()
+            ),
+        ),
+        Ok(_) => line(NOTE, "index", &format!("no {SUPPORTED_LANGUAGES} files yet; code commands index on first use")),
+        Err(e) => line(FAILED, "index", &format!("{e}; code commands index on first use")),
+    });
+    Ok(lines)
+}
+
+fn next_steps(agents: &[Agent]) -> Vec<String> {
+    let mut steps = Vec::new();
+    if !agents.is_empty() {
+        steps.push(format!("{NOTE} restart your agent so a new session picks up knot"));
+    }
+    steps.push(format!("{NOTE} knot ask \"<question>\" finds the code that answers it"));
+    steps
+}
+
+/// `knot init`: pick agents, then add knot to PATH, write only those agents'
+/// instructions, and index the repo into `.knot/cache/`. Cancelling writes nothing.
+pub(super) fn run(args: impl IntoIterator<Item = String>) -> Result<()> {
+    let selection = parse_args(args)?;
+    let home = dirs::home_dir().ok_or_else(|| anyhow::anyhow!("cannot determine the home directory"))?;
+    let path = std::env::var_os("PATH");
+    let found: Vec<(Agent, bool)> = Agent::ALL.into_iter().map(|a| (a, a.detected(&home, path.as_deref()))).collect();
+    let terminal = if std::io::stdin().is_terminal() && std::io::stderr().is_terminal() {
+        Terminal::Interactive
+    } else {
+        Terminal::Piped
+    };
+
+    let Some(agents) = choose(selection, &found, terminal)? else {
+        eprintln!("{NOTE} cancelled, nothing written");
+        return Ok(());
+    };
+
+    let bin = std::env::current_exe()?;
+    let bin_dir = bin.parent().ok_or_else(|| anyhow::anyhow!("cannot determine the binary's directory"))?;
+    if let PathChange::Added { place, activate } = register_path(bin_dir)? {
+        println!("{}", line(DONE, "PATH", &format!("{} added to {place} · run {activate}", tilde(bin_dir, &home))));
+    }
+
+    let root = crate::ask::current_repo_root()?;
+    for l in wire(&root, &home, &agents)?.into_iter().chain(next_steps(&agents)) {
+        println!("{l}");
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn args(list: &[&str]) -> Vec<String> {
+        list.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn parses_agent_lists_in_every_spelling() {
+        assert_eq!(parse_args(args(&[])).unwrap(), Selection::Ask);
+        assert_eq!(parse_args(args(&["-y"])).unwrap(), Selection::Detected);
+        let both = Selection::Named(vec![Agent::Claude, Agent::Codex]);
+        assert_eq!(parse_args(args(&["--agents", "claude,codex"])).unwrap(), both);
+        assert_eq!(parse_args(args(&["--agents", "claude", "codex", "--yes"])).unwrap(), both);
+        assert_eq!(parse_args(args(&["--agents=claude,claude,codex"])).unwrap(), both);
+    }
+
+    #[test]
+    fn rejects_unknown_agents_and_options() {
+        let err = parse_args(args(&["--agents", "vim"])).unwrap_err().to_string();
+        assert!(err.contains("unknown agent 'vim'") && err.contains("claude, codex"), "{err}");
+        assert!(parse_args(args(&["--agents"])).unwrap_err().to_string().contains("at least one id"));
+        assert!(parse_args(args(&["--all"])).unwrap_err().to_string().contains("unknown option '--all'"));
+    }
+
+    #[test]
+    fn without_a_terminal_only_detected_agents_are_wired() {
+        let found = [(Agent::Claude, true), (Agent::Codex, false), (Agent::Cursor, true)];
+        assert_eq!(choose(Selection::Ask, &found, Terminal::Piped).unwrap(), Some(vec![Agent::Claude, Agent::Cursor]));
+        assert_eq!(choose(Selection::Detected, &found, Terminal::Interactive).unwrap(), Some(vec![Agent::Claude, Agent::Cursor]));
+        let named = Selection::Named(vec![Agent::Codex]);
+        assert_eq!(choose(named, &found, Terminal::Interactive).unwrap(), Some(vec![Agent::Codex]));
+    }
+
+    #[test]
+    fn summaries_name_machine_wide_writes() {
+        assert_eq!(summary(Agent::Claude), "CLAUDE.md");
+        assert_eq!(summary(Agent::Antigravity), "GEMINI.md · + ~/.gemini/skills/knot/SKILL.md");
+    }
+
+    #[test]
+    fn wire_writes_only_picked_agents_and_indexes_into_the_repo() {
+        let repo = tempfile::tempdir().unwrap();
+        let home = tempfile::tempdir().unwrap();
+        std::fs::write(repo.path().join("lib.rs"), "pub fn alpha() {}\n").unwrap();
+
+        let lines = wire(repo.path(), home.path(), &[Agent::Claude]).unwrap();
+
+        assert_eq!(lines[0], "✓ claude        CLAUDE.md");
+        assert!(lines[1].starts_with("✓ index         1 file, 1 symbol in "), "{}", lines[1]);
+        assert!(lines[1].ends_with(" ms · .knot/cache/"), "{}", lines[1]);
+        assert!(repo.path().join("CLAUDE.md").is_file());
+        assert!(!repo.path().join("AGENTS.md").exists());
+        assert!(repo.path().join(".knot/cache/index.json").is_file());
+        assert_eq!(std::fs::read_dir(home.path()).unwrap().count(), 0, "nothing written to the home folder");
+    }
+
+    #[test]
+    fn wire_with_no_agents_still_indexes_and_says_so() {
+        let repo = tempfile::tempdir().unwrap();
+        let home = tempfile::tempdir().unwrap();
+        let lines = wire(repo.path(), home.path(), &[]).unwrap();
+        assert_eq!(lines[0], "· agents        none picked · knot init --agents <id> wires one by name");
+        assert!(lines[1].starts_with("· index         no "), "{}", lines[1]);
+        assert_eq!(next_steps(&[]).len(), 1, "no restart hint when nothing was wired");
+    }
+}

@@ -117,7 +117,7 @@ fn learnings_for_file(root: &Path, file: &Path, session_id: &str) -> Option<Stri
         return None;
     }
     let ids: Vec<String> = matching.iter().map(|l| l.frontmatter.id.to_string()).collect();
-    let fresh = session::first_showing(session_id, &ids);
+    let fresh = session::first_showing(root, session_id, &ids);
     let shown: Vec<&RepoLearning> = matching.into_iter().filter(|l| fresh.contains(&l.frontmatter.id.to_string())).collect();
     let me = git2::Repository::open(root)
         .ok()
@@ -129,6 +129,7 @@ fn learnings_for_file(root: &Path, file: &Path, session_id: &str) -> Option<Stri
 
 /// Remote-tracking refs are refreshed in the background at most this often.
 const FETCH_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5 * 60);
+const FETCH_MARKER: &str = "last-fetch";
 
 /// Start `git fetch` detached when the last one for `root` is older than the interval,
 /// so later edits see teammates' newer pushes without waiting on the network now.
@@ -136,9 +137,8 @@ fn fetch_in_background(root: &Path) {
     if std::env::var_os("KNOT_NO_FETCH").is_some() {
         return;
     }
-    let marker = crate::ask::default_cache_root()
-        .join("sessions")
-        .join(format!("fetch-{}", &blake3::hash(root.to_string_lossy().as_bytes()).to_hex()[..16]));
+    let dir = crate::ask::state_dir(root);
+    let marker = dir.join(FETCH_MARKER);
     let fresh = std::fs::metadata(&marker)
         .and_then(|m| m.modified())
         .ok()
@@ -147,8 +147,8 @@ fn fetch_in_background(root: &Path) {
     if fresh {
         return;
     }
-    if let Some(dir) = marker.parent() {
-        let _ = std::fs::create_dir_all(dir);
+    if crate::ask::create_state_dir(&dir).is_err() {
+        return;
     }
     let _ = std::fs::write(&marker, b"");
     let _ = std::process::Command::new("git")
@@ -199,7 +199,7 @@ fn clash_for_file(root: &Path, file: &Path, session_id: &str) -> Option<String> 
     let rel = file.strip_prefix(root).ok()?.to_string_lossy().replace('\\', "/");
     let clashes = crate::check::symbol_clashes(root, &rel).ok()?;
     let keys: Vec<String> = clashes.iter().map(|c| format!("clash:{}:{}:{}", c.file, c.symbol, c.commit_oid)).collect();
-    let fresh = session::first_showing(session_id, &keys);
+    let fresh = session::first_showing(root, session_id, &keys);
     let lines: Vec<String> = clashes
         .iter()
         .zip(&keys)
@@ -255,7 +255,7 @@ fn learning_nudge(root: &Path, transcript: &str, session_id: &str, already_conti
     }
     let (session_start, _) = crate::ask::savings::transcript_window(Path::new(transcript))?;
     let commits = commits_without_learning(root, session_start)?;
-    if session::first_showing(session_id, &["nudge:learning".to_string()]).is_empty() {
+    if session::first_showing(root, session_id, &["nudge:learning".to_string()]).is_empty() {
         return None;
     }
     Some(format!(

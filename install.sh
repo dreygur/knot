@@ -2,9 +2,14 @@
 set -euo pipefail
 
 REPO="dreygur/knot"
-DATA_DIR="${KNOT_DATA_DIR:-$HOME/.knot}"
 INSTALL_DIR="${KNOT_INSTALL_DIR:-$HOME/.local/bin}"
 MCP_NAME="knot"
+
+# One aligned line per step, the same shape `knot init` prints
+done_line() { printf '✓ %-12s  %s\n' "$1" "$2"; }
+note_line() { printf '· %-12s  %s\n' "$1" "$2"; }
+fail_line() { printf '✗ %-12s  %s\n' "$1" "$2" >&2; }
+tilde() { echo "${1/#$HOME/~}"; }
 
 # Portable absolute path resolution (realpath not available on older macOS)
 resolve_abs() {
@@ -61,28 +66,18 @@ download() {
   elif command -v wget &>/dev/null; then
     wget -qO "$dest" "$url"
   else
-    echo "[KNOT] ERROR: curl or wget required" >&2
+    fail_line "download" "curl or wget is required"
     exit 1
   fi
 }
 
 VERSION="${KNOT_VERSION:-$(latest_version)}"
 if [[ -z "$VERSION" ]]; then
-  echo "[KNOT] ERROR: Could not determine latest release version." >&2
+  fail_line "version" "could not read the latest release from github.com/$REPO"
   exit 1
 fi
 
-echo "Knot installer"
-echo ""
-echo "[KNOT] INFO:  Version  : $VERSION"
-echo "[KNOT] INFO:  Data dir : $DATA_DIR"
-echo "[KNOT] INFO:  Bin dir  : $INSTALL_DIR"
-echo ""
-echo "[KNOT] INFO:  This script will:"
-echo "[KNOT] INFO:    1. Download the knot binary to $INSTALL_DIR"
-echo "[KNOT] INFO:    2. Create a data directory at $DATA_DIR"
-echo "[KNOT] INFO:    3. Register knot as an MCP server with the agent CLIs it finds"
-echo "[KNOT] INFO:       (Claude Code, Codex) and print the config for every other client"
+echo "knot $VERSION · installing to $(tilde "$INSTALL_DIR")"
 echo ""
 
 ARTIFACT="$(detect_target)"
@@ -90,74 +85,51 @@ mkdir -p "$INSTALL_DIR"
 BIN_PATH="$INSTALL_DIR/knot"
 
 if [[ -n "$ARTIFACT" ]]; then
-  URL="https://github.com/${REPO}/releases/download/${VERSION}/${ARTIFACT}"
-  echo "[KNOT] PERM:  Download binary from GitHub releases -> $BIN_PATH"
-  download "$URL" "$BIN_PATH"
+  download "https://github.com/${REPO}/releases/download/${VERSION}/${ARTIFACT}" "$BIN_PATH"
   chmod +x "$BIN_PATH"
-  echo "[KNOT] INFO:  Installed to $BIN_PATH"
+  done_line "binary" "$(tilde "$BIN_PATH")"
 else
-  echo "[KNOT] WARN:  No pre-built binary for this platform. Building from source..."
   if ! command -v cargo &>/dev/null; then
-    echo "[KNOT] ERROR: cargo not found. Install Rust from https://rustup.rs" >&2
+    fail_line "binary" "no release build for $(uname -s) $(uname -m), and cargo is missing: https://rustup.rs"
     exit 1
   fi
   SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-  echo "[KNOT] PERM:  Run cargo build --release in $SCRIPT_DIR"
-  (cd "$SCRIPT_DIR" && cargo build --release)
+  note_line "binary" "no release build for $(uname -s) $(uname -m); building from source"
+  (cd "$SCRIPT_DIR" && cargo build --release --quiet)
   cp "$SCRIPT_DIR/target/release/knot" "$BIN_PATH"
   chmod +x "$BIN_PATH"
-  echo "[KNOT] INFO:  Built and installed to $BIN_PATH"
+  done_line "binary" "$(tilde "$BIN_PATH") (built from source)"
 fi
 
 BIN_PATH="$(resolve_abs "$BIN_PATH")"
-echo "[KNOT] PERM:  Create data directory $DATA_DIR"
-mkdir -p "$DATA_DIR"
-echo ""
-
-REGISTERED=()
 
 # Claude Code. Knot adds its own hooks and status line to ~/.claude/settings.json the
 # first time Claude Code starts it, so nothing else is needed here.
 if command -v claude &>/dev/null; then
   if claude mcp get "$MCP_NAME" &>/dev/null; then
-    echo "[KNOT] INFO:  Claude Code already has an MCP server named '$MCP_NAME'"
-  elif claude mcp add -s user "$MCP_NAME" -- "$BIN_PATH"; then
-    REGISTERED+=("Claude Code")
+    note_line "claude" "MCP server '$MCP_NAME' already registered"
+  elif claude mcp add -s user "$MCP_NAME" -- "$BIN_PATH" &>/dev/null; then
+    done_line "claude" "MCP server added (user scope)"
   else
-    echo "[KNOT] WARN:  Claude Code registration failed; run: claude mcp add -s user $MCP_NAME -- '$BIN_PATH'"
+    fail_line "claude" "registration failed; run: claude mcp add -s user $MCP_NAME -- '$BIN_PATH'"
   fi
 fi
 
 # OpenAI Codex CLI
 if command -v codex &>/dev/null; then
-  if codex mcp add "$MCP_NAME" -- "$BIN_PATH"; then
-    REGISTERED+=("Codex")
+  if codex mcp add "$MCP_NAME" -- "$BIN_PATH" &>/dev/null; then
+    done_line "codex" "MCP server added"
   else
-    echo "[KNOT] WARN:  Codex registration failed; add to ~/.codex/config.toml:"
-    echo "               [mcp_servers.$MCP_NAME]"
-    echo "               command = \"$BIN_PATH\""
+    fail_line "codex" "registration failed; add [mcp_servers.$MCP_NAME] command = \"$BIN_PATH\" to ~/.codex/config.toml"
   fi
 fi
 
-echo ""
-if [[ ${#REGISTERED[@]} -gt 0 ]]; then
-  echo "[KNOT] INFO:  Registered with: ${REGISTERED[*]}"
-fi
 cat <<EOF
-
-Other agents: Knot is a stdio MCP server; point any client at the binary.
-
-  Gemini CLI    ~/.gemini/settings.json   "mcpServers": { "knot": { "command": "$BIN_PATH" } }
-  OpenCode      opencode.json             "mcp": { "knot": { "type": "local", "command": ["$BIN_PATH"], "enabled": true } }
-  Cursor        ~/.cursor/mcp.json        "mcpServers": { "knot": { "command": "$BIN_PATH" } }
-  Windsurf      ~/.codeium/windsurf/mcp_config.json   "mcpServers": { "knot": { "command": "$BIN_PATH" } }
-  VS Code       .vscode/mcp.json          "servers": { "knot": { "type": "stdio", "command": "$BIN_PATH" } }
-
-Next, in each repository:
-  knot init        add knot to PATH, write agent instructions (AGENTS.md, CLAUDE.md,
-                   GEMINI.md, Cursor rule), and index the code
-
-[KNOT] INFO:  Binary    : $BIN_PATH
-[KNOT] INFO:  Data dir  : $DATA_DIR   (override with KNOT_DATA_DIR)
-[KNOT] INFO:  Read-only : export KNOT_READ_ONLY=1
+· other agents  any stdio MCP client works; point it at the binary:
+                  Gemini CLI  ~/.gemini/settings.json              "mcpServers": { "knot": { "command": "$BIN_PATH" } }
+                  OpenCode    opencode.json                        "mcp": { "knot": { "type": "local", "command": ["$BIN_PATH"], "enabled": true } }
+                  Cursor      ~/.cursor/mcp.json                   "mcpServers": { "knot": { "command": "$BIN_PATH" } }
+                  Windsurf    ~/.codeium/windsurf/mcp_config.json  "mcpServers": { "knot": { "command": "$BIN_PATH" } }
+                  VS Code     .vscode/mcp.json                     "servers": { "knot": { "type": "stdio", "command": "$BIN_PATH" } }
+· next          run knot init in each repo: pick your agents, then it indexes the code into .knot/cache/
 EOF

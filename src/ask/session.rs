@@ -1,6 +1,6 @@
 //! The Claude Code session working in a repository, as Knot's hooks see it: which
 //! transcript it writes, what it has cost so far, and which learnings it was shown.
-//! State lives under the data dir; nothing is written into the repo.
+//! State lives in the repo's git-ignored `.knot/cache/`, never in a commit.
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
@@ -9,21 +9,13 @@ use std::path::{Path, PathBuf};
 
 /// A session older than this is not credited with a new learning's cost.
 const SESSION_FRESH_MS: i64 = 12 * 60 * 60 * 1000;
+const SESSION_FILE: &str = "session.json";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionRef {
     pub session_id: String,
     pub transcript_path: String,
     pub seen_ms: i64,
-}
-
-fn sessions_dir() -> PathBuf {
-    super::default_cache_root().join("sessions")
-}
-
-fn repo_key(root: &Path) -> String {
-    let hex = blake3::hash(root.to_string_lossy().as_bytes()).to_hex();
-    hex[..16].to_string()
 }
 
 /// Session ids come from hook input; keep them to a safe file name.
@@ -33,23 +25,25 @@ fn safe_id(session_id: &str) -> String {
 
 /// Note that `session` is the one working in `root` now.
 pub fn remember(root: &Path, session: &SessionRef) {
-    remember_in(&sessions_dir(), root, session);
+    remember_in(&super::state_dir(root), session);
 }
 
-fn remember_in(dir: &Path, root: &Path, session: &SessionRef) {
-    let _ = std::fs::create_dir_all(dir);
+fn remember_in(dir: &Path, session: &SessionRef) {
+    if super::create_state_dir(dir).is_err() {
+        return;
+    }
     if let Ok(json) = serde_json::to_vec(session) {
-        let _ = std::fs::write(dir.join(format!("{}.json", repo_key(root))), json);
+        let _ = std::fs::write(dir.join(SESSION_FILE), json);
     }
 }
 
 /// The session last seen working in `root`, if it was seen recently.
 pub fn current(root: &Path) -> Option<SessionRef> {
-    current_in(&sessions_dir(), root, chrono::Utc::now().timestamp_millis())
+    current_in(&super::state_dir(root), chrono::Utc::now().timestamp_millis())
 }
 
-fn current_in(dir: &Path, root: &Path, now_ms: i64) -> Option<SessionRef> {
-    let bytes = std::fs::read(dir.join(format!("{}.json", repo_key(root)))).ok()?;
+fn current_in(dir: &Path, now_ms: i64) -> Option<SessionRef> {
+    let bytes = std::fs::read(dir.join(SESSION_FILE)).ok()?;
     let session: SessionRef = serde_json::from_slice(&bytes).ok()?;
     (now_ms - session.seen_ms < SESSION_FRESH_MS).then_some(session)
 }
@@ -87,9 +81,9 @@ fn shown_path(dir: &Path, session_id: &str) -> PathBuf {
     dir.join(format!("shown-{}.txt", safe_id(session_id)))
 }
 
-/// Of `ids`, the ones `session_id` has not been shown yet; those are marked shown.
-pub fn first_showing(session_id: &str, ids: &[String]) -> Vec<String> {
-    first_showing_in(&sessions_dir(), session_id, ids)
+/// Of `ids`, the ones `session_id` has not been shown in `root` yet; those are marked shown.
+pub fn first_showing(root: &Path, session_id: &str, ids: &[String]) -> Vec<String> {
+    first_showing_in(&super::state_dir(root), session_id, ids)
 }
 
 fn first_showing_in(dir: &Path, session_id: &str, ids: &[String]) -> Vec<String> {
@@ -98,8 +92,7 @@ fn first_showing_in(dir: &Path, session_id: &str, ids: &[String]) -> Vec<String>
         .map(|s| s.lines().map(str::to_string).collect())
         .unwrap_or_default();
     let fresh: Vec<String> = ids.iter().filter(|id| !seen.contains(*id)).cloned().collect();
-    if !fresh.is_empty() {
-        let _ = std::fs::create_dir_all(dir);
+    if !fresh.is_empty() && super::create_state_dir(dir).is_ok() {
         if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
             for id in &fresh {
                 let _ = writeln!(f, "{id}");
@@ -115,13 +108,16 @@ mod tests {
 
     #[test]
     fn remembers_the_session_per_repo_until_it_goes_stale() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = Path::new("/repo/a");
+        let repo_a = tempfile::tempdir().unwrap();
+        let repo_b = tempfile::tempdir().unwrap();
         let s = SessionRef { session_id: "s1".into(), transcript_path: "/t.jsonl".into(), seen_ms: 1_000 };
-        remember_in(dir.path(), root, &s);
-        assert_eq!(current_in(dir.path(), root, 2_000).unwrap().session_id, "s1");
-        assert!(current_in(dir.path(), Path::new("/repo/b"), 2_000).is_none(), "other repos have their own");
-        assert!(current_in(dir.path(), root, 1_000 + SESSION_FRESH_MS).is_none(), "stale after 12 hours");
+        remember(repo_a.path(), &s);
+
+        let dir = crate::ask::state_dir(repo_a.path());
+        assert_eq!(current_in(&dir, 2_000).unwrap().session_id, "s1");
+        assert!(dir.join(".gitignore").is_file(), "session state is never committed");
+        assert!(current_in(&crate::ask::state_dir(repo_b.path()), 2_000).is_none(), "other repos have their own");
+        assert!(current_in(&dir, 1_000 + SESSION_FRESH_MS).is_none(), "stale after 12 hours");
     }
 
     #[test]

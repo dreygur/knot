@@ -12,8 +12,10 @@ use crate::ast::CodeGraph;
 
 /// Bump when the cached shape or tokenization changes, so old caches are ignored.
 const CACHE_VERSION: u32 = 9;
-const CACHE_SUBDIR: &str = "cache/ask";
-const ROOT_KEY_HEX_CHARS: usize = 16;
+const CACHE_SUBDIR: &str = "cache";
+const CACHE_FILE: &str = "index.json";
+/// Written into the cache folder so a repo without a `.knot/` rule never commits it.
+const CACHE_GITIGNORE: &str = "*\n";
 
 /// What a file looked like when it was cached; any difference means reparse.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -78,11 +80,32 @@ pub struct IndexStatus {
 /// A background re-index claimed longer ago than this is assumed dead.
 const REINDEX_CLAIM_TTL: Duration = Duration::from_secs(120);
 
-/// One cache file per repository, named by a hash of its canonical path.
-fn cache_path(cache_root: &Path, repo_root: &Path) -> PathBuf {
-    let canonical = std::fs::canonicalize(repo_root).unwrap_or_else(|_| repo_root.to_path_buf());
-    let key = blake3::hash(canonical.to_string_lossy().as_bytes()).to_hex();
-    cache_root.join(CACHE_SUBDIR).join(format!("{}.json", &key[..ROOT_KEY_HEX_CHARS]))
+/// The folder under `cache_root` holding the index and the rest of a repo's local state.
+pub fn state_dir_in(cache_root: &Path) -> PathBuf {
+    cache_root.join(CACHE_SUBDIR)
+}
+
+/// The cache root belongs to one repository (its `.knot/`), so the file needs no key.
+fn cache_path(cache_root: &Path) -> PathBuf {
+    state_dir_in(cache_root).join(CACHE_FILE)
+}
+
+/// Create `dir` with a `.gitignore` covering everything in it, so a repo without a
+/// `.knot` rule of its own never commits Knot's local state.
+pub fn create_state_dir(dir: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(dir)?;
+    let ignore = dir.join(".gitignore");
+    if !ignore.exists() {
+        std::fs::write(ignore, CACHE_GITIGNORE)?;
+    }
+    Ok(())
+}
+
+fn create_cache_dir(cache_file: &Path) -> std::io::Result<()> {
+    match cache_file.parent() {
+        Some(dir) => create_state_dir(dir),
+        None => Ok(()),
+    }
 }
 
 fn read_cache(path: &Path) -> HashMap<String, CachedFile> {
@@ -101,9 +124,7 @@ fn read_cache(path: &Path) -> HashMap<String, CachedFile> {
 
 /// Write via a temp file and rename so a crash never leaves a half written cache.
 fn write_cache(path: &Path, files: HashMap<String, CachedFile>) -> Result<()> {
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)?;
-    }
+    create_cache_dir(path)?;
     let tmp = path.with_extension("json.tmp");
     std::fs::write(&tmp, serde_json::to_vec(&CacheFile { version: CACHE_VERSION, files })?)?;
     std::fs::rename(&tmp, path)?;
@@ -131,9 +152,7 @@ fn write_status(cache_file: &Path, files: &HashMap<String, CachedFile>) -> Resul
         stamps: files.iter().map(|(rel, f)| (rel.clone(), f.stamp)).collect(),
     };
     let path = status_path(cache_file);
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)?;
-    }
+    create_cache_dir(&path)?;
     let tmp = path.with_extension("tmp");
     std::fs::write(&tmp, serde_json::to_vec(&status)?)?;
     std::fs::rename(&tmp, path)?;
@@ -142,7 +161,7 @@ fn write_status(cache_file: &Path, files: &HashMap<String, CachedFile>) -> Resul
 
 /// Compare the working tree with the last written cache without parsing anything.
 pub fn index_status(repo_root: &Path, cache_root: &Path) -> Result<IndexStatus> {
-    let cache_file = cache_path(cache_root, repo_root);
+    let cache_file = cache_path(cache_root);
     let status = std::fs::read(status_path(&cache_file))
         .ok()
         .and_then(|bytes| serde_json::from_slice::<StatusFile>(&bytes).ok())
@@ -170,10 +189,10 @@ pub fn index_status(repo_root: &Path, cache_root: &Path) -> Result<IndexStatus> 
     Ok(IndexStatus { indexed: true, files: files.len(), symbols: status.symbols, stale })
 }
 
-/// Claim the right to start a background re-index of `repo_root`, so repeated status
-/// refreshes start one, not one each. A claim older than the TTL is taken over.
-pub fn claim_reindex(repo_root: &Path, cache_root: &Path) -> bool {
-    let path = claim_path(&cache_path(cache_root, repo_root));
+/// Claim the right to start a background re-index of the repo owning `cache_root`, so
+/// repeated status refreshes start one, not one each. A claim older than the TTL is taken over.
+pub fn claim_reindex(cache_root: &Path) -> bool {
+    let path = claim_path(&cache_path(cache_root));
     if let Ok(meta) = std::fs::metadata(&path) {
         let age = meta.modified().ok().and_then(|t| t.elapsed().ok());
         if age.is_some_and(|age| age < REINDEX_CLAIM_TTL) {
@@ -181,15 +200,15 @@ pub fn claim_reindex(repo_root: &Path, cache_root: &Path) -> bool {
         }
         let _ = std::fs::remove_file(&path);
     }
-    if let Some(dir) = path.parent() {
-        let _ = std::fs::create_dir_all(dir);
+    if create_cache_dir(&path).is_err() {
+        return false;
     }
     std::fs::OpenOptions::new().write(true).create_new(true).open(&path).is_ok()
 }
 
 /// Drop a claim taken by [`claim_reindex`]; a missing claim is fine.
-pub fn release_reindex(repo_root: &Path, cache_root: &Path) {
-    let _ = std::fs::remove_file(claim_path(&cache_path(cache_root, repo_root)));
+pub fn release_reindex(cache_root: &Path) {
+    let _ = std::fs::remove_file(claim_path(&cache_path(cache_root)));
 }
 
 /// Parse one file and build its search docs from a single read.
@@ -211,7 +230,7 @@ fn parse_with_docs(repo_root: &Path, abs_path: &Path, stamp: Stamp) -> Option<(S
 /// changed since the cache under `cache_root` was written. With no cache root
 /// everything is parsed and nothing is written.
 pub fn load_corpus(repo_root: &Path, cache_root: Option<&Path>) -> Result<(Corpus, LoadStats)> {
-    let cache_file = cache_root.map(|c| cache_path(c, repo_root));
+    let cache_file = cache_root.map(cache_path);
     let previous = cache_file.as_deref().map(read_cache).unwrap_or_default();
 
     let files = list_supported_files(repo_root)?;
@@ -315,12 +334,26 @@ mod tests {
 
     #[test]
     fn reindex_claim_is_exclusive_until_released() {
-        let repo = tempfile::tempdir().unwrap();
         let cache = tempfile::tempdir().unwrap();
-        assert!(claim_reindex(repo.path(), cache.path()));
-        assert!(!claim_reindex(repo.path(), cache.path()));
-        release_reindex(repo.path(), cache.path());
-        assert!(claim_reindex(repo.path(), cache.path()));
+        assert!(claim_reindex(cache.path()));
+        assert!(!claim_reindex(cache.path()));
+        release_reindex(cache.path());
+        assert!(claim_reindex(cache.path()));
+    }
+
+    #[test]
+    fn cache_lives_in_the_repo_and_is_git_ignored() {
+        let repo = tempfile::tempdir().unwrap();
+        std::fs::write(repo.path().join("a.rs"), "pub fn alpha() {}\n").unwrap();
+        let root = crate::ask::index_root(repo.path());
+
+        load_corpus(repo.path(), Some(&root)).unwrap();
+
+        let cache_dir = repo.path().join(".knot").join(CACHE_SUBDIR);
+        assert!(cache_dir.join(CACHE_FILE).is_file());
+        assert_eq!(std::fs::read_to_string(cache_dir.join(".gitignore")).unwrap(), CACHE_GITIGNORE);
+        let (_, again) = load_corpus(repo.path(), Some(&root)).unwrap();
+        assert_eq!(again, LoadStats { reused: 1, parsed: 0 }, "the cache folder itself is never indexed");
     }
 
     #[test]
@@ -328,7 +361,7 @@ mod tests {
         let repo = tempfile::tempdir().unwrap();
         let cache = tempfile::tempdir().unwrap();
         std::fs::write(repo.path().join("a.py"), "def alpha():\n    pass\n").unwrap();
-        let path = cache_path(cache.path(), repo.path());
+        let path = cache_path(cache.path());
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(&path, r#"{"version":0,"files":{}}"#).unwrap();
 
