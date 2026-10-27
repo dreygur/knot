@@ -64,9 +64,8 @@ fn record_at(ledger: &Path, root: &Path, tool: &str, files: &[String], output: &
     }
     let entry = Entry { ts_ms, root: root.to_string_lossy().into_owned(), tool: tool.to_string(), saved };
     let Ok(line) = serde_json::to_string(&entry) else { return };
-    if ledger.parent().is_some_and(|dir| super::create_state_dir(dir).is_err()) {
-        return;
-    }
+    let (Some(dir), Some(name)) = (ledger.parent(), ledger.file_name()) else { return };
+    let Ok(ledger) = super::state_file(dir, &name.to_string_lossy()) else { return };
     if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(ledger) {
         let _ = writeln!(file, "{line}");
     }

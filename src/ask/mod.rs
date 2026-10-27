@@ -8,7 +8,7 @@ pub mod session;
 mod tokenize;
 
 pub use cache::{
-    claim_reindex, create_state_dir, index_status, load_corpus, release_reindex, Corpus, IndexStatus, LoadStats,
+    claim_reindex, index_status, state_file, load_corpus, release_reindex, Corpus, IndexStatus, LoadStats,
 };
 pub use index::LexicalIndex;
 pub use learnings::{flatten, related_learnings, LearningHit};

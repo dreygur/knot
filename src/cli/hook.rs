@@ -138,16 +138,15 @@ fn fetch_in_background(root: &Path) {
         return;
     }
     let dir = crate::ask::state_dir(root);
-    let marker = dir.join(FETCH_MARKER);
+    let Ok(marker) = crate::ask::state_file(&dir, FETCH_MARKER) else {
+        return;
+    };
     let fresh = std::fs::metadata(&marker)
         .and_then(|m| m.modified())
         .ok()
         .and_then(|t| t.elapsed().ok())
         .is_some_and(|age| age < FETCH_INTERVAL);
     if fresh {
-        return;
-    }
-    if crate::ask::create_state_dir(&dir).is_err() {
         return;
     }
     let _ = std::fs::write(&marker, b"");

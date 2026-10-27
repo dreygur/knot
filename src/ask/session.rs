@@ -29,23 +29,41 @@ pub fn remember(root: &Path, session: &SessionRef) {
 }
 
 fn remember_in(dir: &Path, session: &SessionRef) {
-    if super::create_state_dir(dir).is_err() {
+    let Ok(path) = super::state_file(dir, SESSION_FILE) else {
         return;
-    }
+    };
     if let Ok(json) = serde_json::to_vec(session) {
-        let _ = std::fs::write(dir.join(SESSION_FILE), json);
+        let _ = std::fs::write(path, json);
     }
+}
+
+/// Where Claude Code writes transcripts: `$CLAUDE_CONFIG_DIR/projects`, else `~/.claude/projects`.
+fn transcripts_dir() -> Option<PathBuf> {
+    let config = std::env::var_os("CLAUDE_CONFIG_DIR")
+        .map(PathBuf::from)
+        .or_else(|| dirs::home_dir().map(|h| h.join(".claude")))?;
+    Some(config.join("projects"))
+}
+
+/// `session.json` sits in the repo, so a cloned repo can plant one. Only a session seen
+/// in the past whose transcript is a file Claude Code wrote (under `transcripts`) is used.
+fn trusted(session: &SessionRef, transcripts: &Path, now_ms: i64) -> bool {
+    let Ok(root) = std::fs::canonicalize(transcripts) else {
+        return false;
+    };
+    let in_place = std::fs::canonicalize(&session.transcript_path).is_ok_and(|p| p.starts_with(&root) && p.is_file());
+    session.seen_ms <= now_ms && now_ms - session.seen_ms < SESSION_FRESH_MS && in_place
 }
 
 /// The session last seen working in `root`, if it was seen recently.
 pub fn current(root: &Path) -> Option<SessionRef> {
-    current_in(&super::state_dir(root), chrono::Utc::now().timestamp_millis())
+    current_in(&super::state_dir(root), &transcripts_dir()?, chrono::Utc::now().timestamp_millis())
 }
 
-fn current_in(dir: &Path, now_ms: i64) -> Option<SessionRef> {
+fn current_in(dir: &Path, transcripts: &Path, now_ms: i64) -> Option<SessionRef> {
     let bytes = std::fs::read(dir.join(SESSION_FILE)).ok()?;
     let session: SessionRef = serde_json::from_slice(&bytes).ok()?;
-    (now_ms - session.seen_ms < SESSION_FRESH_MS).then_some(session)
+    trusted(&session, transcripts, now_ms).then_some(session)
 }
 
 /// Minutes since the session began and tokens it has used, read from its transcript.
@@ -92,7 +110,8 @@ fn first_showing_in(dir: &Path, session_id: &str, ids: &[String]) -> Vec<String>
         .map(|s| s.lines().map(str::to_string).collect())
         .unwrap_or_default();
     let fresh: Vec<String> = ids.iter().filter(|id| !seen.contains(*id)).cloned().collect();
-    if !fresh.is_empty() && super::create_state_dir(dir).is_ok() {
+    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    if let (false, Ok(path)) = (fresh.is_empty(), super::state_file(dir, &name)) {
         if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
             for id in &fresh {
                 let _ = writeln!(f, "{id}");
@@ -110,14 +129,71 @@ mod tests {
     fn remembers_the_session_per_repo_until_it_goes_stale() {
         let repo_a = tempfile::tempdir().unwrap();
         let repo_b = tempfile::tempdir().unwrap();
-        let s = SessionRef { session_id: "s1".into(), transcript_path: "/t.jsonl".into(), seen_ms: 1_000 };
+        let transcripts = tempfile::tempdir().unwrap();
+        let transcript = transcripts.path().join("t.jsonl");
+        std::fs::write(&transcript, "").unwrap();
+        let s = SessionRef { session_id: "s1".into(), transcript_path: transcript.to_string_lossy().into(), seen_ms: 1_000 };
         remember(repo_a.path(), &s);
 
         let dir = crate::ask::state_dir(repo_a.path());
-        assert_eq!(current_in(&dir, 2_000).unwrap().session_id, "s1");
+        assert_eq!(current_in(&dir, transcripts.path(), 2_000).unwrap().session_id, "s1");
         assert!(dir.join(".gitignore").is_file(), "session state is never committed");
-        assert!(current_in(&crate::ask::state_dir(repo_b.path()), 2_000).is_none(), "other repos have their own");
-        assert!(current_in(&dir, 1_000 + SESSION_FRESH_MS).is_none(), "stale after 12 hours");
+        let other = crate::ask::state_dir(repo_b.path());
+        assert!(current_in(&other, transcripts.path(), 2_000).is_none(), "other repos have their own");
+        assert!(current_in(&dir, transcripts.path(), 1_000 + SESSION_FRESH_MS).is_none(), "stale after 12 hours");
+    }
+
+    #[test]
+    fn a_planted_session_is_ignored() {
+        let transcripts = tempfile::tempdir().unwrap();
+        let elsewhere = tempfile::tempdir().unwrap();
+        let outside = elsewhere.path().join("secret");
+        std::fs::write(&outside, "").unwrap();
+        let inside = transcripts.path().join("t.jsonl");
+        std::fs::write(&inside, "").unwrap();
+        let session = |path: &Path, seen_ms| SessionRef {
+            session_id: "s".into(),
+            transcript_path: path.to_string_lossy().into(),
+            seen_ms,
+        };
+
+        assert!(trusted(&session(&inside, 1_000), transcripts.path(), 2_000));
+        assert!(!trusted(&session(&outside, 1_000), transcripts.path(), 2_000), "transcript outside Claude's folder");
+        let escape = transcripts.path().join("..").join(elsewhere.path().file_name().unwrap()).join("secret");
+        assert!(!trusted(&session(&escape, 1_000), transcripts.path(), 2_000), "a .. path is resolved first");
+        assert!(!trusted(&session(transcripts.path(), 1_000), transcripts.path(), 2_000), "a folder is not a transcript");
+        assert!(!trusted(&session(&inside, 9_000), transcripts.path(), 2_000), "seen in the future");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn never_writes_through_a_symlinked_cache() {
+        let repo = tempfile::tempdir().unwrap();
+        let target = tempfile::tempdir().unwrap();
+        std::fs::create_dir(repo.path().join(".knot")).unwrap();
+        std::os::unix::fs::symlink(target.path(), repo.path().join(".knot/cache")).unwrap();
+        let s = SessionRef { session_id: "s1".into(), transcript_path: "/t".into(), seen_ms: 1 };
+
+        remember(repo.path(), &s);
+        first_showing(repo.path(), "s1", &["a".to_string()]);
+
+        assert_eq!(std::fs::read_dir(target.path()).unwrap().count(), 0, "nothing lands where the link points");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn never_writes_through_a_symlinked_state_file() {
+        let repo = tempfile::tempdir().unwrap();
+        let target = tempfile::tempdir().unwrap();
+        let victim = target.path().join("authorized_keys");
+        std::fs::write(&victim, "keep me").unwrap();
+        let dir = crate::ask::state_dir(repo.path());
+        std::fs::create_dir_all(&dir).unwrap();
+        std::os::unix::fs::symlink(&victim, dir.join(SESSION_FILE)).unwrap();
+
+        remember(repo.path(), &SessionRef { session_id: "s1".into(), transcript_path: "/t".into(), seen_ms: 1 });
+
+        assert_eq!(std::fs::read_to_string(&victim).unwrap(), "keep me");
     }
 
     #[test]

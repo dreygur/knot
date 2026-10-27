@@ -90,22 +90,55 @@ fn cache_path(cache_root: &Path) -> PathBuf {
     state_dir_in(cache_root).join(CACHE_FILE)
 }
 
+fn is_symlink(path: &Path) -> bool {
+    std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink())
+}
+
+/// A cloned repo can commit `.knot/cache` (or a file in it) as a symlink to anywhere,
+/// say `~/.ssh`; writing through it would let the repo overwrite files outside itself.
+fn refuse_symlink(path: &Path) -> std::io::Result<()> {
+    if is_symlink(path) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("{} is a symlink; Knot does not write through it", path.display()),
+        ));
+    }
+    Ok(())
+}
+
 /// Create `dir` with a `.gitignore` covering everything in it, so a repo without a
-/// `.knot` rule of its own never commits Knot's local state.
-pub fn create_state_dir(dir: &Path) -> std::io::Result<()> {
+/// `.knot` rule of its own never commits Knot's local state. Refuses when `dir` or
+/// its parent (`.knot`) is a symlink.
+fn create_state_dir(dir: &Path) -> std::io::Result<()> {
+    if let Some(parent) = dir.parent() {
+        refuse_symlink(parent)?;
+    }
+    refuse_symlink(dir)?;
     std::fs::create_dir_all(dir)?;
-    let ignore = dir.join(".gitignore");
+    let ignore = state_file(dir, ".gitignore")?;
     if !ignore.exists() {
         std::fs::write(ignore, CACHE_GITIGNORE)?;
     }
     Ok(())
 }
 
-fn create_cache_dir(cache_file: &Path) -> std::io::Result<()> {
-    match cache_file.parent() {
-        Some(dir) => create_state_dir(dir),
-        None => Ok(()),
+/// `dir/name`, ready to write: the folder is created as [`create_state_dir`] does, and
+/// the file must not be a symlink. Every write into a repo's state goes through this.
+pub fn state_file(dir: &Path, name: &str) -> std::io::Result<PathBuf> {
+    if !dir.is_dir() || is_symlink(dir) {
+        create_state_dir(dir)?;
     }
+    let path = dir.join(name);
+    refuse_symlink(&path)?;
+    Ok(path)
+}
+
+/// [`state_file`] for a path already joined, as the cache's own files are.
+fn writable(path: &Path) -> std::io::Result<PathBuf> {
+    let (Some(dir), Some(name)) = (path.parent(), path.file_name()) else {
+        return Ok(path.to_path_buf());
+    };
+    state_file(dir, &name.to_string_lossy())
 }
 
 fn read_cache(path: &Path) -> HashMap<String, CachedFile> {
@@ -124,8 +157,8 @@ fn read_cache(path: &Path) -> HashMap<String, CachedFile> {
 
 /// Write via a temp file and rename so a crash never leaves a half written cache.
 fn write_cache(path: &Path, files: HashMap<String, CachedFile>) -> Result<()> {
-    create_cache_dir(path)?;
-    let tmp = path.with_extension("json.tmp");
+    let path = writable(path)?;
+    let tmp = writable(&path.with_extension("json.tmp"))?;
     std::fs::write(&tmp, serde_json::to_vec(&CacheFile { version: CACHE_VERSION, files })?)?;
     std::fs::rename(&tmp, path)?;
     Ok(())
@@ -151,9 +184,8 @@ fn write_status(cache_file: &Path, files: &HashMap<String, CachedFile>) -> Resul
             .len(),
         stamps: files.iter().map(|(rel, f)| (rel.clone(), f.stamp)).collect(),
     };
-    let path = status_path(cache_file);
-    create_cache_dir(&path)?;
-    let tmp = path.with_extension("tmp");
+    let path = writable(&status_path(cache_file))?;
+    let tmp = writable(&path.with_extension("tmp"))?;
     std::fs::write(&tmp, serde_json::to_vec(&status)?)?;
     std::fs::rename(&tmp, path)?;
     Ok(())
@@ -200,7 +232,7 @@ pub fn claim_reindex(cache_root: &Path) -> bool {
         }
         let _ = std::fs::remove_file(&path);
     }
-    if create_cache_dir(&path).is_err() {
+    if writable(&path).is_err() {
         return false;
     }
     std::fs::OpenOptions::new().write(true).create_new(true).open(&path).is_ok()
@@ -354,6 +386,21 @@ mod tests {
         assert_eq!(std::fs::read_to_string(cache_dir.join(".gitignore")).unwrap(), CACHE_GITIGNORE);
         let (_, again) = load_corpus(repo.path(), Some(&root)).unwrap();
         assert_eq!(again, LoadStats { reused: 1, parsed: 0 }, "the cache folder itself is never indexed");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlinked_knot_folder_is_never_written_through() {
+        let repo = tempfile::tempdir().unwrap();
+        let target = tempfile::tempdir().unwrap();
+        std::fs::write(repo.path().join("a.rs"), "pub fn alpha() {}\n").unwrap();
+        std::os::unix::fs::symlink(target.path(), repo.path().join(".knot")).unwrap();
+
+        let (corpus, _) = load_corpus(repo.path(), Some(&crate::ask::index_root(repo.path()))).unwrap();
+
+        assert!(corpus.graph.name_to_ids.contains_key("alpha"), "the answer still works, uncached");
+        assert!(!claim_reindex(&crate::ask::index_root(repo.path())));
+        assert_eq!(std::fs::read_dir(target.path()).unwrap().count(), 0, "nothing lands where the link points");
     }
 
     #[test]
