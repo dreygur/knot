@@ -5,10 +5,11 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 
 use super::extract::{extract_file, extract_file_skeleton, SupportedLang};
+use super::tsconfig::TsAliases;
 use super::types::{BlastRadiusReport, ImportRef, SkeletonItem, SymbolNode};
 
 /// Build and vendor directories skipped even when no `.gitignore` lists them.
-const ALWAYS_SKIPPED_DIRS: &[&str] = &[
+pub(crate) const ALWAYS_SKIPPED_DIRS: &[&str] = &[
     ".git", "target", "node_modules", "reference", ".knot", ".trail", ".idea", ".vscode", "dist", "build",
 ];
 
@@ -105,6 +106,8 @@ pub struct CodeGraph {
     pub callees: HashMap<String, Vec<String>>,
     /// Import edges: symbol id -> files that import it.
     pub importers: HashMap<String, Vec<String>>,
+    /// tsconfig/jsconfig path aliases used to locate non-relative TS/JS imports.
+    pub ts_aliases: TsAliases,
 }
 
 /// A bare call name matching more symbols than this, with no import, qualifier or
@@ -161,7 +164,27 @@ fn dir_of(file: &str) -> &str {
     file.rsplit_once('/').map_or("", |(dir, _)| dir)
 }
 
+fn is_ts_or_js(file: &str) -> bool {
+    matches!(
+        SupportedLang::from_path(Path::new(file)),
+        Some(SupportedLang::TypeScript | SupportedLang::Tsx)
+    )
+}
+
 impl CodeGraph {
+    /// Where an import of `module` from `importer` may be defined. A non-relative
+    /// TS/JS import goes through the tsconfig aliases first; anything they do not map
+    /// falls back to reading the module name as a path.
+    fn module_hints(&self, module: &str, importer: &str) -> Vec<String> {
+        if !module.starts_with('.') && is_ts_or_js(importer) {
+            let aliased = self.ts_aliases.resolve(module, importer);
+            if !aliased.is_empty() {
+                return aliased;
+            }
+        }
+        module_path_hint(module, importer).into_iter().collect()
+    }
+
     /// Resolve one outgoing call from `caller_file` to target symbol ids.
     ///
     /// Order: an exact qualified name (`Type::new`), then same-file definitions, then
@@ -217,6 +240,11 @@ impl CodeGraph {
         let mut hints = Vec::new();
         let head = qualifier.first().copied().unwrap_or(bare);
         for imp in imports.iter().filter(|i| i.local == head) {
+            // A TS/JS import names a file, never a member path inside one
+            if is_ts_or_js(caller_file) {
+                hints.extend(self.module_hints(&imp.module, caller_file));
+                continue;
+            }
             let module = if !qualifier.is_empty() && imp.name != "*" {
                 format!("{}::{}", imp.module, imp.name)
             } else {
@@ -266,11 +294,16 @@ impl CodeGraph {
             .par_iter()
             .filter_map(|abs_path| parse_file(repo_root, abs_path).ok())
             .collect();
-        Ok(Self::from_parsed(parsed))
+        Ok(Self::from_parsed_with_aliases(parsed, TsAliases::load(repo_root)))
     }
 
     /// Assemble the graph from already parsed files, e.g. ones loaded from a cache.
     pub fn from_parsed(parsed: Vec<ParsedFile>) -> Self {
+        Self::from_parsed_with_aliases(parsed, TsAliases::default())
+    }
+
+    /// [`from_parsed`](Self::from_parsed), locating aliased TS/JS imports through `ts_aliases`.
+    pub fn from_parsed_with_aliases(parsed: Vec<ParsedFile>, ts_aliases: TsAliases) -> Self {
         let mut symbols = HashMap::new();
         let mut name_to_ids: HashMap<String, Vec<String>> = HashMap::new();
         let mut file_to_ids: HashMap<String, Vec<String>> = HashMap::new();
@@ -306,6 +339,7 @@ impl CodeGraph {
             symbols,
             name_to_ids,
             file_to_ids,
+            ts_aliases,
             ..Default::default()
         };
 
@@ -328,10 +362,14 @@ impl CodeGraph {
         let mut importers: HashMap<String, Vec<String>> = HashMap::new();
         for (file, imports) in &file_imports {
             for imp in imports.iter().filter(|i| i.name != "*" && i.name != "default") {
-                let Some(hint) = module_path_hint(&imp.module, file) else { continue };
+                let hints = graph.module_hints(&imp.module, file);
                 let Some(candidates) = graph.name_to_ids.get(&imp.name) else { continue };
                 for id in candidates {
-                    if graph.symbols.get(id).is_some_and(|s| file_matches_hint(&s.file, &hint)) {
+                    let defined_there = graph
+                        .symbols
+                        .get(id)
+                        .is_some_and(|s| hints.iter().any(|hint| file_matches_hint(&s.file, hint)));
+                    if defined_there {
                         importers.entry(id.clone()).or_default().push(file.clone());
                     }
                 }
@@ -582,6 +620,30 @@ pub fn start_server() {{
         let graph = CodeGraph::build(root)?;
         let callees: Vec<String> = graph.get_callees("submit").into_iter().map(|s| s.id).collect();
         assert_eq!(callees, vec!["src/api.ts::save".to_string()]);
+        Ok(())
+    }
+
+    #[test]
+    fn test_tsconfig_alias_imports_resolve_to_the_aliased_file() -> Result<()> {
+        let dir = tempdir()?;
+        let root = dir.path();
+        std::fs::write(root.join("tsconfig.json"), r#"{ "compilerOptions": { "paths": { "@/*": ["./src/*"] } } }"#)?;
+        // Four `getUser`s, more than the unresolved fallback links, so only the alias can pick one
+        for f in ["src/lib/auth.ts", "src/other/a.ts", "src/other/b.ts", "src/other/c.ts"] {
+            std::fs::create_dir_all(root.join(f).parent().unwrap())?;
+            std::fs::write(root.join(f), "export function getUser() {}\n")?;
+        }
+        std::fs::create_dir_all(root.join("src/app"))?;
+        std::fs::write(
+            root.join("src/app/page.tsx"),
+            "import { getUser } from '@/lib/auth';\nexport function Page() { getUser(); }\n",
+        )?;
+
+        let graph = CodeGraph::build(root)?;
+        let callees: Vec<String> = graph.get_callees("Page").into_iter().map(|s| s.id).collect();
+        assert_eq!(callees, vec!["src/lib/auth.ts::getUser".to_string()]);
+        let importers = graph.importers.get("src/lib/auth.ts::getUser").cloned().unwrap_or_default();
+        assert_eq!(importers, vec!["src/app/page.tsx".to_string()]);
         Ok(())
     }
 

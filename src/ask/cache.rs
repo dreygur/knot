@@ -256,7 +256,7 @@ pub fn load_corpus(repo_root: &Path, cache_root: Option<&Path>) -> Result<(Corpu
     }
 
     docs.sort_by(|a, b| a.id.cmp(&b.id));
-    let graph = CodeGraph::from_parsed(parsed_files);
+    let graph = CodeGraph::from_parsed_with_aliases(parsed_files, crate::ast::tsconfig::TsAliases::load(repo_root));
     let index = LexicalIndex::from_docs(docs);
     Ok((Corpus { graph, index }, stats))
 }

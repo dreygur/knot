@@ -1,6 +1,7 @@
 pub mod extract;
 pub mod pagerank;
 pub mod resolve;
+pub mod tsconfig;
 pub mod types;
 
 pub use extract::{extract_file_skeleton, extract_file_symbols, SupportedLang};
