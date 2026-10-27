@@ -125,7 +125,13 @@ fn create_state_dir(dir: &Path) -> std::io::Result<()> {
 /// `dir/name`, ready to write: the folder is created as [`create_state_dir`] does, and
 /// the file must not be a symlink. Every write into a repo's state goes through this.
 pub fn state_file(dir: &Path, name: &str) -> std::io::Result<PathBuf> {
-    if !dir.is_dir() || is_symlink(dir) {
+    // Checked on every call, not only on create: a linked `.knot` whose target already
+    // holds a `cache/` folder looks like a real directory from here
+    if let Some(parent) = dir.parent() {
+        refuse_symlink(parent)?;
+    }
+    refuse_symlink(dir)?;
+    if !dir.is_dir() {
         create_state_dir(dir)?;
     }
     let path = dir.join(name);
@@ -401,6 +407,18 @@ mod tests {
         assert!(corpus.graph.name_to_ids.contains_key("alpha"), "the answer still works, uncached");
         assert!(!claim_reindex(&crate::ask::index_root(repo.path())));
         assert_eq!(std::fs::read_dir(target.path()).unwrap().count(), 0, "nothing lands where the link points");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlinked_knot_folder_with_a_cache_inside_is_refused_too() {
+        let repo = tempfile::tempdir().unwrap();
+        let target = tempfile::tempdir().unwrap();
+        std::fs::create_dir(target.path().join(CACHE_SUBDIR)).unwrap();
+        std::os::unix::fs::symlink(target.path(), repo.path().join(".knot")).unwrap();
+
+        assert!(state_file(&crate::ask::state_dir(repo.path()), CACHE_FILE).is_err());
+        assert_eq!(std::fs::read_dir(target.path().join(CACHE_SUBDIR)).unwrap().count(), 0);
     }
 
     #[test]
