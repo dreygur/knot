@@ -378,6 +378,71 @@ fn extract_ts_type(
     })
 }
 
+fn is_ts_function_value(node: Node) -> bool {
+    matches!(node.kind(), "arrow_function" | "function_expression" | "function")
+}
+
+/// The function a TS/JS value defines: itself, or the first function argument of a
+/// wrapper call such as `memo(() => ...)` or `forwardRef(function (props, ref) {...})`.
+fn ts_function_of(value: Node) -> Option<Node> {
+    if is_ts_function_value(value) {
+        return Some(value);
+    }
+    if value.kind() != "call_expression" {
+        return None;
+    }
+    let args = value.child_by_field_name("arguments")?;
+    let mut cursor = args.walk();
+    let found = args.named_children(&mut cursor).find(|a| is_ts_function_value(*a));
+    found
+}
+
+/// A module level `const`/`let` declarator: `export const Button = (p) => ...`,
+/// `const db = new PrismaClient()`. Locals inside functions are not symbols.
+fn extract_ts_variable(file_rel_path: &str, source_code: &str, lines: &[&str], node: Node) -> Option<SymbolNode> {
+    let declaration = node.parent()?;
+    let statement = match declaration.parent() {
+        Some(p) if p.kind() == "export_statement" => p,
+        _ => declaration,
+    };
+    if statement.parent().map(|p| p.kind()) != Some("program") {
+        return None;
+    }
+    let name_node = node.child_by_field_name("name")?;
+    if name_node.kind() != "identifier" {
+        return None;
+    }
+    let name = node_text(source_code, name_node);
+
+    let function = node.child_by_field_name("value").and_then(ts_function_of);
+    let (kind, signature) = match function.and_then(|f| f.child_by_field_name("body")) {
+        Some(body) => (
+            SymbolKind::Function,
+            source_code[statement.start_byte()..body.start_byte()].trim().to_string(),
+        ),
+        None if function.is_some() => (SymbolKind::Function, first_line_of(lines, statement.start_position().row + 1)),
+        None => (SymbolKind::Constant, first_line_of(lines, statement.start_position().row + 1)),
+    };
+    Some(build_symbol(file_rel_path, source_code, lines, node, name, kind, signature))
+}
+
+/// A class field holding a function, `handleClick = () => {...}`, is a method.
+fn extract_ts_field_method(
+    file_rel_path: &str,
+    source_code: &str,
+    lines: &[&str],
+    node: Node,
+    scope: &str,
+) -> Option<SymbolNode> {
+    let value = node.child_by_field_name("value").filter(|v| is_ts_function_value(*v))?;
+    let name = node_text(source_code, node.child_by_field_name("name")?);
+    let signature = match value.child_by_field_name("body") {
+        Some(body) => source_code[node.start_byte()..body.start_byte()].trim().to_string(),
+        None => first_line_of(lines, node.start_position().row + 1),
+    };
+    Some(build_symbol(file_rel_path, source_code, lines, node, format!("{scope}.{name}"), SymbolKind::Method, signature))
+}
+
 /// A symbol spanning `node`, named `name`. Callables collect their outgoing calls.
 fn build_symbol(
     file_rel_path: &str,
@@ -573,6 +638,18 @@ fn collect_symbols_recursive(
             }
             "type_alias_declaration" => {
                 if let Some(sym) = extract_ts_type(file_rel_path, source_code, lines, node, SymbolKind::TypeAlias) {
+                    symbols.push(sym);
+                }
+            }
+            "variable_declarator" if parent_scope.is_none() => {
+                if let Some(sym) = extract_ts_variable(file_rel_path, source_code, lines, node) {
+                    symbols.push(sym);
+                }
+            }
+            "public_field_definition" => {
+                if let Some(sym) =
+                    parent_scope.and_then(|scope| extract_ts_field_method(file_rel_path, source_code, lines, node, scope))
+                {
                     symbols.push(sym);
                 }
             }
@@ -885,6 +962,52 @@ class Panel {
         assert_eq!(button.span, (2, 4));
         assert!(button.outgoing_calls.contains(&"track".to_string()));
         assert!(symbols.iter().any(|s| s.name == "Panel.render"));
+    }
+
+    #[test]
+    fn test_ts_module_consts_and_arrow_components_are_symbols() {
+        let code = r#"
+/** Shared Prisma client. */
+export const db = new PrismaClient();
+
+export const Button = ({ label }: Props) => {
+    return <button onClick={() => track(label)}>{label}</button>;
+};
+
+export const Card = memo(function Card(props: CardProps) {
+    return render(props);
+});
+
+const { a, b } = load();
+
+class Store {
+    handleSave = async () => { await persist(); };
+    count = 0;
+}
+
+function outer() {
+    const local = () => helper();
+    return local();
+}
+"#;
+        let symbols = extract_file_symbols("ui/button.tsx", code, SupportedLang::Tsx).unwrap();
+        let kind_of = |name: &str| symbols.iter().find(|s| s.name == name).map(|s| s.kind);
+
+        assert_eq!(kind_of("db"), Some(SymbolKind::Constant));
+        assert_eq!(kind_of("Button"), Some(SymbolKind::Function));
+        assert_eq!(kind_of("Card"), Some(SymbolKind::Function));
+        assert_eq!(kind_of("Store.handleSave"), Some(SymbolKind::Method));
+        assert_eq!(kind_of("Store.count"), None, "plain fields are not methods");
+        assert_eq!(kind_of("local"), None, "locals inside functions are not symbols");
+        assert!(!symbols.iter().any(|s| s.name == "a" || s.name == "b"), "destructuring is skipped");
+
+        let button = symbols.iter().find(|s| s.name == "Button").unwrap();
+        assert_eq!(button.signature, "export const Button = ({ label }: Props) =>");
+        assert_eq!(button.span, (5, 7));
+        assert!(button.outgoing_calls.contains(&"track".to_string()));
+        let card = symbols.iter().find(|s| s.name == "Card").unwrap();
+        assert!(card.outgoing_calls.contains(&"render".to_string()));
+        assert_eq!(symbols.iter().find(|s| s.name == "db").unwrap().signature, "export const db = new PrismaClient();");
     }
 
     fn import(local: &str, name: &str, module: &str) -> ImportRef {

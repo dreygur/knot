@@ -45,7 +45,7 @@ Knot supports 5 languages: Rust, Python, TypeScript/JavaScript, Go and Java. Rub
 
 ### 2. TypeScript Path Aliasing
 Trail-Code implements Node module resolution and parses `tsconfig.json` path mappings, such as `@/components/*` or `~/*`.
-Knot now reads `tsconfig.json` and `jsconfig.json` too (`paths`, `baseUrl`, relative `extends`, nearest config per file) and uses them for call and import edges; on shadcn-ui/taxonomy, `cn` went from 0 to 60 importing files. Still missing: package `extends` presets from node_modules, and `export const` declarations (arrow function components, `db` objects) are not extracted as symbols at all, which is now the larger TypeScript gap.
+Knot now reads `tsconfig.json` and `jsconfig.json` too (`paths`, `baseUrl`, relative `extends`, nearest config per file) and uses them for call and import edges; on shadcn-ui/taxonomy, `cn` went from 0 to 60 importing files. Module level `const` declarations are symbols too (arrow function and `memo`/`forwardRef` components as functions, the rest as constants), which more than doubled taxonomy's symbols (194 to 414). Still missing: package `extends` presets from node_modules.
 
 ### 3. Monorepo Scope Isolation
 Trail-Code includes directory heuristics that assign subproject labels (`[scope/]`) to ranked hits and allows filtering via `--in <scope>/`. Knot indexes the workspace as a unified graph root.
