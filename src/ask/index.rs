@@ -101,6 +101,7 @@ fn is_test_symbol(sym: &SymbolNode, annotated_test: bool) -> bool {
         || file.contains("/tests/")
         || file.contains(".test.")
         || file.contains(".spec.")
+        || file.ends_with("_test.go")
         || file.rsplit('/').next().is_some_and(|f| f.starts_with("test_"))
 }
 

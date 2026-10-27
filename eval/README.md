@@ -17,7 +17,9 @@ or Trail skips it because the parent repo ignores `reference/`.
 git clone --depth 1 --branch v2.32.3 https://github.com/psf/requests.git reference/requests
 mkdir -p reference/knot-snapshot && git archive HEAD | tar -x -C reference/knot-snapshot
 (cd reference/knot-snapshot && rm -rf reference && git init -q && git add -A && git commit -qm snapshot)
-for c in knot-snapshot trail-code requests; do (cd reference/$c && trail build .); done
+git clone --depth 1 --branch v1.8.1 https://github.com/spf13/cobra.git reference/cobra
+git clone --depth 1 --branch gson-parent-2.11.0 https://github.com/google/gson.git reference/gson
+for c in knot-snapshot trail-code requests cobra gson; do (cd reference/$c && trail build .); done
 cargo build --release
 ```
 
@@ -26,6 +28,7 @@ cargo build --release
 ```
 cargo run --release --example eval                  # both engines, all corpora
 cargo run --release --example eval -- --engine trail --corpus requests
+cargo run --release --example eval -- --questions eval/langs.json   # Go and Java
 ```
 
 Misses print to stderr with the engine's top result, which is how ground truth
@@ -43,6 +46,15 @@ and never used to choose settings, so it is the number to trust.
 | tuning | trail | 53 | 51% | 66% | 85% | 0.581 |
 | held out | knot | 21 | 52% | 86% | 95% | 0.644 |
 | held out | trail | 21 | 38% | 43% | 76% | 0.405 |
+| Go and Java | knot | 32 | 50% | 78% | 88% | 0.618 |
+| Go and Java | trail | 32 | 31% | 44% | 78% | 0.370 |
+
+`langs.json` covers spf13/cobra v1.8.1 (Go) and google/gson 2.11.0 (Java), 16
+questions each, written from the sources' doc comments after Go and Java support
+landed and never used to tune anything; it is a second held out set. Per corpus
+MRR: cobra knot 0.591 vs Trail 0.263, gson knot 0.646 vs Trail 0.477. Knot's
+misses there are real ranking misses (e.g. "top level command" finds `tmpl`,
+which builds a template named "top"), so the ground truth stays as written.
 
 Per corpus on the tuning set, knot leads on MRR everywhere but trails Trail on
 hit@1 for Trail's own TypeScript code (39% vs 44%). Median latency, warm: knot

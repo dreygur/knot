@@ -11,7 +11,7 @@ use crate::ast::resolve::{list_supported_files, ParsedFile};
 use crate::ast::CodeGraph;
 
 /// Bump when the cached shape or tokenization changes, so old caches are ignored.
-const CACHE_VERSION: u32 = 3;
+const CACHE_VERSION: u32 = 4;
 const CACHE_SUBDIR: &str = "cache/ask";
 const ROOT_KEY_HEX_CHARS: usize = 16;
 
@@ -196,8 +196,10 @@ pub fn release_reindex(repo_root: &Path, cache_root: &Path) {
 fn parse_with_docs(repo_root: &Path, abs_path: &Path, stamp: Stamp) -> Option<(String, CachedFile)> {
     let rel_path = abs_path.strip_prefix(repo_root).unwrap_or(abs_path).to_string_lossy().replace('\\', "/");
     let lang = SupportedLang::from_path(abs_path)?;
-    let source = std::fs::read_to_string(abs_path).ok()?;
-    let (symbols, imports) = extract_file(&rel_path, &source, lang).ok()?;
+    // A file that cannot be read as text or parsed is cached with no symbols, so it is
+    // not retried on every load or reported as changed forever.
+    let source = std::fs::read_to_string(abs_path).unwrap_or_default();
+    let (symbols, imports) = extract_file(&rel_path, &source, lang).unwrap_or_default();
 
     let lines: Vec<&str> = source.lines().collect();
     let docs = symbols.iter().map(|s| build_doc(s, &lines)).collect();

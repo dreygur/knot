@@ -28,7 +28,12 @@ pub fn list_supported_files(root: &Path) -> Result<Vec<PathBuf>> {
 
     for entry in walker {
         let entry = entry?;
-        if entry.file_type().is_some_and(|t| t.is_file()) && SupportedLang::from_path(entry.path()).is_some() {
+        // `._name` files are macOS metadata written on non-Apple volumes, not source
+        let apple_double = entry.file_name().to_string_lossy().starts_with("._");
+        if !apple_double
+            && entry.file_type().is_some_and(|t| t.is_file())
+            && SupportedLang::from_path(entry.path()).is_some()
+        {
             files.push(entry.into_path());
         }
     }
@@ -141,7 +146,19 @@ fn file_matches_hint(file: &str, hint: &str) -> bool {
         .iter()
         .find_map(|suffix| stem.strip_suffix(suffix))
         .unwrap_or(stem);
-    stem == hint || stem.ends_with(&format!("/{hint}"))
+    if stem == hint || stem.ends_with(&format!("/{hint}")) {
+        return true;
+    }
+    // A Go import names a package directory by its full module path
+    // (`github.com/acme/app/internal/store`), which ends with the file's directory.
+    match file.strip_suffix(".go").and_then(|f| f.rsplit_once('/')) {
+        Some((dir, _)) => hint == dir || hint.ends_with(&format!("/{dir}")),
+        None => false,
+    }
+}
+
+fn dir_of(file: &str) -> &str {
+    file.rsplit_once('/').map_or("", |(dir, _)| dir)
 }
 
 impl CodeGraph {
@@ -175,6 +192,22 @@ impl CodeGraph {
             .collect();
         if !same_file.is_empty() && qualifier.is_empty() {
             return same_file;
+        }
+
+        // A Go package spans its directory, so an unqualified call can be in any file there.
+        if qualifier.is_empty() && caller_file.ends_with(".go") {
+            let same_package: Vec<String> = candidates
+                .iter()
+                .filter(|id| {
+                    self.symbols
+                        .get(*id)
+                        .is_some_and(|s| s.file.ends_with(".go") && dir_of(&s.file) == dir_of(caller_file))
+                })
+                .cloned()
+                .collect();
+            if !same_package.is_empty() {
+                return same_package;
+            }
         }
 
         // Module hints: where `bare` (or the qualifier's first segment) was imported from,
@@ -549,6 +582,32 @@ pub fn start_server() {{
         let graph = CodeGraph::build(root)?;
         let callees: Vec<String> = graph.get_callees("submit").into_iter().map(|s| s.id).collect();
         assert_eq!(callees, vec!["src/api.ts::save".to_string()]);
+        Ok(())
+    }
+
+    #[test]
+    fn test_go_calls_resolve_by_package_directory() -> Result<()> {
+        let dir = tempdir()?;
+        let root = dir.path();
+        // Four `Open`s, more than the unresolved fallback links, so only the
+        // package rules can pick one.
+        for pkg in ["internal/store", "internal/cache", "internal/queue", "internal/log"] {
+            std::fs::create_dir_all(root.join(pkg))?;
+            std::fs::write(root.join(pkg).join("open.go"), "package p\n\nfunc Open() {}\n")?;
+        }
+        std::fs::write(
+            root.join("internal/store/run.go"),
+            "package store\n\nimport \"github.com/acme/app/internal/cache\"\n\n\
+             func Run() {\n\tOpen()\n\tcache.Open()\n}\n",
+        )?;
+
+        let graph = CodeGraph::build(root)?;
+        let mut callees: Vec<String> = graph.get_callees("Run").into_iter().map(|s| s.id).collect();
+        callees.sort();
+        assert_eq!(
+            callees,
+            vec!["internal/cache/open.go::Open".to_string(), "internal/store/open.go::Open".to_string()]
+        );
         Ok(())
     }
 

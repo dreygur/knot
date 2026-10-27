@@ -41,7 +41,7 @@ Trail-Code provides browser visualization only. Knot provides:
 
 ### 1. Language Grammar Breadth
 Trail-Code supports 10+ programming languages: TypeScript, JavaScript, Python, Go, Rust, Ruby, Java, C, C++, and C#.
-Knot 2.0 currently supports 3 languages: Rust, Python, and TypeScript/JavaScript. Repositories in Go, Java, or C/C++ cannot yet be indexed by Knot.
+Knot supports 5 languages: Rust, Python, TypeScript/JavaScript, Go and Java. Ruby, C, C++ and C# repositories cannot yet be indexed by Knot. On Go and Java questions Knot already outranks Trail (MRR 0.618 vs 0.370, eval/README.md).
 
 ### 2. TypeScript Path Aliasing
 Trail-Code implements Node module resolution and parses `tsconfig.json` path mappings, such as `@/components/*` or `~/*`.

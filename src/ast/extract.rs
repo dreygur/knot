@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use tree_sitter::{Language, Node, Parser};
 
@@ -12,6 +12,8 @@ pub enum SupportedLang {
     TypeScript,
     /// TSX grammar: TypeScript plus JSX. Also used for plain JavaScript, which may contain JSX.
     Tsx,
+    Go,
+    Java,
 }
 
 impl SupportedLang {
@@ -21,6 +23,8 @@ impl SupportedLang {
             "py" => Some(SupportedLang::Python),
             "ts" | "mts" | "cts" => Some(SupportedLang::TypeScript),
             "tsx" | "js" | "jsx" | "mjs" | "cjs" => Some(SupportedLang::Tsx),
+            "go" => Some(SupportedLang::Go),
+            "java" => Some(SupportedLang::Java),
             _ => None,
         }
     }
@@ -31,6 +35,8 @@ impl SupportedLang {
             SupportedLang::Python => tree_sitter_python::LANGUAGE.into(),
             SupportedLang::TypeScript => tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
             SupportedLang::Tsx => tree_sitter_typescript::LANGUAGE_TSX.into(),
+            SupportedLang::Go => tree_sitter_go::LANGUAGE.into(),
+            SupportedLang::Java => tree_sitter_java::LANGUAGE.into(),
         }
     }
 }
@@ -102,12 +108,37 @@ fn collect_outgoing_calls(source_code: &str, root: Node) -> Vec<String> {
     let mut stack = vec![root];
 
     while let Some(current) = stack.pop() {
-        if current.kind() == "call_expression" || current.kind() == "call" {
-            if let Some(function_node) = current.child_by_field_name("function") {
-                if let Some(call) = normalize_call_path(&node_text(source_code, function_node)) {
+        match current.kind() {
+            "call_expression" | "call" => {
+                if let Some(function_node) = current.child_by_field_name("function") {
+                    if let Some(call) = normalize_call_path(&node_text(source_code, function_node)) {
+                        calls.insert(call);
+                    }
+                }
+            }
+            // Java: `obj.name(...)` has separate object and name fields. When the object
+            // is not a plain path (`build().run()`), keep the method name alone.
+            "method_invocation" => {
+                if let Some(name_node) = current.child_by_field_name("name") {
+                    let name = node_text(source_code, name_node);
+                    let qualified = current
+                        .child_by_field_name("object")
+                        .and_then(|obj| normalize_call_path(&format!("{}.{name}", node_text(source_code, obj))));
+                    if let Some(call) = qualified.or_else(|| normalize_call_path(&name)) {
+                        calls.insert(call);
+                    }
+                }
+            }
+            // Java: `new Type<>(...)` calls the type's constructor.
+            "object_creation_expression" => {
+                if let Some(call) = current
+                    .child_by_field_name("type")
+                    .and_then(|t| normalize_call_path(&node_text(source_code, t)))
+                {
                     calls.insert(call);
                 }
             }
+            _ => {}
         }
 
         let mut cursor = current.walk();
@@ -347,6 +378,124 @@ fn extract_ts_type(
     })
 }
 
+/// A symbol spanning `node`, named `name`. Callables collect their outgoing calls.
+fn build_symbol(
+    file_rel_path: &str,
+    source_code: &str,
+    lines: &[&str],
+    node: Node,
+    name: String,
+    kind: SymbolKind,
+    signature: String,
+) -> SymbolNode {
+    let start_line = node.start_position().row + 1;
+    let end_line = node.end_position().row + 1;
+    let full_text = &source_code[node.start_byte()..node.end_byte()];
+    let outgoing_calls = match kind {
+        SymbolKind::Function | SymbolKind::Method => collect_outgoing_calls(source_code, node),
+        _ => Vec::new(),
+    };
+
+    SymbolNode {
+        id: format!("{file_rel_path}::{name}"),
+        file: file_rel_path.to_string(),
+        name,
+        kind,
+        signature,
+        span: (start_line, end_line),
+        crux: compute_crux(lines, start_line, end_line),
+        hash: blake3::hash(full_text.as_bytes()).to_hex().to_string(),
+        outgoing_calls,
+    }
+}
+
+/// Text from `start` up to the body, or the whole node when it has none.
+fn signature_from(source_code: &str, node: Node, start: usize) -> String {
+    let end = node.child_by_field_name("body").map_or(node.end_byte(), |b| b.start_byte());
+    source_code[start.min(end)..end].trim().trim_end_matches(';').trim_end().to_string()
+}
+
+/// The type a Go method is declared on: `func (s *Server[T]) Run()` gives `Server`.
+fn go_receiver_type(source_code: &str, node: Node) -> Option<String> {
+    let receiver = node.child_by_field_name("receiver")?;
+    let mut cursor = receiver.walk();
+    let param = receiver.named_children(&mut cursor).find(|c| c.kind() == "parameter_declaration")?;
+    let type_text = node_text(source_code, param.child_by_field_name("type")?);
+    let bare = type_text.trim_start_matches('*').split('[').next()?.trim();
+    (!bare.is_empty()).then(|| bare.to_string())
+}
+
+fn extract_go_symbol(file_rel_path: &str, source_code: &str, lines: &[&str], node: Node) -> Option<SymbolNode> {
+    let name = node_text(source_code, node.child_by_field_name("name")?);
+    let (name, kind) = match node.kind() {
+        "function_declaration" => (name, SymbolKind::Function),
+        "method_declaration" => match go_receiver_type(source_code, node) {
+            Some(owner) => (format!("{owner}.{name}"), SymbolKind::Method),
+            None => (name, SymbolKind::Method),
+        },
+        "type_spec" => {
+            let kind = match node.child_by_field_name("type").map(|t| t.kind()) {
+                Some("struct_type") => SymbolKind::Struct,
+                Some("interface_type") => SymbolKind::Interface,
+                _ => SymbolKind::TypeAlias,
+            };
+            (name, kind)
+        }
+        "type_alias" => (name, SymbolKind::TypeAlias),
+        _ => return None,
+    };
+    let signature = match kind {
+        SymbolKind::Function | SymbolKind::Method => signature_from(source_code, node, node.start_byte()),
+        _ => first_line_of(lines, node.start_position().row + 1),
+    };
+    Some(build_symbol(file_rel_path, source_code, lines, node, name, kind, signature))
+}
+
+/// Where a Java declaration's signature starts: after any annotations in its modifiers,
+/// so `@Override` lines stay out of it.
+fn java_signature_start(node: Node) -> usize {
+    let mut cursor = node.walk();
+    let Some(modifiers) = node.children(&mut cursor).find(|c| c.kind() == "modifiers") else {
+        return node.start_byte();
+    };
+    let mut mod_cursor = modifiers.walk();
+    let first_keyword = modifiers
+        .children(&mut mod_cursor)
+        .find(|c| !matches!(c.kind(), "annotation" | "marker_annotation" | "line_comment" | "block_comment"));
+    match first_keyword {
+        Some(k) => k.start_byte(),
+        None => modifiers.next_sibling().map_or(node.start_byte(), |n| n.start_byte()),
+    }
+}
+
+fn extract_java_symbol(
+    file_rel_path: &str,
+    source_code: &str,
+    lines: &[&str],
+    node: Node,
+    parent_scope: Option<&str>,
+) -> Option<SymbolNode> {
+    let raw_name = node_text(source_code, node.child_by_field_name("name")?);
+    let kind = match node.kind() {
+        "method_declaration" | "constructor_declaration" => SymbolKind::Method,
+        "class_declaration" | "record_declaration" => SymbolKind::Class,
+        "interface_declaration" | "annotation_type_declaration" => SymbolKind::Interface,
+        "enum_declaration" => SymbolKind::Enum,
+        _ => return None,
+    };
+    let name = match (kind, parent_scope) {
+        (SymbolKind::Method, Some(scope)) => format!("{scope}.{raw_name}"),
+        _ => raw_name,
+    };
+    let signature = signature_from(source_code, node, java_signature_start(node));
+    // A type's "signature" is its header; keep it to one line like other languages
+    let signature = match kind {
+        SymbolKind::Method => signature,
+        _ => signature.lines().next().unwrap_or_default().trim().to_string(),
+    };
+    Some(build_symbol(file_rel_path, source_code, lines, node, name, kind, signature))
+}
+
 fn collect_symbols_recursive(
     file_rel_path: &str,
     source_code: &str,
@@ -429,6 +578,20 @@ fn collect_symbols_recursive(
             }
             _ => {}
         },
+        // Go methods name their type in the receiver, so no scope is carried down.
+        SupportedLang::Go => {
+            if let Some(sym) = extract_go_symbol(file_rel_path, source_code, lines, node) {
+                symbols.push(sym);
+            }
+        }
+        SupportedLang::Java => {
+            if let Some(sym) = extract_java_symbol(file_rel_path, source_code, lines, node, parent_scope) {
+                if sym.kind != SymbolKind::Method {
+                    current_scope = Some(sym.name.clone());
+                }
+                symbols.push(sym);
+            }
+        }
     }
 
     let mut cursor = node.walk();
@@ -570,11 +733,48 @@ fn collect_imports(source_code: &str, root: Node, lang: SupportedLang) -> Vec<Im
                     }
                 }
             }
+            (SupportedLang::Go, "import_declaration") => collect_go_imports(source_code, node, &mut imports),
+            (SupportedLang::Java, "import_declaration") => {
+                let path = text.trim_start_matches("import").trim().trim_start_matches("static ").trim_end_matches(';').trim();
+                match path.strip_suffix(".*") {
+                    Some(module) => imports.push(ImportRef { local: "*".into(), name: "*".into(), module: module.into() }),
+                    None => {
+                        let (module, name) = path.rsplit_once('.').unwrap_or(("", path));
+                        imports.push(ImportRef { local: name.into(), name: name.into(), module: module.into() });
+                    }
+                }
+            }
             _ => {}
         }
     }
 
     imports
+}
+
+/// Go imports bind a whole package, by its alias or the path's last segment
+/// (skipping a `/v2` major version suffix).
+fn collect_go_imports(source_code: &str, node: Node, imports: &mut Vec<ImportRef>) {
+    let mut stack = vec![node];
+    while let Some(current) = stack.pop() {
+        if current.kind() != "import_spec" {
+            let mut cursor = current.walk();
+            stack.extend(current.named_children(&mut cursor));
+            continue;
+        }
+        let Some(path_node) = current.child_by_field_name("path") else { continue };
+        let module = node_text(source_code, path_node).trim_matches(['"', '`']).to_string();
+        let alias = current.child_by_field_name("name").map(|n| node_text(source_code, n));
+        let mut segments = module.rsplit('/');
+        let last = segments.next().unwrap_or(&module);
+        let is_version = last.len() > 1 && last.starts_with('v') && last[1..].chars().all(|c| c.is_ascii_digit());
+        let package = if is_version { segments.next().unwrap_or(last) } else { last };
+        let local = match alias.as_deref() {
+            Some("_") => continue,
+            Some(a) => a.to_string(),
+            None => package.to_string(),
+        };
+        imports.push(ImportRef { local, name: "*".into(), module });
+    }
 }
 
 pub fn extract_file_symbols(
@@ -613,6 +813,17 @@ pub fn extract_file(
         None,
         &mut symbols,
     );
+
+    // Overloads (Java) and redefinitions share a name; give each its own id so none
+    // is dropped from the graph. The name stays, so lookups by name find them all.
+    let mut seen: HashMap<String, usize> = HashMap::new();
+    for sym in &mut symbols {
+        let count = seen.entry(sym.id.clone()).or_insert(0);
+        *count += 1;
+        if *count > 1 {
+            sym.id = format!("{}#{count}", sym.id);
+        }
+    }
 
     let imports = collect_imports(source_code, root_node, lang);
     Ok((symbols, imports))
@@ -710,6 +921,120 @@ class Panel {
         assert_eq!(normalize_call_path("hybrid::resolve"), Some("hybrid::resolve".into()));
         assert_eq!(normalize_call_path("utils.format"), Some("utils.format".into()));
         assert_eq!(normalize_call_path("(a || b)"), None);
+    }
+
+    #[test]
+    fn test_go_symbol_and_import_extraction() {
+        let code = r#"package store
+
+import (
+	"fmt"
+	cache "github.com/acme/app/internal/lru/v2"
+	_ "embed"
+)
+
+// Store keeps rows in memory.
+type Store[T any] struct {
+	rows map[string]T
+}
+
+type Getter interface {
+	Get(key string) (string, error)
+}
+
+type ID = string
+
+func New() *Store[int] {
+	return &Store[int]{rows: cache.Make()}
+}
+
+func (s *Store[T]) Get(key string) (T, error) {
+	fmt.Println(key)
+	return s.lookup(key)
+}
+"#;
+        let lang = SupportedLang::from_path(Path::new("internal/store/store.go")).unwrap();
+        let (symbols, imports) = extract_file("internal/store/store.go", code, lang).unwrap();
+
+        let kind_of = |name: &str| symbols.iter().find(|s| s.name == name).map(|s| s.kind);
+        assert_eq!(kind_of("Store"), Some(SymbolKind::Struct));
+        assert_eq!(kind_of("Getter"), Some(SymbolKind::Interface));
+        assert_eq!(kind_of("ID"), Some(SymbolKind::TypeAlias));
+        assert_eq!(kind_of("New"), Some(SymbolKind::Function));
+
+        let get = symbols.iter().find(|s| s.name == "Store.Get").unwrap();
+        assert_eq!(get.kind, SymbolKind::Method);
+        assert_eq!(get.signature, "func (s *Store[T]) Get(key string) (T, error)");
+        assert!(get.outgoing_calls.contains(&"fmt.Println".to_string()));
+        assert!(get.outgoing_calls.contains(&"s.lookup".to_string()));
+
+        assert!(imports.contains(&import("fmt", "*", "fmt")));
+        assert!(imports.contains(&import("cache", "*", "github.com/acme/app/internal/lru/v2")));
+        assert!(!imports.iter().any(|i| i.module == "embed"), "blank imports bind nothing");
+    }
+
+    #[test]
+    fn test_java_symbol_and_import_extraction() {
+        let code = r#"package com.acme.billing;
+
+import com.acme.store.Repository;
+import static java.util.Objects.requireNonNull;
+import java.util.*;
+
+/** Charges customers. */
+public class InvoiceService {
+    private final Repository repo;
+
+    public InvoiceService(Repository repo) {
+        this.repo = requireNonNull(repo);
+    }
+
+    @Override
+    public Invoice charge(String id) {
+        Invoice invoice = new Invoice(id);
+        repo.save(invoice);
+        return build().finish();
+    }
+
+    public Invoice charge(String id, int cents) {
+        return charge(id);
+    }
+
+    interface Hook {
+        void run();
+    }
+
+    enum State { OPEN, PAID }
+}
+"#;
+        let lang = SupportedLang::from_path(Path::new("src/main/java/com/acme/billing/InvoiceService.java")).unwrap();
+        let (symbols, imports) = extract_file("InvoiceService.java", code, lang).unwrap();
+
+        let kind_of = |name: &str| symbols.iter().find(|s| s.name == name).map(|s| s.kind);
+        assert_eq!(kind_of("InvoiceService"), Some(SymbolKind::Class));
+        assert_eq!(kind_of("InvoiceService.InvoiceService"), Some(SymbolKind::Method));
+        assert_eq!(kind_of("Hook"), Some(SymbolKind::Interface));
+        assert_eq!(kind_of("Hook.run"), Some(SymbolKind::Method));
+        assert_eq!(kind_of("State"), Some(SymbolKind::Enum));
+
+        let charge = symbols.iter().find(|s| s.name == "InvoiceService.charge").unwrap();
+        assert_eq!(charge.signature, "public Invoice charge(String id)");
+        assert_eq!(charge.span.0, 15, "span starts at the annotation");
+        for call in ["Invoice", "repo.save", "build", "finish"] {
+            assert!(charge.outgoing_calls.contains(&call.to_string()), "missing call {call}");
+        }
+        assert_eq!(symbols.iter().find(|s| s.name == "Hook.run").unwrap().signature, "void run()");
+
+        let overload_ids: Vec<&str> =
+            symbols.iter().filter(|s| s.name == "InvoiceService.charge").map(|s| s.id.as_str()).collect();
+        assert_eq!(
+            overload_ids,
+            vec!["InvoiceService.java::InvoiceService.charge", "InvoiceService.java::InvoiceService.charge#2"]
+        );
+
+        assert!(imports.contains(&import("Repository", "Repository", "com.acme.store")));
+        assert!(imports.contains(&import("requireNonNull", "requireNonNull", "java.util.Objects")));
+        assert!(imports.contains(&import("*", "*", "java.util")));
     }
 
     #[test]
