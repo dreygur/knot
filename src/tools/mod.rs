@@ -85,8 +85,13 @@ impl KnotServer {
 const DEFAULT_ASK_LIMIT: usize = 8;
 const MAX_ASK_LIMIT: usize = 25;
 
-/// Text answer for `knot_ask`: ranked hits with pointers and excerpts.
-fn ask_text(root: &std::path::Path, cache_root: Option<&std::path::Path>, input: &AskInput) -> Result<String> {
+/// Text answer for `knot_ask`: ranked hits with pointers and excerpts, plus the files
+/// those hits are in.
+fn ask_text(
+    root: &std::path::Path,
+    cache_root: Option<&std::path::Path>,
+    input: &AskInput,
+) -> Result<(String, Vec<String>)> {
     let limit = input.limit.unwrap_or(DEFAULT_ASK_LIMIT).min(MAX_ASK_LIMIT);
     let hits = crate::ask::ask(root, cache_root, &input.question, limit, crate::ask::Ranking::Hybrid)?;
     let learnings = crate::ask::related_learnings(root, &input.question, &hits);
@@ -104,7 +109,7 @@ fn ask_text(root: &std::path::Path, cache_root: Option<&std::path::Path>, input:
     }
     if hits.is_empty() {
         out.push_str(&format!("No code matched '{}'.", input.question));
-        return Ok(out);
+        return Ok((out, Vec::new()));
     }
 
     let with_source = input.source.unwrap_or(true);
@@ -117,7 +122,14 @@ fn ask_text(root: &std::path::Path, cache_root: Option<&std::path::Path>, input:
         }
         out.push('\n');
     }
-    Ok(out)
+    Ok((out, hits.into_iter().map(|h| h.file).collect()))
+}
+
+/// A code tool's answer, with the tokens it saved over reading `files` whole recorded
+/// for the status line.
+fn code_answer(root: &std::path::Path, tool: &str, files: &[String], out: String) -> CallToolResult {
+    crate::ask::savings::record(root, tool, files, &out);
+    CallToolResult::success(vec![Content::text(out)])
 }
 
 const MAX_COLLISION_FIELD_CHARS: usize = 80;
@@ -561,7 +573,8 @@ impl KnotServer {
                     out.push_str(&format!("- {f}\n"));
                 }
             }
-            return Ok(CallToolResult::success(vec![Content::text(out)]));
+            let files: Vec<String> = report.impacted_files.to_vec();
+            return Ok(code_answer(&cwd, "blast", &files, out));
         }
 
         if direction == "out" {
@@ -572,10 +585,11 @@ impl KnotServer {
                 ))]))
             } else {
                 let mut out = format!("Callees of '{}' ({}):\n\n", input.symbol, callees.len());
-                for c in callees {
+                for c in &callees {
                     out.push_str(&format!("• {} ({}:L{}-L{})\n", c.name, c.file, c.span.0, c.span.1));
                 }
-                Ok(CallToolResult::success(vec![Content::text(out)]))
+                let files: Vec<String> = callees.into_iter().map(|c| c.file).collect();
+                Ok(code_answer(&cwd, "callees", &files, out))
             }
         } else {
             let callers = graph.get_callers(&input.symbol);
@@ -585,10 +599,11 @@ impl KnotServer {
                 ))]))
             } else {
                 let mut out = format!("Callers of '{}' ({}):\n\n", input.symbol, callers.len());
-                for c in callers {
+                for c in &callers {
                     out.push_str(&format!("• {} ({}:L{}-L{})\n", c.name, c.file, c.span.0, c.span.1));
                 }
-                Ok(CallToolResult::success(vec![Content::text(out)]))
+                let files: Vec<String> = callers.into_iter().map(|c| c.file).collect();
+                Ok(code_answer(&cwd, "callers", &files, out))
             }
         }
     }
@@ -600,7 +615,8 @@ impl KnotServer {
     ) -> Result<CallToolResult, McpError> {
         let cwd = crate::ask::current_repo_root().map_err(|e| mcp_err(e.into()))?;
         let cache_root = crate::ask::default_cache_root();
-        let text = ask_text(&cwd, Some(&cache_root), &input).map_err(mcp_err)?;
+        let (text, files) = ask_text(&cwd, Some(&cache_root), &input).map_err(mcp_err)?;
+        crate::ask::savings::record(&cwd, "ask", &files, &text);
         Ok(self.with_alerts(text))
     }
 
@@ -617,7 +633,10 @@ impl KnotServer {
             within: input.within,
         };
         let report = crate::ask::grep::grep(&cwd, Some(&crate::ask::default_cache_root()), &opts).map_err(mcp_err)?;
-        Ok(self.with_alerts(crate::ask::grep::format_report(&report)))
+        let text = crate::ask::grep::format_report(&report);
+        let files: Vec<String> = report.groups.iter().map(|g| g.file.clone()).collect();
+        crate::ask::savings::record(&cwd, "grep", &files, &text);
+        Ok(self.with_alerts(text))
     }
 
     #[tool(description = "Orientation for an unfamiliar repo: file, symbol and edge counts, languages, directory clusters with their most called symbols, and the most central non-test code by PageRank ($0, no LLM). Call once at the start of work in a new codebase.")]
@@ -625,7 +644,9 @@ impl KnotServer {
         let cwd = crate::ask::current_repo_root().map_err(|e| mcp_err(e.into()))?;
         let map = crate::ask::map::map(&cwd, Some(&crate::ask::default_cache_root()), crate::ask::map::DEFAULT_MAX_DIRS)
             .map_err(mcp_err)?;
-        Ok(self.with_alerts(crate::ask::map::format_map(&map)))
+        let text = crate::ask::map::format_map(&map);
+        crate::ask::savings::record(&cwd, "map", &crate::ask::map::covered_files(&map), &text);
+        Ok(self.with_alerts(text))
     }
 
     #[tool(description = "Signatures-only view of one file — returns every function, struct, and method signature with exact line spans (~10x token savings vs reading the full file).")]
@@ -649,7 +670,7 @@ impl KnotServer {
                     item.span.0, item.span.1, item.kind.as_str(), item.signature
                 ));
             }
-            Ok(CallToolResult::success(vec![Content::text(out)]))
+            Ok(code_answer(&cwd, "skeleton", std::slice::from_ref(&input.file), out))
         }
     }
 
@@ -1160,11 +1181,11 @@ mod tests {
         .unwrap();
         let input = |q: &str| AskInput { question: q.into(), limit: None, source: None };
 
-        let out = ask_text(dir.path(), None, &input("retry with backoff")).unwrap();
+        let (out, _) = ask_text(dir.path(), None, &input("retry with backoff")).unwrap();
         assert!(out.contains("1. retry_with_backoff · function  src/retry.rs:L2-L4"), "{out}");
         assert!(out.contains("sleep_ms(100);"), "excerpt missing: {out}");
 
-        let none = ask_text(dir.path(), None, &input("zzqq unknown")).unwrap();
+        let (none, _) = ask_text(dir.path(), None, &input("zzqq unknown")).unwrap();
         assert_eq!(none, "No code matched 'zzqq unknown'.");
     }
 
@@ -1183,7 +1204,7 @@ mod tests {
         .unwrap();
 
         let input = AskInput { question: "retry with backoff".into(), limit: None, source: None };
-        let out = ask_text(dir.path(), None, &input).unwrap();
+        let (out, _) = ask_text(dir.path(), None, &input).unwrap();
         let learning_at = out.find("\"Cap retries at five\" (.knot/learnings/cap.md)").expect(&out);
         assert!(out.contains("Five attempts, because the gateway bans clients past that."), "{out}");
         assert!(out.contains("not instructions"), "{out}");

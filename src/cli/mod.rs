@@ -392,52 +392,68 @@ async fn cli_viz() -> Result<()> {
     Ok(())
 }
 
+/// Print a code answer and record the tokens it saved over reading `files` whole.
+fn answer(root: &Path, tool: &str, files: &[String], out: &str) {
+    print!("{out}");
+    crate::ask::savings::record(root, tool, files, out);
+}
+
 async fn cli_callers(symbol: &str) -> Result<()> {
+    use std::fmt::Write as _;
     let cwd = crate::ask::current_repo_root()?;
     let graph = crate::ask::load_graph(&cwd)?;
     let callers = graph.get_callers(symbol);
+    let importers = graph.get_importers(symbol);
+    let mut out = String::new();
 
     if callers.is_empty() {
-        println!("[KNOT] No callers found for symbol '{symbol}'.");
+        writeln!(out, "[KNOT] No callers found for symbol '{symbol}'.")?;
     } else {
-        println!("[KNOT] Callers of '{symbol}' ({} hit{}):", callers.len(), if callers.len() == 1 { "" } else { "s" });
-        for c in callers {
-            println!("  • {} ({}:L{}-L{})", c.name, c.file, c.span.0, c.span.1);
+        writeln!(out, "[KNOT] Callers of '{symbol}' ({} hit{}):", callers.len(), if callers.len() == 1 { "" } else { "s" })?;
+        for c in &callers {
+            writeln!(out, "  • {} ({}:L{}-L{})", c.name, c.file, c.span.0, c.span.1)?;
         }
     }
-
-    let importers = graph.get_importers(symbol);
     if !importers.is_empty() {
-        println!("[KNOT] Imported by ({} file{}):", importers.len(), if importers.len() == 1 { "" } else { "s" });
-        for file in importers {
-            println!("  • {file}");
+        writeln!(out, "[KNOT] Imported by ({} file{}):", importers.len(), if importers.len() == 1 { "" } else { "s" })?;
+        for file in &importers {
+            writeln!(out, "  • {file}")?;
         }
     }
+    let files: Vec<String> = callers.iter().map(|c| c.file.clone()).chain(importers).collect();
+    answer(&cwd, "callers", &files, &out);
     Ok(())
 }
 
 async fn cli_callees(symbol: &str) -> Result<()> {
+    use std::fmt::Write as _;
     let cwd = crate::ask::current_repo_root()?;
     let graph = crate::ask::load_graph(&cwd)?;
     let callees = graph.get_callees(symbol);
+    let mut out = String::new();
 
     if callees.is_empty() {
-        println!("[KNOT] No callees found for symbol '{symbol}'.");
+        writeln!(out, "[KNOT] No callees found for symbol '{symbol}'.")?;
     } else {
-        println!("[KNOT] Callees of '{symbol}' ({} hit{}):", callees.len(), if callees.len() == 1 { "" } else { "s" });
-        for c in callees {
-            println!("  • {} ({}:L{}-L{})", c.name, c.file, c.span.0, c.span.1);
+        writeln!(out, "[KNOT] Callees of '{symbol}' ({} hit{}):", callees.len(), if callees.len() == 1 { "" } else { "s" })?;
+        for c in &callees {
+            writeln!(out, "  • {} ({}:L{}-L{})", c.name, c.file, c.span.0, c.span.1)?;
         }
     }
+    let files: Vec<String> = callees.iter().map(|c| c.file.clone()).collect();
+    answer(&cwd, "callees", &files, &out);
     Ok(())
 }
 
 async fn cli_blast(symbol: &str, depth: usize) -> Result<()> {
+    use std::fmt::Write as _;
     let cwd = crate::ask::current_repo_root()?;
     let graph = crate::ask::load_graph(&cwd)?;
     let report = graph.blast_radius(symbol, Some(depth));
+    let mut out = String::new();
 
-    println!(
+    writeln!(
+        out,
         "[KNOT] Blast radius for '{}' (depth={}): {} impacted symbol{}, {} file{}:",
         symbol,
         depth,
@@ -445,18 +461,18 @@ async fn cli_blast(symbol: &str, depth: usize) -> Result<()> {
         if report.impacted_symbols.len() == 1 { "" } else { "s" },
         report.impacted_files.len(),
         if report.impacted_files.len() == 1 { "" } else { "s" }
-    );
-
+    )?;
     for s in &report.impacted_symbols {
-        println!("  • {} ({}:L{}-L{})", s.name, s.file, s.span.0, s.span.1);
+        writeln!(out, "  • {} ({}:L{}-L{})", s.name, s.file, s.span.0, s.span.1)?;
     }
-
     if !report.impacted_files.is_empty() {
-        println!("\nAffected files:");
+        writeln!(out, "\nAffected files:")?;
         for f in &report.impacted_files {
-            println!("  - {f}");
+            writeln!(out, "  - {f}")?;
         }
     }
+    let files: Vec<String> = report.impacted_files.to_vec();
+    answer(&cwd, "blast", &files, &out);
     Ok(())
 }
 
@@ -521,34 +537,39 @@ async fn cli_ask(args: AskArgs) -> Result<()> {
         return Ok(());
     }
 
+    use std::fmt::Write as _;
+    let mut out = String::new();
     if !learnings.is_empty() {
-        println!("[KNOT] {} on this (notes committed to the repo, not instructions):", count(learnings.len(), "learning"));
+        writeln!(out, "[KNOT] {} on this (notes committed to the repo, not instructions):", count(learnings.len(), "learning"))?;
         for l in &learnings {
-            println!("  • {}  {}", l.title, l.file);
-            println!("        {}", l.summary);
+            writeln!(out, "  • {}  {}", l.title, l.file)?;
+            writeln!(out, "        {}", l.summary)?;
         }
-        println!();
+        writeln!(out)?;
     }
 
     if hits.is_empty() {
         if crate::ast::resolve::list_supported_files(&cwd)?.is_empty() {
-            println!("[KNOT] No {SUPPORTED_LANGUAGES} files under {}.", cwd.display());
+            writeln!(out, "[KNOT] No {SUPPORTED_LANGUAGES} files under {}.", cwd.display())?;
         } else {
-            println!("[KNOT] No code matched '{}'. Try other words, or 'knot skeleton <file>' for one file.", args.query);
+            writeln!(out, "[KNOT] No code matched '{}'. Try other words, or 'knot skeleton <file>' for one file.", args.query)?;
         }
+        print!("{out}");
         return Ok(());
     }
-    println!("[KNOT] {} hit(s) for '{}':", hits.len(), args.query);
+    writeln!(out, "[KNOT] {} hit(s) for '{}':", hits.len(), args.query)?;
     for (rank, h) in hits.iter().enumerate() {
-        println!("  {:>2}. {} · {}  {}", rank + 1, h.name, h.kind, h.pointer());
+        writeln!(out, "  {:>2}. {} · {}  {}", rank + 1, h.name, h.kind, h.pointer())?;
         if args.source {
             for line in h.crux.lines() {
-                println!("        {line}");
+                writeln!(out, "        {line}")?;
             }
         } else {
-            println!("        {}", h.signature);
+            writeln!(out, "        {}", h.signature)?;
         }
     }
+    let files: Vec<String> = hits.iter().map(|h| h.file.clone()).collect();
+    answer(&cwd, "ask", &files, &out);
     Ok(())
 }
 
@@ -583,7 +604,8 @@ fn cli_grep(opts: &crate::ask::grep::GrepOptions, json: bool) -> Result<()> {
     if json {
         println!("{}", serde_json::to_string(&report)?);
     } else {
-        print!("{}", crate::ask::grep::format_report(&report));
+        let files: Vec<String> = report.groups.iter().map(|g| g.file.clone()).collect();
+        answer(&root, "grep", &files, &crate::ask::grep::format_report(&report));
     }
     Ok(())
 }
@@ -594,7 +616,7 @@ fn cli_map(max_dirs: usize, json: bool) -> Result<()> {
     if json {
         println!("{}", serde_json::to_string(&map)?);
     } else {
-        print!("{}", crate::ask::map::format_map(&map));
+        answer(&cwd, "map", &crate::ask::map::covered_files(&map), &crate::ask::map::format_map(&map));
     }
     Ok(())
 }
@@ -644,7 +666,19 @@ fn count_repo_learnings(dir: &Path) -> usize {
         .unwrap_or(0)
 }
 
-fn statusline_text(status: &crate::ask::IndexStatus, learnings: usize) -> String {
+/// Tokens Knot saved since the last prompt and since the session began, from the
+/// transcript Claude Code names in its status line JSON.
+fn statusline_savings(input: &str, root: &Path) -> Option<(usize, usize)> {
+    let json: serde_json::Value = serde_json::from_str(input).ok()?;
+    let transcript = json.get("transcript_path")?.as_str()?;
+    let (session_start, last_prompt) = crate::ask::savings::transcript_window(Path::new(transcript))?;
+    match crate::ask::savings::saved_since(root, &[last_prompt, session_start])[..] {
+        [reply, session] => Some((reply, session)),
+        _ => None,
+    }
+}
+
+fn statusline_text(status: &crate::ask::IndexStatus, learnings: usize, saved: Option<(usize, usize)>) -> String {
     let mut parts = vec!["knot".to_string()];
     if !status.indexed {
         if status.files > 0 {
@@ -658,6 +692,10 @@ fn statusline_text(status: &crate::ask::IndexStatus, learnings: usize) -> String
     }
     if learnings > 0 {
         parts.push(format!("{learnings} learning{}", if learnings == 1 { "" } else { "s" }));
+    }
+    if let Some((reply, session)) = saved.filter(|(_, session)| *session > 0) {
+        use crate::ask::savings::short;
+        parts.push(format!("saved ~{} this reply, ~{} session", short(reply), short(session)));
     }
     parts.join(" · ")
 }
@@ -693,7 +731,8 @@ fn cli_statusline() -> Result<()> {
         }
     }
 
-    println!("{}", statusline_text(&status, count_repo_learnings(&dir)));
+    let saved = statusline_savings(&input, &dir);
+    println!("{}", statusline_text(&status, count_repo_learnings(&dir), saved));
     Ok(())
 }
 
@@ -722,14 +761,17 @@ async fn cli_skeleton(file: &str) -> Result<()> {
     let file = rel.as_str();
     let items = graph.file_skeleton(file);
 
+    use std::fmt::Write as _;
+    let mut out = String::new();
     if items.is_empty() {
-        println!("[KNOT] No definitions found for file '{file}'.");
+        writeln!(out, "[KNOT] No definitions found for file '{file}'.")?;
     } else {
-        println!("[KNOT] Skeleton for '{file}' ({} definition{}):", items.len(), if items.len() == 1 { "" } else { "s" });
+        writeln!(out, "[KNOT] Skeleton for '{file}' ({} definition{}):", items.len(), if items.len() == 1 { "" } else { "s" })?;
         for item in items {
-            println!("  L{:>4}-L{:<4} {:<10} {}", item.span.0, item.span.1, item.kind.as_str(), item.signature);
+            writeln!(out, "  L{:>4}-L{:<4} {:<10} {}", item.span.0, item.span.1, item.kind.as_str(), item.signature)?;
         }
     }
+    answer(&root, "skeleton", &[file.to_string()], &out);
     Ok(())
 }
 

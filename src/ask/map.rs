@@ -195,6 +195,21 @@ pub fn map(root: &Path, cache_root: Option<&Path>, max_dirs: usize) -> Result<Re
     })
 }
 
+/// Files the map's hubs and hotspots point into, which a reader would otherwise open
+/// to find the same thing. Counting every file in the repo would overstate it.
+pub fn covered_files(map: &RepoMap) -> Vec<String> {
+    let mut files: Vec<String> = map
+        .dirs
+        .iter()
+        .flat_map(|d| d.hubs.iter())
+        .chain(&map.hotspots)
+        .map(|h| h.file.clone())
+        .collect();
+    files.sort();
+    files.dedup();
+    files
+}
+
 fn short_file(file: &str) -> &str {
     file.rsplit('/').next().unwrap_or(file)
 }
