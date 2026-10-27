@@ -11,7 +11,7 @@ use crate::ast::resolve::{list_supported_files, ParsedFile};
 use crate::ast::CodeGraph;
 
 /// Bump when the cached shape or tokenization changes, so old caches are ignored.
-const CACHE_VERSION: u32 = 6;
+const CACHE_VERSION: u32 = 8;
 const CACHE_SUBDIR: &str = "cache/ask";
 const ROOT_KEY_HEX_CHARS: usize = 16;
 

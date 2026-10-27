@@ -95,7 +95,7 @@ const COMMANDS: &[&str] = &[
     "explore", "viz", "status", "logs", "init", "help", "version",
 ];
 
-const SUPPORTED_LANGUAGES: &str = "Rust, Python, TypeScript/JavaScript, Go, Java";
+const SUPPORTED_LANGUAGES: &str = "Rust, Python, TypeScript/JavaScript, Go, Java, PHP, Ruby, C";
 
 /// Text from repo learnings or other people's commits, made safe to print: one line,
 /// no control characters (so no terminal escapes), and capped in length.

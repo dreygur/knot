@@ -14,6 +14,10 @@ pub enum SupportedLang {
     Tsx,
     Go,
     Java,
+    Php,
+    Ruby,
+    /// C sources and headers.
+    C,
 }
 
 impl SupportedLang {
@@ -25,6 +29,9 @@ impl SupportedLang {
             "tsx" | "js" | "jsx" | "mjs" | "cjs" => Some(SupportedLang::Tsx),
             "go" => Some(SupportedLang::Go),
             "java" => Some(SupportedLang::Java),
+            "php" => Some(SupportedLang::Php),
+            "rb" | "rake" => Some(SupportedLang::Ruby),
+            "c" | "h" => Some(SupportedLang::C),
             _ => None,
         }
     }
@@ -37,6 +44,9 @@ impl SupportedLang {
             SupportedLang::TypeScript | SupportedLang::Tsx => "TypeScript/JavaScript",
             SupportedLang::Go => "Go",
             SupportedLang::Java => "Java",
+            SupportedLang::Php => "PHP",
+            SupportedLang::Ruby => "Ruby",
+            SupportedLang::C => "C",
         }
     }
 
@@ -48,6 +58,9 @@ impl SupportedLang {
             SupportedLang::Tsx => tree_sitter_typescript::LANGUAGE_TSX.into(),
             SupportedLang::Go => tree_sitter_go::LANGUAGE.into(),
             SupportedLang::Java => tree_sitter_java::LANGUAGE.into(),
+            SupportedLang::Php => tree_sitter_php::LANGUAGE_PHP.into(),
+            SupportedLang::Ruby => tree_sitter_ruby::LANGUAGE.into(),
+            SupportedLang::C => tree_sitter_c::LANGUAGE.into(),
         }
     }
 }
@@ -119,33 +132,54 @@ fn collect_outgoing_calls(source_code: &str, root: Node) -> Vec<String> {
     let mut stack = vec![root];
 
     while let Some(current) = stack.pop() {
+        // Java `obj.name()`, PHP `$obj->name()` / `Cls::name()`, Ruby `obj.name`: the
+        // receiver and method are separate fields. When the receiver is not a plain path
+        // (`build().run()`, `$repo`), keep the method name alone.
+        // A call on the current object (`$this->x()`, `self.x`) is a same-scope call. A
+        // call on any other value whose type is unknown (`$req->get()`, `build().run()`)
+        // keeps a `_` receiver so resolution treats it as a method call, not a function.
+        let receiver_call = |receiver_field: &str, name_field: &str| -> Option<String> {
+            let name = node_text(source_code, current.child_by_field_name(name_field)?);
+            let Some(receiver) = current.child_by_field_name(receiver_field) else {
+                return normalize_call_path(&name);
+            };
+            let receiver = node_text(source_code, receiver);
+            if matches!(receiver.as_str(), "$this" | "this" | "self" | "static" | "parent") {
+                return normalize_call_path(&name);
+            }
+            normalize_call_path(&format!("{receiver}.{name}")).or_else(|| normalize_call_path(&format!("_.{name}")))
+        };
+
         match current.kind() {
-            "call_expression" | "call" => {
+            "call_expression" | "call" | "function_call_expression" => {
                 if let Some(function_node) = current.child_by_field_name("function") {
-                    if let Some(call) = normalize_call_path(&node_text(source_code, function_node)) {
+                    // PHP names functions by namespace path: `\App\helpers\slug`
+                    let text = node_text(source_code, function_node);
+                    let text = text.trim_start_matches('\\').replace('\\', "::");
+                    if let Some(call) = normalize_call_path(&text) {
                         calls.insert(call);
                     }
+                } else if let Some(call) = receiver_call("receiver", "method") {
+                    calls.insert(call);
                 }
             }
-            // Java: `obj.name(...)` has separate object and name fields. When the object
-            // is not a plain path (`build().run()`), keep the method name alone.
-            "method_invocation" => {
-                if let Some(name_node) = current.child_by_field_name("name") {
-                    let name = node_text(source_code, name_node);
-                    let qualified = current
-                        .child_by_field_name("object")
-                        .and_then(|obj| normalize_call_path(&format!("{}.{name}", node_text(source_code, obj))));
-                    if let Some(call) = qualified.or_else(|| normalize_call_path(&name)) {
-                        calls.insert(call);
-                    }
-                }
+            "method_invocation" | "member_call_expression" | "nullsafe_member_call_expression" => {
+                calls.extend(receiver_call("object", "name"));
             }
-            // Java: `new Type<>(...)` calls the type's constructor.
+            "scoped_call_expression" => calls.extend(receiver_call("scope", "name")),
+            // `new Type(...)` calls the type's constructor. Java names it in a `type`
+            // field; PHP as a plain child.
             "object_creation_expression" => {
-                if let Some(call) = current
-                    .child_by_field_name("type")
-                    .and_then(|t| normalize_call_path(&node_text(source_code, t)))
-                {
+                let mut cursor = current.walk();
+                let type_node = current.child_by_field_name("type").or_else(|| {
+                    current
+                        .named_children(&mut cursor)
+                        .find(|c| matches!(c.kind(), "name" | "qualified_name"))
+                });
+                if let Some(call) = type_node.and_then(|t| {
+                    let text = node_text(source_code, t);
+                    normalize_call_path(&text.trim_start_matches('\\').replace('\\', "::"))
+                }) {
                     calls.insert(call);
                 }
             }
@@ -572,6 +606,102 @@ fn extract_java_symbol(
     Some(build_symbol(file_rel_path, source_code, lines, node, name, kind, signature))
 }
 
+fn extract_php_symbol(
+    file_rel_path: &str,
+    source_code: &str,
+    lines: &[&str],
+    node: Node,
+    parent_scope: Option<&str>,
+) -> Option<SymbolNode> {
+    let raw_name = node_text(source_code, node.child_by_field_name("name")?);
+    let kind = match node.kind() {
+        "function_definition" => SymbolKind::Function,
+        "method_declaration" => SymbolKind::Method,
+        "class_declaration" => SymbolKind::Class,
+        "interface_declaration" => SymbolKind::Interface,
+        "trait_declaration" => SymbolKind::Trait,
+        "enum_declaration" => SymbolKind::Enum,
+        _ => return None,
+    };
+    let name = match (kind, parent_scope) {
+        (SymbolKind::Method, Some(scope)) => format!("{scope}::{raw_name}"),
+        _ => raw_name,
+    };
+    let signature = match kind {
+        SymbolKind::Function | SymbolKind::Method => signature_from(source_code, node, node.start_byte()),
+        _ => first_line_of(lines, node.start_position().row + 1),
+    };
+    Some(build_symbol(file_rel_path, source_code, lines, node, name, kind, signature))
+}
+
+/// Ruby `def name`, `def self.name`, `class`, `module`. Methods are scoped by the
+/// innermost class or module (`Billing::Invoice.total`).
+fn extract_ruby_symbol(
+    file_rel_path: &str,
+    source_code: &str,
+    lines: &[&str],
+    node: Node,
+    parent_scope: Option<&str>,
+) -> Option<SymbolNode> {
+    let raw_name = node_text(source_code, node.child_by_field_name("name")?);
+    let kind = match node.kind() {
+        "method" | "singleton_method" => SymbolKind::Method,
+        "class" => SymbolKind::Class,
+        "module" => SymbolKind::Module,
+        _ => return None,
+    };
+    let name = match (kind, parent_scope) {
+        (SymbolKind::Method, Some(scope)) => format!("{scope}.{raw_name}"),
+        (SymbolKind::Method, None) => raw_name,
+        (_, Some(scope)) => format!("{scope}::{raw_name}"),
+        (_, None) => raw_name,
+    };
+    // A top level `def` is a function; one inside a class or module is a method
+    let kind = if kind == SymbolKind::Method && parent_scope.is_none() { SymbolKind::Function } else { kind };
+    let signature = first_line_of(lines, node.start_position().row + 1);
+    Some(build_symbol(file_rel_path, source_code, lines, node, name, kind, signature))
+}
+
+/// The identifier a C declarator names, through pointers and parentheses:
+/// `*(*make_handler)(int)` gives `make_handler`.
+fn c_declarator_name<'s>(source_code: &'s str, mut node: Node) -> Option<&'s str> {
+    for _ in 0..8 {
+        match node.kind() {
+            "identifier" | "type_identifier" | "field_identifier" => {
+                return Some(&source_code[node.start_byte()..node.end_byte()]);
+            }
+            // `(*name)` is a parenthesized_declarator, which wraps its inner declarator
+            // as a plain child rather than a `declarator` field
+            _ => node = node.child_by_field_name("declarator").or_else(|| node.named_child(0))?,
+        }
+    }
+    None
+}
+
+fn extract_c_symbol(file_rel_path: &str, source_code: &str, lines: &[&str], node: Node) -> Option<SymbolNode> {
+    let (name, kind) = match node.kind() {
+        "function_definition" => (
+            c_declarator_name(source_code, node.child_by_field_name("declarator")?)?.to_string(),
+            SymbolKind::Function,
+        ),
+        // Only definitions with a body; `struct foo;` and `struct foo *p` are references
+        "struct_specifier" | "enum_specifier" if node.child_by_field_name("body").is_some() => {
+            let kind = if node.kind() == "struct_specifier" { SymbolKind::Struct } else { SymbolKind::Enum };
+            (node_text(source_code, node.child_by_field_name("name")?), kind)
+        }
+        "type_definition" => (
+            c_declarator_name(source_code, node.child_by_field_name("declarator")?)?.to_string(),
+            SymbolKind::TypeAlias,
+        ),
+        _ => return None,
+    };
+    let signature = match kind {
+        SymbolKind::Function => signature_from(source_code, node, node.start_byte()),
+        _ => first_line_of(lines, node.start_position().row + 1),
+    };
+    Some(build_symbol(file_rel_path, source_code, lines, node, name, kind, signature))
+}
+
 fn collect_symbols_recursive(
     file_rel_path: &str,
     source_code: &str,
@@ -677,6 +807,27 @@ fn collect_symbols_recursive(
                 if sym.kind != SymbolKind::Method {
                     current_scope = Some(sym.name.clone());
                 }
+                symbols.push(sym);
+            }
+        }
+        SupportedLang::Php => {
+            if let Some(sym) = extract_php_symbol(file_rel_path, source_code, lines, node, parent_scope) {
+                if !matches!(sym.kind, SymbolKind::Method | SymbolKind::Function) {
+                    current_scope = Some(sym.name.clone());
+                }
+                symbols.push(sym);
+            }
+        }
+        SupportedLang::Ruby => {
+            if let Some(sym) = extract_ruby_symbol(file_rel_path, source_code, lines, node, parent_scope) {
+                if matches!(sym.kind, SymbolKind::Class | SymbolKind::Module) {
+                    current_scope = Some(sym.name.clone());
+                }
+                symbols.push(sym);
+            }
+        }
+        SupportedLang::C => {
+            if let Some(sym) = extract_c_symbol(file_rel_path, source_code, lines, node) {
                 symbols.push(sym);
             }
         }
@@ -822,6 +973,17 @@ fn collect_imports(source_code: &str, root: Node, lang: SupportedLang) -> Vec<Im
                 }
             }
             (SupportedLang::Go, "import_declaration") => collect_go_imports(source_code, node, &mut imports),
+            (SupportedLang::Php, "namespace_use_declaration") => collect_php_use(&text, &mut imports),
+            (SupportedLang::C, "preproc_include") => {
+                // Only "local.h"; <system.h> headers are outside the repo
+                let Some(path) = node.child_by_field_name("path").filter(|p| p.kind() == "string_literal") else {
+                    continue;
+                };
+                let header = node_text(source_code, path);
+                let header = header.trim_matches('"');
+                let module = header.strip_suffix(".h").unwrap_or(header);
+                imports.push(ImportRef { local: "*".into(), name: "*".into(), module: module.to_string() });
+            }
             (SupportedLang::Java, "import_declaration") => {
                 let path = text.trim_start_matches("import").trim().trim_start_matches("static ").trim_end_matches(';').trim();
                 match path.strip_suffix(".*") {
@@ -837,6 +999,31 @@ fn collect_imports(source_code: &str, root: Node, lang: SupportedLang) -> Vec<Im
     }
 
     imports
+}
+
+/// PHP `use App\Models\User;`, `use Foo\Bar as Baz;`, `use App\Models\{User, Post as P};`
+/// and `use function App\slug;`. Namespaces are stored with `::` like Rust paths.
+fn collect_php_use(text: &str, imports: &mut Vec<ImportRef>) {
+    let body = text.trim().trim_start_matches("use").trim().trim_end_matches(';').trim();
+    let body = body.strip_prefix("function ").or_else(|| body.strip_prefix("const ")).unwrap_or(body);
+    let (prefix, items) = match body.split_once('{') {
+        Some((prefix, rest)) => (prefix.trim().trim_end_matches('\\'), rest.trim_end_matches('}')),
+        None => ("", body),
+    };
+    for item in items.split(',').map(str::trim).filter(|i| !i.is_empty()) {
+        let (path, alias) = match item.split_once(" as ") {
+            Some((p, a)) => (p.trim(), Some(a.trim())),
+            None => (item, None),
+        };
+        let full = if prefix.is_empty() { path.to_string() } else { format!("{prefix}\\{path}") };
+        let full = full.trim_start_matches('\\').replace('\\', "::");
+        let (module, name) = full.rsplit_once("::").unwrap_or(("", full.as_str()));
+        imports.push(ImportRef {
+            local: alias.unwrap_or(name).to_string(),
+            name: name.to_string(),
+            module: module.to_string(),
+        });
+    }
 }
 
 /// Go imports bind a whole package, by its alias or the path's last segment
@@ -1154,7 +1341,8 @@ public class InvoiceService {
         let charge = symbols.iter().find(|s| s.name == "InvoiceService.charge").unwrap();
         assert_eq!(charge.signature, "public Invoice charge(String id)");
         assert_eq!(charge.span.0, 15, "span starts at the annotation");
-        for call in ["Invoice", "repo.save", "build", "finish"] {
+        // `build().finish()`: the receiver is unknown, so `finish` stays a method call
+        for call in ["Invoice", "repo.save", "build", "_.finish"] {
             assert!(charge.outgoing_calls.contains(&call.to_string()), "missing call {call}");
         }
         assert_eq!(symbols.iter().find(|s| s.name == "Hook.run").unwrap().signature, "void run()");
@@ -1169,6 +1357,128 @@ public class InvoiceService {
         assert!(imports.contains(&import("Repository", "Repository", "com.acme.store")));
         assert!(imports.contains(&import("requireNonNull", "requireNonNull", "java.util.Objects")));
         assert!(imports.contains(&import("*", "*", "java.util")));
+    }
+
+    #[test]
+    fn test_php_symbols_calls_and_use_imports() {
+        let code = r#"<?php
+namespace App\Http;
+
+use App\Models\User;
+use App\Services\{Mailer, Billing as Bill};
+use function App\helpers\slug;
+
+/** Registers new accounts. */
+class SignupController extends Controller
+{
+    public function store(Request $request): Response
+    {
+        $user = new User();
+        $this->notify($user);
+        Bill::charge($user);
+        return slug($user->name);
+    }
+
+    private function notify(User $user) {}
+}
+
+interface Notifier {}
+trait Loggable {}
+
+function helper() { return \App\helpers\slug("x"); }
+"#;
+        let (symbols, imports) = extract_file("app/Http/SignupController.php", code, SupportedLang::Php).unwrap();
+        let kind_of = |name: &str| symbols.iter().find(|s| s.name == name).map(|s| s.kind);
+        assert_eq!(kind_of("SignupController"), Some(SymbolKind::Class));
+        assert_eq!(kind_of("SignupController::store"), Some(SymbolKind::Method));
+        assert_eq!(kind_of("Notifier"), Some(SymbolKind::Interface));
+        assert_eq!(kind_of("Loggable"), Some(SymbolKind::Trait));
+        assert_eq!(kind_of("helper"), Some(SymbolKind::Function));
+
+        let store = symbols.iter().find(|s| s.name == "SignupController::store").unwrap();
+        assert_eq!(store.signature, "public function store(Request $request): Response");
+        for call in ["User", "notify", "Bill.charge", "slug"] {
+            assert!(store.outgoing_calls.contains(&call.to_string()), "missing {call}: {:?}", store.outgoing_calls);
+        }
+        let helper = symbols.iter().find(|s| s.name == "helper").unwrap();
+        assert!(helper.outgoing_calls.contains(&"App::helpers::slug".to_string()), "{:?}", helper.outgoing_calls);
+
+        assert!(imports.contains(&import("User", "User", "App::Models")));
+        assert!(imports.contains(&import("Mailer", "Mailer", "App::Services")));
+        assert!(imports.contains(&import("Bill", "Billing", "App::Services")));
+        assert!(imports.contains(&import("slug", "slug", "App::helpers")));
+    }
+
+    #[test]
+    fn test_ruby_symbols_and_calls() {
+        let code = r#"
+module Billing
+  # Totals line items.
+  class Invoice < Base
+    def total(tax)
+      items.sum(&:price) + Tax.compute(tax)
+    end
+
+    def self.build(attrs)
+      new(attrs)
+    end
+  end
+end
+
+def top_level_helper
+  Billing::Invoice.build({})
+end
+"#;
+        let symbols = extract_file_symbols("lib/billing/invoice.rb", code, SupportedLang::Ruby).unwrap();
+        let kind_of = |name: &str| symbols.iter().find(|s| s.name == name).map(|s| s.kind);
+        assert_eq!(kind_of("Billing"), Some(SymbolKind::Module));
+        assert_eq!(kind_of("Billing::Invoice"), Some(SymbolKind::Class));
+        assert_eq!(kind_of("Billing::Invoice.total"), Some(SymbolKind::Method));
+        assert_eq!(kind_of("Billing::Invoice.build"), Some(SymbolKind::Method));
+        assert_eq!(kind_of("top_level_helper"), Some(SymbolKind::Function));
+
+        let total = symbols.iter().find(|s| s.name == "Billing::Invoice.total").unwrap();
+        assert_eq!(total.signature, "def total(tax)");
+        assert!(total.outgoing_calls.contains(&"Tax.compute".to_string()), "{:?}", total.outgoing_calls);
+        let helper = symbols.iter().find(|s| s.name == "top_level_helper").unwrap();
+        assert!(helper.outgoing_calls.contains(&"Billing::Invoice.build".to_string()), "{:?}", helper.outgoing_calls);
+    }
+
+    #[test]
+    fn test_c_symbols_calls_and_includes() {
+        let code = r#"#include <stdio.h>
+#include "net/socket.h"
+
+/* A parsed request. */
+struct request {
+    int fd;
+};
+
+typedef struct { int x; } point_t;
+typedef int (*handler_fn)(struct request *);
+
+enum state { OPEN, CLOSED };
+
+static struct request *parse_request(const char *buf, int len)
+{
+    return socket_read(buf, len);
+}
+
+int main(void) { parse_request("x", 1); printf("ok"); return 0; }
+"#;
+        let (symbols, imports) = extract_file("src/server.c", code, SupportedLang::C).unwrap();
+        let kind_of = |name: &str| symbols.iter().find(|s| s.name == name).map(|s| s.kind);
+        assert_eq!(kind_of("request"), Some(SymbolKind::Struct));
+        assert_eq!(kind_of("point_t"), Some(SymbolKind::TypeAlias));
+        assert_eq!(kind_of("handler_fn"), Some(SymbolKind::TypeAlias));
+        assert_eq!(kind_of("state"), Some(SymbolKind::Enum));
+        assert_eq!(kind_of("parse_request"), Some(SymbolKind::Function));
+        assert_eq!(symbols.iter().filter(|s| s.name == "request").count(), 1, "pointer uses are not definitions");
+
+        let parse = symbols.iter().find(|s| s.name == "parse_request").unwrap();
+        assert_eq!(parse.signature, "static struct request *parse_request(const char *buf, int len)");
+        assert_eq!(parse.outgoing_calls, vec!["socket_read".to_string()]);
+        assert_eq!(imports, vec![import("*", "*", "net/socket")], "system headers are skipped");
     }
 
     #[test]

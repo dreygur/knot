@@ -121,6 +121,8 @@ const UBIQUITOUS_METHODS: &[&str] = &[
     "append", "clear", "clone", "contains", "extend", "filter", "find", "get", "insert", "is_empty", "items",
     "iter", "join", "keys", "len", "map", "next", "pop", "push", "read", "remove", "split", "to_string",
     "trim", "update", "values", "write",
+    // Ruby and PHP conventions every object answers
+    "each", "inspect", "merge", "size", "to_a", "to_h", "to_i", "to_s", "to_sym", "toArray", "__toString",
 ];
 
 /// Path segments that carry no location information.
@@ -161,6 +163,14 @@ fn file_matches_hint(file: &str, hint: &str) -> bool {
     if stem == hint || stem.ends_with(&format!("/{hint}")) {
         return true;
     }
+    // PSR-4 autoloading maps `App\Models\User` onto `app/Models/User.php`, so PHP
+    // namespaces and directories may differ in case
+    if file.ends_with(".php") {
+        let (stem, hint) = (stem.to_lowercase(), hint.to_lowercase());
+        if stem == hint || stem.ends_with(&format!("/{hint}")) {
+            return true;
+        }
+    }
     // A Go import names a package directory by its full module path
     // (`github.com/acme/app/internal/store`), which ends with the file's directory.
     match file.strip_suffix(".go").and_then(|f| f.rsplit_once('/')) {
@@ -194,6 +204,41 @@ impl CodeGraph {
         module_path_hint(module, importer).into_iter().collect()
     }
 
+    /// Several types share the name `owner` (`Reader::open` in four directories): keep
+    /// the ones in the file `owner` was imported from, or all of them when no import
+    /// says which.
+    fn narrow_by_import(&self, ids: &[String], owner: &str, caller_file: &str, imports: &[ImportRef]) -> Vec<String> {
+        if ids.len() < 2 {
+            return ids.to_vec();
+        }
+        let hints: Vec<String> = imports
+            .iter()
+            .filter(|i| i.local == owner)
+            .flat_map(|i| {
+                let module = if i.name == "*" || is_ts_or_js(caller_file) {
+                    i.module.clone()
+                } else {
+                    format!("{}::{}", i.module, i.name)
+                };
+                self.module_hints(&module, caller_file)
+            })
+            .collect();
+        let narrowed: Vec<String> = ids
+            .iter()
+            .filter(|id| {
+                self.symbols
+                    .get(*id)
+                    .is_some_and(|s| hints.iter().any(|h| file_matches_hint(&s.file, h)))
+            })
+            .cloned()
+            .collect();
+        if narrowed.is_empty() {
+            ids.to_vec()
+        } else {
+            narrowed
+        }
+    }
+
     /// Resolve one outgoing call from `caller_file` to target symbol ids.
     ///
     /// Order: an exact qualified name (`Type::new`), then same-file definitions, then
@@ -208,7 +253,7 @@ impl CodeGraph {
         if let Some(&owner) = qualifier.last() {
             for sep in ["::", "."] {
                 if let Some(ids) = self.name_to_ids.get(&format!("{owner}{sep}{bare}")) {
-                    return ids.clone();
+                    return self.narrow_by_import(ids, owner, caller_file, imports);
                 }
             }
         }
@@ -239,6 +284,27 @@ impl CodeGraph {
                 .collect();
             if !same_package.is_empty() {
                 return same_package;
+            }
+        }
+
+        // C: a function called from a file defined in the `.c` beside a header it includes
+        if qualifier.is_empty() && matches!(SupportedLang::from_path(Path::new(caller_file)), Some(SupportedLang::C)) {
+            let hints: Vec<String> = imports
+                .iter()
+                .filter(|i| i.name == "*")
+                .flat_map(|i| self.module_hints(&i.module, caller_file))
+                .collect();
+            let included: Vec<String> = candidates
+                .iter()
+                .filter(|id| {
+                    self.symbols
+                        .get(*id)
+                        .is_some_and(|s| hints.iter().any(|h| file_matches_hint(&s.file, h)))
+                })
+                .cloned()
+                .collect();
+            if !included.is_empty() {
+                return included;
             }
         }
 
@@ -651,6 +717,34 @@ pub fn start_server() {{
         let graph = CodeGraph::build(root)?;
         let callees: Vec<String> = graph.get_callees("submit").into_iter().map(|s| s.id).collect();
         assert_eq!(callees, vec!["src/api.ts::save".to_string()]);
+        Ok(())
+    }
+
+    #[test]
+    fn test_c_includes_and_php_use_pick_the_right_definition() -> Result<()> {
+        let dir = tempdir()?;
+        let root = dir.path();
+        // Four definitions of each name, more than the unresolved fallback links
+        for d in ["net", "disk", "pipe", "tty"] {
+            std::fs::create_dir_all(root.join("src").join(d))?;
+            std::fs::write(root.join(format!("src/{d}/io.c")), "int io_read(int fd) { return fd; }\n")?;
+            std::fs::create_dir_all(root.join("app").join(d))?;
+            std::fs::write(
+                root.join(format!("app/{d}/Reader.php")),
+                "<?php\nclass Reader { public static function open() {} }\n",
+            )?;
+        }
+        std::fs::write(root.join("src/server.c"), "#include \"net/io.h\"\nint serve(void) { return io_read(3); }\n")?;
+        std::fs::write(
+            root.join("app/Server.php"),
+            "<?php\nuse App\\Pipe\\Reader;\nfunction serve() { Reader::open(); }\n",
+        )?;
+
+        let graph = CodeGraph::build(root)?;
+        let c: Vec<String> = graph.get_callees("serve").into_iter().map(|s| s.file).collect();
+        assert!(c.contains(&"src/net/io.c".to_string()), "{c:?}");
+        assert!(c.contains(&"app/pipe/Reader.php".to_string()), "PSR-4 case mismatch still resolves: {c:?}");
+        assert_eq!(c.len(), 2, "{c:?}");
         Ok(())
     }
 
