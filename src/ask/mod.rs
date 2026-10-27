@@ -130,6 +130,22 @@ pub fn default_cache_root() -> std::path::PathBuf {
         .unwrap_or_else(|| std::path::PathBuf::from(".knot"))
 }
 
+/// The repository `dir` belongs to: its git work tree, canonicalized, or `dir` itself
+/// outside git. Code commands index this root so running them from a subdirectory sees
+/// the whole repo, with the same paths and cache as running them from the top.
+pub fn repo_root(dir: &Path) -> std::path::PathBuf {
+    let root = git2::Repository::discover(dir)
+        .ok()
+        .and_then(|repo| repo.workdir().map(Path::to_path_buf))
+        .unwrap_or_else(|| dir.to_path_buf());
+    std::fs::canonicalize(&root).unwrap_or(root)
+}
+
+/// [`repo_root`] of the current directory.
+pub fn current_repo_root() -> std::io::Result<std::path::PathBuf> {
+    Ok(repo_root(&std::env::current_dir()?))
+}
+
 /// The code graph for `root`, reparsing only files changed since the last load, so
 /// every caller sees the working tree as it is without a separate build step.
 pub fn load_graph(root: &Path) -> anyhow::Result<crate::ast::CodeGraph> {

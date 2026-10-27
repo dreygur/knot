@@ -380,7 +380,7 @@ impl KnotServer {
         #[tool(aggr)] input: RecallMemoryInput,
     ) -> Result<CallToolResult, McpError> {
         let engine = self.engine.lock().await;
-        if let Ok(cwd) = std::env::current_dir() {
+        if let Ok(cwd) = crate::ask::current_repo_root() {
             let _ = engine.refresh_centrality(&cwd).await;
         }
         let limit = input.limit.unwrap_or(5).min(20);
@@ -541,7 +541,7 @@ impl KnotServer {
         &self,
         #[tool(aggr)] input: TraceCallsInput,
     ) -> Result<CallToolResult, McpError> {
-        let cwd = std::env::current_dir().map_err(|e| mcp_err(e.into()))?;
+        let cwd = crate::ask::current_repo_root().map_err(|e| mcp_err(e.into()))?;
         let graph = crate::ask::load_graph(&cwd).map_err(mcp_err)?;
         let direction = input.direction.as_deref().unwrap_or("in");
         let depth = input.depth.unwrap_or(1);
@@ -598,7 +598,7 @@ impl KnotServer {
         &self,
         #[tool(aggr)] input: AskInput,
     ) -> Result<CallToolResult, McpError> {
-        let cwd = std::env::current_dir().map_err(|e| mcp_err(e.into()))?;
+        let cwd = crate::ask::current_repo_root().map_err(|e| mcp_err(e.into()))?;
         let cache_root = crate::ask::default_cache_root();
         let text = ask_text(&cwd, Some(&cache_root), &input).map_err(mcp_err)?;
         Ok(self.with_alerts(text))
@@ -609,7 +609,7 @@ impl KnotServer {
         &self,
         #[tool(aggr)] input: GrepInput,
     ) -> Result<CallToolResult, McpError> {
-        let cwd = std::env::current_dir().map_err(|e| mcp_err(e.into()))?;
+        let cwd = crate::ask::current_repo_root().map_err(|e| mcp_err(e.into()))?;
         let opts = crate::ask::grep::GrepOptions {
             pattern: input.pattern,
             ignore_case: input.ignore_case.unwrap_or(false),
@@ -622,7 +622,7 @@ impl KnotServer {
 
     #[tool(description = "Orientation for an unfamiliar repo: file, symbol and edge counts, languages, directory clusters with their most called symbols, and the most central non-test code by PageRank ($0, no LLM). Call once at the start of work in a new codebase.")]
     async fn knot_map(&self) -> Result<CallToolResult, McpError> {
-        let cwd = std::env::current_dir().map_err(|e| mcp_err(e.into()))?;
+        let cwd = crate::ask::current_repo_root().map_err(|e| mcp_err(e.into()))?;
         let map = crate::ask::map::map(&cwd, Some(&crate::ask::default_cache_root()), crate::ask::map::DEFAULT_MAX_DIRS)
             .map_err(mcp_err)?;
         Ok(self.with_alerts(crate::ask::map::format_map(&map)))
@@ -633,7 +633,7 @@ impl KnotServer {
         &self,
         #[tool(aggr)] input: FileApiInput,
     ) -> Result<CallToolResult, McpError> {
-        let cwd = std::env::current_dir().map_err(|e| mcp_err(e.into()))?;
+        let cwd = crate::ask::current_repo_root().map_err(|e| mcp_err(e.into()))?;
         let graph = crate::ask::load_graph(&cwd).map_err(mcp_err)?;
         let items = graph.file_skeleton(&input.file);
 
@@ -658,7 +658,7 @@ impl KnotServer {
         &self,
         #[tool(aggr)] input: CheckInput,
     ) -> Result<CallToolResult, McpError> {
-        let cwd = std::env::current_dir().map_err(|e| mcp_err(e.into()))?;
+        let cwd = crate::ask::current_repo_root().map_err(|e| mcp_err(e.into()))?;
         let report = crate::check::check_git_diff(&cwd, input.base_ref.as_deref()).map_err(mcp_err)?;
 
         let mut out = String::new();

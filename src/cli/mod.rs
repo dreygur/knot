@@ -277,7 +277,7 @@ async fn cli_recall(query: &str, limit: usize) -> Result<()> {
     let _guard = logging::init(&filter, Some(&log_path_for(&data_dir)));
     warn_if_not_in_path();
     let engine = StorageEngine::new(&data_dir).await?;
-    if let Ok(cwd) = std::env::current_dir() {
+    if let Ok(cwd) = crate::ask::current_repo_root() {
         let _ = engine.refresh_centrality(&cwd).await;
     }
     let results = engine.recall(query, limit.min(20)).await?;
@@ -351,7 +351,7 @@ fn cli_init() -> Result<()> {
 
     register_path(bin_dir)?;
 
-    let cwd = std::env::current_dir()?;
+    let cwd = crate::ask::current_repo_root()?;
     match crate::hosts::configure_agent_hosts(&cwd) {
         Ok(targets) if !targets.is_empty() => {
             println!("[KNOT] Configured agent hosts:");
@@ -385,7 +385,7 @@ fn cli_init() -> Result<()> {
 }
 
 async fn cli_viz() -> Result<()> {
-    let cwd = std::env::current_dir()?;
+    let cwd = crate::ask::current_repo_root()?;
     let out_path = crate::ui::viz::render_and_launch_viz(&cwd)?;
     println!("[KNOT] Code graph visualizer generated: {}", out_path.display());
     println!("[KNOT] Opened in default web browser.");
@@ -393,7 +393,7 @@ async fn cli_viz() -> Result<()> {
 }
 
 async fn cli_callers(symbol: &str) -> Result<()> {
-    let cwd = std::env::current_dir()?;
+    let cwd = crate::ask::current_repo_root()?;
     let graph = crate::ask::load_graph(&cwd)?;
     let callers = graph.get_callers(symbol);
 
@@ -417,7 +417,7 @@ async fn cli_callers(symbol: &str) -> Result<()> {
 }
 
 async fn cli_callees(symbol: &str) -> Result<()> {
-    let cwd = std::env::current_dir()?;
+    let cwd = crate::ask::current_repo_root()?;
     let graph = crate::ask::load_graph(&cwd)?;
     let callees = graph.get_callees(symbol);
 
@@ -433,7 +433,7 @@ async fn cli_callees(symbol: &str) -> Result<()> {
 }
 
 async fn cli_blast(symbol: &str, depth: usize) -> Result<()> {
-    let cwd = std::env::current_dir()?;
+    let cwd = crate::ask::current_repo_root()?;
     let graph = crate::ask::load_graph(&cwd)?;
     let report = graph.blast_radius(symbol, Some(depth));
 
@@ -497,7 +497,7 @@ fn parse_ask_args(args: impl Iterator<Item = String>) -> AskArgs {
 }
 
 async fn cli_ask(args: AskArgs) -> Result<()> {
-    let cwd = std::env::current_dir()?;
+    let cwd = crate::ask::current_repo_root()?;
     let cache_root = crate::ask::default_cache_root();
     let hits = crate::ask::ask(&cwd, Some(&cache_root), &args.query, args.limit, args.ranking)?;
     let learnings = crate::ask::related_learnings(&cwd, &args.query, &hits);
@@ -573,8 +573,13 @@ fn parse_grep_args(args: impl Iterator<Item = String>) -> Result<(crate::ask::gr
 }
 
 fn cli_grep(opts: &crate::ask::grep::GrepOptions, json: bool) -> Result<()> {
-    let cwd = std::env::current_dir()?;
-    let report = crate::ask::grep::grep(&cwd, Some(&crate::ask::default_cache_root()), opts)?;
+    let here = std::env::current_dir()?;
+    let root = crate::ask::repo_root(&here);
+    let mut opts = opts.clone();
+    if let Some(within) = &opts.within {
+        opts.within = Some(repo_relative(&here, &root, within)?);
+    }
+    let report = crate::ask::grep::grep(&root, Some(&crate::ask::default_cache_root()), &opts)?;
     if json {
         println!("{}", serde_json::to_string(&report)?);
     } else {
@@ -584,7 +589,7 @@ fn cli_grep(opts: &crate::ask::grep::GrepOptions, json: bool) -> Result<()> {
 }
 
 fn cli_map(max_dirs: usize, json: bool) -> Result<()> {
-    let cwd = std::env::current_dir()?;
+    let cwd = crate::ask::current_repo_root()?;
     let map = crate::ask::map::map(&cwd, Some(&crate::ask::default_cache_root()), max_dirs)?;
     if json {
         println!("{}", serde_json::to_string(&map)?);
@@ -597,7 +602,7 @@ fn cli_map(max_dirs: usize, json: bool) -> Result<()> {
 /// Bring the parse cache up to date with the working tree. Graph commands already do
 /// this on their own; running it ahead of time only makes the next one fast.
 fn cli_index(quiet: bool) -> Result<()> {
-    let cwd = std::env::current_dir()?;
+    let cwd = crate::ask::current_repo_root()?;
     let cache_root = crate::ask::default_cache_root();
     let started = std::time::Instant::now();
     let result = crate::ask::load_corpus(&cwd, Some(&cache_root));
@@ -665,10 +670,10 @@ fn cli_statusline() -> Result<()> {
     if !std::io::stdin().is_terminal() {
         let _ = std::io::stdin().read_to_string(&mut input);
     }
-    let dir = match statusline_dir(&input) {
+    let dir = crate::ask::repo_root(&match statusline_dir(&input) {
         Some(dir) => dir,
         None => std::env::current_dir()?,
-    };
+    });
     let cache_root = crate::ask::default_cache_root();
     let status = crate::ask::index_status(&dir, &cache_root)?;
 
@@ -692,15 +697,29 @@ fn cli_statusline() -> Result<()> {
     Ok(())
 }
 
+/// `file` as given on the command line (relative to the current directory), as the
+/// repo-relative path the graph keys files by.
+fn repo_relative(cwd: &Path, root: &Path, file: &str) -> Result<String> {
+    let abs = std::fs::canonicalize(cwd.join(file))
+        .map_err(|_| anyhow::anyhow!("No file '{file}' (paths are relative to {}).", cwd.display()))?;
+    let rel = abs
+        .strip_prefix(root)
+        .map_err(|_| anyhow::anyhow!("'{file}' is outside the repository at {}.", root.display()))?;
+    Ok(rel.to_string_lossy().replace('\\', "/"))
+}
+
 async fn cli_skeleton(file: &str) -> Result<()> {
     let cwd = std::env::current_dir()?;
-    if !cwd.join(file).is_file() {
-        anyhow::bail!("No file '{file}' (paths are relative to {}).", cwd.display());
+    let root = crate::ask::repo_root(&cwd);
+    let rel = repo_relative(&cwd, &root, file)?;
+    if !root.join(&rel).is_file() {
+        anyhow::bail!("'{file}' is not a file.");
     }
-    if crate::ast::SupportedLang::from_path(Path::new(file)).is_none() {
+    if crate::ast::SupportedLang::from_path(Path::new(&rel)).is_none() {
         anyhow::bail!("'{file}' is not a source file Knot reads ({SUPPORTED_LANGUAGES}).");
     }
-    let graph = crate::ask::load_graph(&cwd)?;
+    let graph = crate::ask::load_graph(&root)?;
+    let file = rel.as_str();
     let items = graph.file_skeleton(file);
 
     if items.is_empty() {
@@ -781,7 +800,7 @@ async fn cli_check(base_ref: Option<&str>, check_remote: bool) -> Result<()> {
 }
 
 async fn cli_explore(query: Option<&str>) -> Result<()> {
-    let cwd = std::env::current_dir()?;
+    let cwd = crate::ask::current_repo_root()?;
     crate::ui::run_explorer(&cwd, query)
 }
 
@@ -1008,6 +1027,29 @@ mod tests {
         assert_eq!(parse_limit_args(args(&["--limit=7"])).unwrap(), 7);
         let err = parse_limit_args(args(&["--depth", "x"])).unwrap_err().to_string();
         assert_eq!(err, "--depth needs a whole number, got 'x'");
+    }
+
+    #[test]
+    fn subdirectories_resolve_to_the_repo_root_and_repo_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(dir.path()).unwrap();
+        git2::Repository::init(&root).unwrap();
+        let sub = root.join("src/engine");
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::write(sub.join("graph.rs"), "pub fn a() {}\n").unwrap();
+
+        assert_eq!(crate::ask::repo_root(&sub), root);
+        assert_eq!(repo_relative(&sub, &root, "graph.rs").unwrap(), "src/engine/graph.rs");
+        assert_eq!(repo_relative(&sub, &root, "../engine/graph.rs").unwrap(), "src/engine/graph.rs");
+        assert!(repo_relative(&sub, &root, "missing.rs").unwrap_err().to_string().contains("No file"));
+
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("x.rs"), "").unwrap();
+        let err = repo_relative(&sub, &root, &outside.path().join("x.rs").to_string_lossy()).unwrap_err();
+        assert!(err.to_string().contains("outside the repository"), "{err}");
+
+        let plain = tempfile::tempdir().unwrap();
+        assert_eq!(crate::ask::repo_root(plain.path()), std::fs::canonicalize(plain.path()).unwrap(), "no git: the dir itself");
     }
 
     #[test]
