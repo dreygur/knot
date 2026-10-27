@@ -317,17 +317,29 @@ pub struct NewNote<'a> {
 }
 
 /// Write `.knot/learnings/<date>_<slug>.md` for `note`, never overwriting an existing one.
+///
+/// `.knot` comes from the repo, so a committed symlink there could point the write
+/// anywhere: symlinked directories are refused, the target must resolve inside the
+/// repo, and the file is created with `create_new`, which also fails on a dangling link.
 pub fn write_note(repo_root: &Path, note: &NewNote) -> Result<(PathBuf, Uuid)> {
-    let dir = learnings_dir(repo_root);
-    fs::create_dir_all(&dir)?;
+    use std::io::Write as _;
+    for dir in [repo_root.join(".knot"), learnings_dir(repo_root)] {
+        if fs::symlink_metadata(&dir).is_ok_and(|m| m.file_type().is_symlink()) {
+            anyhow::bail!("{} is a symlink; learnings are only written to a real directory in the repo", dir.display());
+        }
+    }
+    fs::create_dir_all(learnings_dir(repo_root))?;
+
     let date = Utc::now().format("%Y-%m-%d").to_string();
     let slug: String = sanitize_slug(note.title).chars().take(60).collect();
-    let mut file_path = dir.join(format!("{date}_{slug}.md"));
-    let mut n = 2;
-    while file_path.exists() {
-        file_path = dir.join(format!("{date}_{slug}_{n}.md"));
-        n += 1;
-    }
+    let (mut file, file_path) = (1..100)
+        .find_map(|n| {
+            let name = if n == 1 { format!("{date}_{slug}.md") } else { format!("{date}_{slug}_{n}.md") };
+            let path = contained_path(repo_root, &format!(".knot/learnings/{name}"))?;
+            let file = fs::OpenOptions::new().write(true).create_new(true).open(&path).ok()?;
+            Some((file, path))
+        })
+        .context("Could not create a new learning file inside .knot/learnings")?;
 
     let id = Uuid::new_v4();
     let fm = LearningFrontmatter {
@@ -341,7 +353,7 @@ pub fn write_note(repo_root: &Path, note: &NewNote) -> Result<(PathBuf, Uuid)> {
         cost_tokens: note.cost_tokens,
         ..Default::default()
     };
-    fs::write(&file_path, format!("{}\n{}\n", format_frontmatter(&fm), note.body.trim()))?;
+    file.write_all(format!("{}\n{}\n", format_frontmatter(&fm), note.body.trim()).as_bytes())?;
     Ok((file_path, id))
 }
 
@@ -447,6 +459,44 @@ mod tests {
         assert_eq!(scanned.len(), 1);
         assert_eq!(scanned[0].frontmatter.id, node_id);
 
+        Ok(())
+    }
+
+    fn note() -> NewNote<'static> {
+        NewNote {
+            title: "Keep the retry count at 4",
+            body: "## Decided\nKeep it, because longer chains time out.",
+            touches: vec![],
+            author: "Maya",
+            cost_minutes: Some(12),
+            cost_tokens: Some(27_000),
+        }
+    }
+
+    #[test]
+    fn notes_get_unique_files_and_round_trip_their_cost() -> Result<()> {
+        let dir = tempdir()?;
+        let (first, _) = write_note(dir.path(), &note())?;
+        let (second, _) = write_note(dir.path(), &note())?;
+        assert_ne!(first, second, "a second note on the same day never overwrites the first");
+
+        let read = read_learning_file(&first)?;
+        assert_eq!((read.frontmatter.cost_minutes, read.frontmatter.cost_tokens), (Some(12), Some(27_000)));
+        assert_eq!(read.frontmatter.author, "Maya");
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn notes_are_never_written_through_a_symlinked_learnings_dir() -> Result<()> {
+        let dir = tempdir()?;
+        let outside = tempdir()?;
+        std::fs::create_dir_all(dir.path().join(".knot"))?;
+        std::os::unix::fs::symlink(outside.path(), dir.path().join(".knot/learnings"))?;
+
+        let err = write_note(dir.path(), &note()).unwrap_err().to_string();
+        assert!(err.contains("symlink"), "{err}");
+        assert_eq!(std::fs::read_dir(outside.path())?.count(), 0, "nothing written outside the repo");
         Ok(())
     }
 }

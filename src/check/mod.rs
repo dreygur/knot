@@ -93,7 +93,11 @@ pub fn format_report(report: &CheckReport) -> String {
         };
         out.push_str(&format!("\n{mark} {}:{}  {what}\n", flatten(&f.file, 120), f.line));
         let decision = if f.decision.is_empty() { &f.learning_title } else { &f.decision };
-        let who = if f.author.is_empty() { String::new() } else { format!("{} · {}: ", flatten(&f.author, 40), short_date(&f.date)) };
+        let who = if f.author.is_empty() {
+            String::new()
+        } else {
+            format!("{} · {}: ", flatten(&f.author, 40), flatten(&short_date(&f.date), 20))
+        };
         out.push_str(&format!("  {who}{}\n", flatten(decision, 220)));
         let id = if f.learning_id.is_empty() { String::new() } else { format!(" · knot {}", f.learning_id) };
         out.push_str(&format!("  .knot/learnings/{}{id}\n", flatten(&f.learning_file, 120)));

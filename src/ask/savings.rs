@@ -16,6 +16,8 @@ const LEDGER_TAIL_BYTES: u64 = 2 * 1024 * 1024;
 /// The last prompt is near the end of the transcript; the first line holds the start.
 const TRANSCRIPT_TAIL_BYTES: u64 = 512 * 1024;
 const TRANSCRIPT_HEAD_BYTES: u64 = 64 * 1024;
+/// The furthest back a status line refresh searches for the last prompt.
+const TRANSCRIPT_MAX_BYTES: u64 = 64 * 1024 * 1024;
 
 #[derive(Debug, Serialize, Deserialize)]
 struct Entry {
@@ -115,11 +117,41 @@ fn timestamp_ms(line: &serde_json::Value) -> Option<i64> {
     Some(chrono::DateTime::parse_from_rfc3339(ts).ok()?.timestamp_millis())
 }
 
-/// A prompt the person typed, not a tool result or injected context.
+/// A prompt the person sent, not a tool result or injected context. Prompts with an
+/// image or pasted text are stored as a list of parts rather than a string.
 fn is_human_prompt(line: &serde_json::Value) -> bool {
-    line.get("type").and_then(|t| t.as_str()) == Some("user")
-        && line.pointer("/message/content").is_some_and(|c| c.is_string())
-        && line.get("isMeta").and_then(|m| m.as_bool()) != Some(true)
+    if line.get("type").and_then(|t| t.as_str()) != Some("user")
+        || line.get("isMeta").and_then(|m| m.as_bool()) == Some(true)
+    {
+        return false;
+    }
+    match line.pointer("/message/content") {
+        Some(serde_json::Value::String(_)) => true,
+        Some(serde_json::Value::Array(parts)) => {
+            !parts.is_empty() && parts.iter().all(|p| p.get("type").and_then(|t| t.as_str()) != Some("tool_result"))
+        }
+        _ => false,
+    }
+}
+
+/// The last human prompt's time, searching ever larger tails: one turn of tool output
+/// can be megabytes, so the prompt is not always near the end.
+fn last_prompt_ms(transcript: &Path) -> Option<i64> {
+    let len = std::fs::metadata(transcript).ok()?.len();
+    let mut window = TRANSCRIPT_TAIL_BYTES;
+    loop {
+        let tail = read_tail(transcript, window)?;
+        let found = tail
+            .lines()
+            .rev()
+            .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+            .find(is_human_prompt)
+            .and_then(|v| timestamp_ms(&v));
+        if found.is_some() || window >= len || window >= TRANSCRIPT_MAX_BYTES {
+            return found;
+        }
+        window *= 8;
+    }
 }
 
 /// When the Claude Code session in `transcript` started, and when its last human
@@ -130,14 +162,7 @@ pub fn transcript_window(transcript: &Path) -> Option<(i64, i64)> {
         .lines()
         .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
         .find_map(|v| timestamp_ms(&v))?;
-    let tail = read_tail(transcript, TRANSCRIPT_TAIL_BYTES)?;
-    let last_prompt = tail
-        .lines()
-        .rev()
-        .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
-        .find(is_human_prompt)
-        .and_then(|v| timestamp_ms(&v))
-        .unwrap_or(start);
+    let last_prompt = last_prompt_ms(transcript).unwrap_or(start);
     Some((start, last_prompt))
 }
 
@@ -180,15 +205,18 @@ mod tests {
             r#"{"type":"summary","timestamp":"2026-10-27T10:00:00.000Z"}"#,
             r#"{"type":"user","message":{"role":"user","content":"first"},"timestamp":"2026-10-27T10:00:01.000Z"}"#,
             r#"{"type":"user","message":{"role":"user","content":"second"},"timestamp":"2026-10-27T10:05:00.000Z"}"#,
-            r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result"}]},"timestamp":"2026-10-27T10:06:00.000Z"}"#,
-            r#"{"type":"user","isMeta":true,"message":{"role":"user","content":"hook context"},"timestamp":"2026-10-27T10:07:00.000Z"}"#,
+            r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"look"},{"type":"image"}]},"timestamp":"2026-10-27T10:06:00.000Z"}"#,
+            r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result"}]},"timestamp":"2026-10-27T10:07:00.000Z"}"#,
+            r#"{"type":"user","isMeta":true,"message":{"role":"user","content":"hook context"},"timestamp":"2026-10-27T10:08:00.000Z"}"#,
         ];
-        std::fs::write(&path, lines.join("\n")).unwrap();
+        // A turn of tool output larger than the first tail window follows the prompt
+        let filler = format!(r#"{{"type":"assistant","message":{{"content":"{}"}}}}"#, "x".repeat(700 * 1024));
+        std::fs::write(&path, format!("{}\n{filler}\n", lines.join("\n"))).unwrap();
 
         let (start, prompt) = transcript_window(&path).unwrap();
         let ms = |s: &str| chrono::DateTime::parse_from_rfc3339(s).unwrap().timestamp_millis();
         assert_eq!(start, ms("2026-10-27T10:00:00Z"));
-        assert_eq!(prompt, ms("2026-10-27T10:05:00Z"));
+        assert_eq!(prompt, ms("2026-10-27T10:06:00Z"), "a prompt with an image counts, found past a long turn");
     }
 
     #[test]

@@ -873,7 +873,11 @@ fn statusline_text(status: &crate::ask::IndexStatus, learnings: usize, saved: Op
     if let Some((reply, session)) = saved.filter(|(_, session)| *session > 0) {
         use crate::ask::savings::short;
         // An upper bound: it assumes every file an answer names would have been read whole
-        parts.push(format!("≤{} saved this reply, ≤{} session (est.)", short(reply), short(session)));
+        if reply > 0 {
+            parts.push(format!("≤{} saved this reply, ≤{} session (est.)", short(reply), short(session)));
+        } else {
+            parts.push(format!("≤{} saved this session (est.)", short(session)));
+        }
     }
     parts.join(" · ")
 }

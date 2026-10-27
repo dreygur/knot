@@ -58,6 +58,7 @@ fn touches_file(learning: &RepoLearning, rel_file: &str) -> bool {
 /// The context block shown when a session first opens a file with learnings on it.
 /// `me` is the local git user, whose own learnings are labelled as theirs.
 fn learnings_block(rel_file: &str, learnings: &[&RepoLearning], root: &Path, me: &str) -> String {
+    let rel_file = flatten(rel_file, 160);
     let mine = |l: &RepoLearning| !me.is_empty() && l.frontmatter.author.trim() == me.trim();
     let theirs = learnings.iter().filter(|l| !mine(l)).count();
     let mut out = format!(
@@ -69,7 +70,11 @@ fn learnings_block(rel_file: &str, learnings: &[&RepoLearning], root: &Path, me:
     for l in learnings {
         let fm = &l.frontmatter;
         let who = if mine(l) { "you".to_string() } else { first_name(&fm.author) };
-        let mut head = format!("  \"{}\" · {who} · {}", flatten(&fm.title, SUMMARY_CHARS), short_date(&fm.date));
+        let mut head = format!(
+            "  \"{}\" · {who} · {}",
+            flatten(&fm.title, SUMMARY_CHARS),
+            flatten(&short_date(&fm.date), 20)
+        );
         if let Some(cost) = cost_text(l) {
             head.push_str(&format!(" · {cost}"));
         }
@@ -85,7 +90,7 @@ fn learnings_block(rel_file: &str, learnings: &[&RepoLearning], root: &Path, me:
             out.push_str(&format!("    watch out: {watch}\n"));
         }
         let path = l.file_path.strip_prefix(root).unwrap_or(&l.file_path);
-        out.push_str(&format!("    {}\n", path.to_string_lossy()));
+        out.push_str(&format!("    {}\n", flatten(&path.to_string_lossy(), 160)));
     }
     // Credit a teammate's learning; your own needs no credit line
     let credit = learnings
