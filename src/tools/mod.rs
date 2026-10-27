@@ -516,7 +516,7 @@ impl KnotServer {
         #[tool(aggr)] input: TraceCallsInput,
     ) -> Result<CallToolResult, McpError> {
         let cwd = std::env::current_dir().map_err(|e| mcp_err(e.into()))?;
-        let graph = crate::ast::CodeGraph::build(&cwd).map_err(mcp_err)?;
+        let graph = crate::ask::load_graph(&cwd).map_err(mcp_err)?;
         let direction = input.direction.as_deref().unwrap_or("in");
         let depth = input.depth.unwrap_or(1);
 
@@ -584,7 +584,7 @@ impl KnotServer {
         #[tool(aggr)] input: FileApiInput,
     ) -> Result<CallToolResult, McpError> {
         let cwd = std::env::current_dir().map_err(|e| mcp_err(e.into()))?;
-        let graph = crate::ast::CodeGraph::build(&cwd).map_err(mcp_err)?;
+        let graph = crate::ask::load_graph(&cwd).map_err(mcp_err)?;
         let items = graph.file_skeleton(&input.file);
 
         if items.is_empty() {

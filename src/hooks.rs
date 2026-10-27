@@ -73,8 +73,9 @@ pub fn register(data_dir: &str, bin_path: &Path) -> Result<bool> {
     std::fs::create_dir_all(&hook_dir)?;
     let bin_str = bin_path.to_string_lossy().into_owned();
     let (pre_cmd, stop_cmd) = write_hooks(&hook_dir, &bin_str)?;
+    let statusline_cmd = format!("\"{bin_str}\" statusline");
     let settings = claude_settings_path()?;
-    merge_settings(&settings, &pre_cmd, &stop_cmd)
+    merge_settings(&settings, &pre_cmd, &stop_cmd, &statusline_cmd)
 }
 
 #[cfg(unix)]
@@ -118,7 +119,7 @@ fn claude_settings_path() -> Result<PathBuf> {
     Ok(PathBuf::from(home).join(".claude").join("settings.json"))
 }
 
-fn merge_settings(settings: &Path, pre_cmd: &str, stop_cmd: &str) -> Result<bool> {
+fn merge_settings(settings: &Path, pre_cmd: &str, stop_cmd: &str, statusline_cmd: &str) -> Result<bool> {
     let mut cfg: serde_json::Value = if settings.exists() {
         let s = std::fs::read_to_string(settings)?;
         serde_json::from_str(&s).unwrap_or_else(|_| json!({}))
@@ -126,19 +127,39 @@ fn merge_settings(settings: &Path, pre_cmd: &str, stop_cmd: &str) -> Result<bool
         json!({})
     };
 
-    // Idempotency: skip if our pre-tool hook is already registered
-    if let Some(arr) = cfg.pointer("/hooks/PreToolUse").and_then(|v| v.as_array()) {
-        let already = arr.iter().any(|e| {
-            e.pointer("/hooks/0/command")
-                .and_then(|v| v.as_str())
-                .map(|s| s.contains("knot-pre-tool"))
-                .unwrap_or(false)
+    // Idempotency: skip hooks already registered
+    let hooks_present = cfg
+        .pointer("/hooks/PreToolUse")
+        .and_then(|v| v.as_array())
+        .is_some_and(|arr| {
+            arr.iter().any(|e| {
+                e.pointer("/hooks/0/command")
+                    .and_then(|v| v.as_str())
+                    .is_some_and(|s| s.contains("knot-pre-tool"))
+            })
         });
-        if already {
-            return Ok(false);
-        }
+    // A status line the user already set, ours or anyone's, is left alone
+    let statusline_added = cfg.get("statusLine").is_none();
+    if statusline_added {
+        cfg["statusLine"] = json!({"type": "command", "command": statusline_cmd});
+    }
+    if !hooks_present {
+        add_hooks(&mut cfg, pre_cmd, stop_cmd);
+    }
+    if hooks_present && !statusline_added {
+        return Ok(false);
     }
 
+    if let Some(parent) = settings.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let mut content = serde_json::to_string_pretty(&cfg)?;
+    content.push('\n');
+    std::fs::write(settings, content)?;
+    Ok(true)
+}
+
+fn add_hooks(cfg: &mut serde_json::Value, pre_cmd: &str, stop_cmd: &str) {
     if cfg.get("hooks").is_none() {
         cfg["hooks"] = json!({});
     }
@@ -162,14 +183,6 @@ fn merge_settings(settings: &Path, pre_cmd: &str, stop_cmd: &str) -> Result<bool
         .push(json!({
             "hooks": [{"type": "command", "command": stop_cmd}]
         }));
-
-    if let Some(parent) = settings.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let mut content = serde_json::to_string_pretty(&cfg)?;
-    content.push('\n');
-    std::fs::write(settings, content)?;
-    Ok(true)
 }
 
 #[cfg(unix)]
@@ -179,4 +192,50 @@ fn set_executable(path: &Path) -> Result<()> {
     perms.set_mode(0o755);
     std::fs::set_permissions(path, perms)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn read(path: &Path) -> serde_json::Value {
+        serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn merge_adds_hooks_and_statusline_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let settings = dir.path().join("settings.json");
+
+        assert!(merge_settings(&settings, "knot-pre-tool.sh", "knot-stop.sh", "knot statusline").unwrap());
+        assert!(!merge_settings(&settings, "knot-pre-tool.sh", "knot-stop.sh", "knot statusline").unwrap());
+
+        let cfg = read(&settings);
+        assert_eq!(cfg["statusLine"]["command"], "knot statusline");
+        assert_eq!(cfg["hooks"]["PreToolUse"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn merge_keeps_an_existing_statusline() {
+        let dir = tempfile::tempdir().unwrap();
+        let settings = dir.path().join("settings.json");
+        std::fs::write(&settings, r#"{"statusLine":{"type":"command","command":"mine"}}"#).unwrap();
+
+        merge_settings(&settings, "knot-pre-tool.sh", "knot-stop.sh", "knot statusline").unwrap();
+        assert_eq!(read(&settings)["statusLine"]["command"], "mine");
+    }
+
+    #[test]
+    fn merge_adds_statusline_when_hooks_were_registered_before_it_existed() {
+        let dir = tempfile::tempdir().unwrap();
+        let settings = dir.path().join("settings.json");
+        let mut old = json!({});
+        add_hooks(&mut old, "knot-pre-tool.sh", "knot-stop.sh");
+        std::fs::write(&settings, old.to_string()).unwrap();
+
+        assert!(merge_settings(&settings, "knot-pre-tool.sh", "knot-stop.sh", "knot statusline").unwrap());
+        let cfg = read(&settings);
+        assert_eq!(cfg["statusLine"]["command"], "knot statusline");
+        assert_eq!(cfg["hooks"]["PreToolUse"].as_array().unwrap().len(), 1);
+    }
 }

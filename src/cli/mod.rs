@@ -4,7 +4,6 @@ use std::io::{BufRead, BufReader, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
-use crate::ast::CodeGraph;
 use crate::engine::{CommitReport, RecallResult, StatusReport, StorageEngine};
 use crate::hooks;
 use crate::logging;
@@ -321,7 +320,7 @@ async fn cli_viz() -> Result<()> {
 
 async fn cli_callers(symbol: &str) -> Result<()> {
     let cwd = std::env::current_dir()?;
-    let graph = CodeGraph::build(&cwd)?;
+    let graph = crate::ask::load_graph(&cwd)?;
     let callers = graph.get_callers(symbol);
 
     if callers.is_empty() {
@@ -345,7 +344,7 @@ async fn cli_callers(symbol: &str) -> Result<()> {
 
 async fn cli_callees(symbol: &str) -> Result<()> {
     let cwd = std::env::current_dir()?;
-    let graph = CodeGraph::build(&cwd)?;
+    let graph = crate::ask::load_graph(&cwd)?;
     let callees = graph.get_callees(symbol);
 
     if callees.is_empty() {
@@ -361,7 +360,7 @@ async fn cli_callees(symbol: &str) -> Result<()> {
 
 async fn cli_blast(symbol: &str, depth: usize) -> Result<()> {
     let cwd = std::env::current_dir()?;
-    let graph = CodeGraph::build(&cwd)?;
+    let graph = crate::ask::load_graph(&cwd)?;
     let report = graph.blast_radius(symbol, Some(depth));
 
     println!(
@@ -462,9 +461,107 @@ async fn cli_ask(args: AskArgs) -> Result<()> {
     Ok(())
 }
 
+/// Bring the parse cache up to date with the working tree. Graph commands already do
+/// this on their own; running it ahead of time only makes the next one fast.
+fn cli_index(quiet: bool) -> Result<()> {
+    let cwd = std::env::current_dir()?;
+    let cache_root = crate::ask::default_cache_root();
+    let started = std::time::Instant::now();
+    let result = crate::ask::load_corpus(&cwd, Some(&cache_root));
+    crate::ask::release_reindex(&cwd, &cache_root);
+    let (corpus, stats) = result?;
+    if !quiet {
+        println!(
+            "[KNOT] Indexed {} files ({} parsed, {} unchanged), {} symbols in {} ms.",
+            stats.parsed + stats.reused,
+            stats.parsed,
+            stats.reused,
+            corpus.graph.symbols.len(),
+            started.elapsed().as_millis()
+        );
+    }
+    Ok(())
+}
+
+/// The directory Claude Code reports in the JSON it pipes to a status line command.
+fn statusline_dir(input: &str) -> Option<PathBuf> {
+    let json: serde_json::Value = serde_json::from_str(input).ok()?;
+    ["/workspace/project_dir", "/workspace/current_dir", "/cwd"]
+        .iter()
+        .find_map(|ptr| json.pointer(ptr).and_then(|v| v.as_str()))
+        .map(PathBuf::from)
+}
+
+fn count_repo_learnings(dir: &Path) -> usize {
+    let Some(root) = git2::Repository::discover(dir).ok().and_then(|r| r.workdir().map(Path::to_path_buf)) else {
+        return 0;
+    };
+    std::fs::read_dir(crate::engine::learnings::learnings_dir(&root))
+        .map(|entries| {
+            entries
+                .filter_map(|e| e.ok())
+                .filter(|e| e.path().extension().is_some_and(|ext| ext == "md"))
+                .count()
+        })
+        .unwrap_or(0)
+}
+
+fn statusline_text(status: &crate::ask::IndexStatus, learnings: usize) -> String {
+    let mut parts = vec!["knot".to_string()];
+    if !status.indexed {
+        if status.files > 0 {
+            parts.push(format!("indexing {} files", status.files));
+        }
+    } else {
+        parts.push(format!("{} symbols", status.symbols));
+        if status.stale > 0 {
+            parts.push(format!("reindexing {} changed", status.stale));
+        }
+    }
+    if learnings > 0 {
+        parts.push(format!("{learnings} learning{}", if learnings == 1 { "" } else { "s" }));
+    }
+    parts.join(" · ")
+}
+
+/// One line for Claude Code's status line. Only stats files; when the index is behind,
+/// starts `knot index` in the background so the next query finds it current.
+fn cli_statusline() -> Result<()> {
+    use std::io::{IsTerminal, Read};
+    let mut input = String::new();
+    if !std::io::stdin().is_terminal() {
+        let _ = std::io::stdin().read_to_string(&mut input);
+    }
+    let dir = match statusline_dir(&input) {
+        Some(dir) => dir,
+        None => std::env::current_dir()?,
+    };
+    let cache_root = crate::ask::default_cache_root();
+    let status = crate::ask::index_status(&dir, &cache_root)?;
+
+    if status.stale > 0 && crate::ask::claim_reindex(&dir, &cache_root) {
+        let spawned = std::env::current_exe().and_then(|bin| {
+            std::process::Command::new(bin)
+                .args(["index", "--quiet"])
+                .current_dir(&dir)
+                .env("KNOT_LOG", "knot=error")
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+        });
+        if spawned.is_err() {
+            crate::ask::release_reindex(&dir, &cache_root);
+        }
+    }
+
+    println!("{}", statusline_text(&status, count_repo_learnings(&dir)));
+    Ok(())
+}
+
 async fn cli_skeleton(file: &str) -> Result<()> {
     let cwd = std::env::current_dir()?;
-    let graph = CodeGraph::build(&cwd)?;
+    let graph = crate::ask::load_graph(&cwd)?;
     let items = graph.file_skeleton(file);
 
     if items.is_empty() {
@@ -604,6 +701,8 @@ pub fn print_help() {
     println!("  knot blast <symbol> [--depth N]         Transitive blast radius analysis");
     println!("  knot ask <question> [--source] [--json] Ranked code answers with file:line spans");
     println!("  knot skeleton <file>                    File API outline (signatures and line spans)");
+    println!("  knot index [--quiet]                    Refresh the code index (graph commands also do this)");
+    println!("  knot statusline                         One line for Claude Code's status line");
     println!("  knot check [--base <ref>] [--remote]    Audit git diff against repo learnings");
     println!("  knot explore [query]                    Interactive terminal TUI code graph explorer");
     println!("  knot viz                                Launch interactive code graph visualizer");
@@ -680,6 +779,8 @@ pub async fn run() -> Result<()> {
             }
             cli_skeleton(&file).await
         }
+        Some("index") => cli_index(args.any(|a| a == "--quiet" || a == "-q")),
+        Some("statusline") => cli_statusline(),
         Some("check") => {
             let mut base_ref = None;
             let mut check_remote = false;
@@ -705,7 +806,7 @@ pub async fn run() -> Result<()> {
         }
         Some(cmd) => {
             eprintln!(
-                "[KNOT] ERROR: Unknown command '{cmd}'. Available: recall, commit, callers, callees, blast, skeleton, status, logs, init"
+                "[KNOT] ERROR: Unknown command '{cmd}'. Available: recall, commit, callers, callees, blast, ask, skeleton, index, statusline, check, explore, viz, status, logs, init"
             );
             std::process::exit(1);
         }

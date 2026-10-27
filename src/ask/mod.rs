@@ -2,7 +2,7 @@ mod cache;
 mod index;
 mod tokenize;
 
-pub use cache::{load_corpus, Corpus, LoadStats};
+pub use cache::{claim_reindex, index_status, load_corpus, release_reindex, Corpus, IndexStatus, LoadStats};
 pub use index::LexicalIndex;
 pub use tokenize::tokenize;
 
@@ -124,6 +124,13 @@ pub fn default_cache_root() -> std::path::PathBuf {
         .map(std::path::PathBuf::from)
         .or_else(|| dirs::home_dir().map(|h| h.join(".knot")))
         .unwrap_or_else(|| std::path::PathBuf::from(".knot"))
+}
+
+/// The code graph for `root`, reparsing only files changed since the last load, so
+/// every caller sees the working tree as it is without a separate build step.
+pub fn load_graph(root: &Path) -> anyhow::Result<crate::ast::CodeGraph> {
+    let (corpus, _) = load_corpus(root, Some(&default_cache_root()))?;
+    Ok(corpus.graph)
 }
 
 /// Load (or refresh) the corpus for `root` and answer one query. With a cache

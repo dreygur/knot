@@ -124,7 +124,7 @@ pub fn export_graph_html(graph: &CodeGraph, output_path: &Path) -> Result<()> {
 }
 
 pub fn render_and_launch_viz(repo_root: &Path) -> Result<PathBuf> {
-    let graph = CodeGraph::build(repo_root)?;
+    let graph = crate::ask::load_graph(repo_root)?;
     let out_path = repo_root.join(".knot").join("graph.html");
 
     export_graph_html(&graph, &out_path).context("Failed to export graph HTML")?;

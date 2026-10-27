@@ -40,6 +40,8 @@ pub struct StorageEngine {
     pub vectors: VectorStore,
     centrality: Arc<RwLock<HashMap<String, f64>>>,
     code_index: Arc<RwLock<Option<CodeIndex>>>,
+    /// Where the per file parse cache lives, shared with `knot ask`.
+    cache_root: PathBuf,
 }
 
 impl StorageEngine {
@@ -68,6 +70,7 @@ impl StorageEngine {
             vectors,
             centrality,
             code_index: Arc::new(RwLock::new(None)),
+            cache_root: PathBuf::from(data_dir),
         })
     }
 
@@ -108,8 +111,10 @@ impl StorageEngine {
         }
 
         let root = repo_root.to_path_buf();
+        let cache_root = self.cache_root.clone();
         let (graph, scores) = tokio::task::spawn_blocking(move || -> Result<_> {
-            let graph = CodeGraph::build(&root)?;
+            let (corpus, _) = crate::ask::load_corpus(&root, Some(&cache_root))?;
+            let graph = corpus.graph;
             let scores = crate::ast::compute_pagerank(&graph);
             Ok((graph, scores))
         })
@@ -186,6 +191,7 @@ mod tests {
             vectors,
             centrality,
             code_index: Arc::new(RwLock::new(None)),
+            cache_root: std::env::temp_dir().join(format!("knot-test-cache-{}", std::process::id())),
         }
     }
 

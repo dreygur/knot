@@ -496,7 +496,7 @@ fn handle_input(state: &mut ExplorerState, key: KeyCode) -> bool {
 
 /// Run the interactive terminal code explorer.
 pub fn run_explorer(repo_root: &Path, initial_query: Option<&str>) -> Result<()> {
-    let graph = CodeGraph::build(repo_root)?;
+    let graph = crate::ask::load_graph(repo_root)?;
     if graph.symbols.is_empty() {
         println!("[KNOT] No symbols found in repository.");
         return Ok(());
