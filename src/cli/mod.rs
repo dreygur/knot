@@ -91,7 +91,7 @@ fn usage_exit(usage: &str) -> ! {
 }
 
 const COMMANDS: &[&str] = &[
-    "recall", "commit", "callers", "callees", "blast", "ask", "skeleton", "index", "statusline", "check",
+    "recall", "commit", "callers", "callees", "blast", "ask", "grep", "skeleton", "index", "statusline", "check",
     "explore", "viz", "status", "logs", "init", "help", "version",
 ];
 
@@ -552,6 +552,37 @@ async fn cli_ask(args: AskArgs) -> Result<()> {
     Ok(())
 }
 
+/// Options for `knot grep`, plus whether to print JSON. The first non-flag argument is
+/// the pattern; a later one is an error so a typo is not silently ignored.
+fn parse_grep_args(args: impl Iterator<Item = String>) -> Result<(crate::ask::grep::GrepOptions, bool)> {
+    let mut opts = crate::ask::grep::GrepOptions::default();
+    let mut json = false;
+    let mut args = args.peekable();
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "-i" | "--ignore-case" => opts.ignore_case = true,
+            "-F" | "--fixed" => opts.fixed = true,
+            "--json" => json = true,
+            "--in" => opts.within = Some(args.next().ok_or_else(|| anyhow::anyhow!("--in needs a path"))?),
+            _ if arg.starts_with("--in=") => opts.within = Some(arg["--in=".len()..].to_string()),
+            _ if opts.pattern.is_empty() => opts.pattern = arg,
+            _ => anyhow::bail!("knot grep takes one pattern; quote it if it has spaces (got extra '{arg}')"),
+        }
+    }
+    Ok((opts, json))
+}
+
+fn cli_grep(opts: &crate::ask::grep::GrepOptions, json: bool) -> Result<()> {
+    let cwd = std::env::current_dir()?;
+    let report = crate::ask::grep::grep(&cwd, Some(&crate::ask::default_cache_root()), opts)?;
+    if json {
+        println!("{}", serde_json::to_string(&report)?);
+    } else {
+        print!("{}", crate::ask::grep::format_report(&report));
+    }
+    Ok(())
+}
+
 /// Bring the parse cache up to date with the working tree. Graph commands already do
 /// this on their own; running it ahead of time only makes the next one fast.
 fn cli_index(quiet: bool) -> Result<()> {
@@ -811,6 +842,8 @@ pub fn print_help() {
     println!("  knot blast <symbol> [--depth N]         Transitive blast radius analysis");
     println!("  knot ask <question> [--source] [--json] Ranked code answers with file:line spans");
     println!("  knot skeleton <file>                    File API outline (signatures and line spans)");
+    println!("  knot grep <pattern> [-i] [--fixed] [--in <path>] [--json]");
+    println!("                                          Every match in indexed code, grouped by symbol");
     println!("  knot index [--quiet]                    Refresh the code index (graph commands also do this)");
     println!("  knot statusline                         One line for Claude Code's status line");
     println!("  knot check [--base <ref>] [--remote]    Audit git diff against repo learnings");
@@ -882,6 +915,13 @@ pub async fn run() -> Result<()> {
                 usage_exit("knot skeleton <file>");
             }
             cli_skeleton(&file).await
+        }
+        Some("grep") => {
+            let (opts, json) = parse_grep_args(args)?;
+            if opts.pattern.is_empty() {
+                usage_exit("knot grep <pattern> [-i] [--fixed] [--in <path>] [--json]");
+            }
+            cli_grep(&opts, json)
         }
         Some("index") => cli_index(args.any(|a| a == "--quiet" || a == "-q")),
         Some("statusline") => cli_statusline(),

@@ -293,6 +293,18 @@ pub struct AskInput {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+pub struct GrepInput {
+    /// Regex to search for, or literal text when `fixed` is true
+    pub pattern: String,
+    /// Case-insensitive match (default false)
+    pub ignore_case: Option<bool>,
+    /// Treat the pattern as literal text (default false)
+    pub fixed: Option<bool>,
+    /// Only files at or under this repo-relative path, e.g. "src/engine"
+    pub within: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
 pub struct FileApiInput {
     /// Repo-relative file path, e.g. "src/engine/graph.rs"
     pub file: String,
@@ -590,6 +602,22 @@ impl KnotServer {
         let cache_root = crate::ask::default_cache_root();
         let text = ask_text(&cwd, Some(&cache_root), &input).map_err(mcp_err)?;
         Ok(self.with_alerts(text))
+    }
+
+    #[tool(description = "Every line matching a regex (or literal text) across all indexed source files, grouped by the innermost function, method or class containing it and ordered by how many callers that symbol has ($0, no LLM). Use for exhaustive questions such as every use of a name or string; knot_ask is ranked and returns only the top matches.")]
+    async fn knot_grep(
+        &self,
+        #[tool(aggr)] input: GrepInput,
+    ) -> Result<CallToolResult, McpError> {
+        let cwd = std::env::current_dir().map_err(|e| mcp_err(e.into()))?;
+        let opts = crate::ask::grep::GrepOptions {
+            pattern: input.pattern,
+            ignore_case: input.ignore_case.unwrap_or(false),
+            fixed: input.fixed.unwrap_or(false),
+            within: input.within,
+        };
+        let report = crate::ask::grep::grep(&cwd, Some(&crate::ask::default_cache_root()), &opts).map_err(mcp_err)?;
+        Ok(self.with_alerts(crate::ask::grep::format_report(&report)))
     }
 
     #[tool(description = "Signatures-only view of one file — returns every function, struct, and method signature with exact line spans (~10x token savings vs reading the full file).")]

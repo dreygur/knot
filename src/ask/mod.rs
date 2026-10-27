@@ -1,4 +1,5 @@
 mod cache;
+pub mod grep;
 mod index;
 mod learnings;
 mod tokenize;
