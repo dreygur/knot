@@ -197,7 +197,8 @@ mod tests {
             root.join("src/net/client.rs"),
             "const DEFAULT_TIMEOUT: u64 = 30;\n\
              pub fn send(timeout: u64) {\n    wait(timeout);\n}\n\
-             pub fn wait(timeout: u64) {}\n",
+             pub fn wait(timeout: u64) {}\n\
+             // Timeout values are in seconds.\n",
         )
         .unwrap();
         std::fs::write(root.join("src/main.rs"), "fn main() { send(5); send(6); }\n").unwrap();
@@ -215,12 +216,12 @@ mod tests {
         let report = grep(dir.path(), None, &GrepOptions { ignore_case: true, ..opts("timeout") }).unwrap();
 
         assert_eq!(report.files_searched, 2, "only indexed source files");
-        assert_eq!(report.hits, 4);
+        assert_eq!(report.hits, 5);
         let names: Vec<Option<&str>> = report.groups.iter().map(|g| g.symbol.as_deref()).collect();
         // send has a caller (main), wait has one (send); send holds more hits so it leads
-        assert_eq!(names, vec![Some("send"), Some("wait"), None]);
+        assert_eq!(names, vec![Some("send"), Some("wait"), Some("DEFAULT_TIMEOUT"), None]);
         assert_eq!(report.groups[0].lines.iter().map(|l| l.line).collect::<Vec<_>>(), vec![2, 3]);
-        assert_eq!(report.groups[2].lines[0].text, "const DEFAULT_TIMEOUT: u64 = 30;");
+        assert_eq!(report.groups[3].lines[0].text, "// Timeout values are in seconds.");
 
         let text = format_report(&report);
         assert!(text.contains("send · function · src/net/client.rs:L2-L4 · 1 caller(s)"), "{text}");

@@ -561,6 +561,27 @@ fn extract_go_symbol(file_rel_path: &str, source_code: &str, lines: &[&str], nod
     Some(build_symbol(file_rel_path, source_code, lines, node, name, kind, signature))
 }
 
+/// Package level Go `const`/`var` names: one symbol per name, so
+/// `defaultRetryMax = 4` inside a `const ( ... )` block can be found, targeted and diffed.
+fn extract_go_values(file_rel_path: &str, source_code: &str, lines: &[&str], spec: Node) -> Vec<SymbolNode> {
+    let mut decl = spec.parent();
+    while let Some(d) = decl.filter(|d| !matches!(d.kind(), "const_declaration" | "var_declaration")) {
+        decl = d.parent();
+    }
+    if decl.and_then(|d| d.parent()).map(|p| p.kind()) != Some("source_file") {
+        return Vec::new();
+    }
+    let signature = first_line_of(lines, spec.start_position().row + 1);
+    let mut cursor = spec.walk();
+    spec.children_by_field_name("name", &mut cursor)
+        .filter(|n| n.kind() == "identifier")
+        .map(|n| {
+            let name = node_text(source_code, n);
+            build_symbol(file_rel_path, source_code, lines, spec, name, SymbolKind::Constant, signature.clone())
+        })
+        .collect()
+}
+
 /// Where a Java declaration's signature starts: after any annotations in its modifiers,
 /// so `@Override` lines stay out of it.
 fn java_signature_start(node: Node) -> usize {
@@ -732,6 +753,11 @@ fn collect_symbols_recursive(
                     symbols.push(sym);
                 }
             }
+            "const_item" | "static_item" => {
+                if let Some(sym) = extract_rust_type(file_rel_path, source_code, lines, node, SymbolKind::Constant) {
+                    symbols.push(sym);
+                }
+            }
             "trait_item" => {
                 if let Some(sym) = extract_rust_type(file_rel_path, source_code, lines, node, SymbolKind::Trait) {
                     current_scope = Some(sym.name.clone());
@@ -797,11 +823,14 @@ fn collect_symbols_recursive(
             _ => {}
         },
         // Go methods name their type in the receiver, so no scope is carried down.
-        SupportedLang::Go => {
-            if let Some(sym) = extract_go_symbol(file_rel_path, source_code, lines, node) {
-                symbols.push(sym);
+        SupportedLang::Go => match kind {
+            "const_spec" | "var_spec" => symbols.extend(extract_go_values(file_rel_path, source_code, lines, node)),
+            _ => {
+                if let Some(sym) = extract_go_symbol(file_rel_path, source_code, lines, node) {
+                    symbols.push(sym);
+                }
             }
-        }
+        },
         SupportedLang::Java => {
             if let Some(sym) = extract_java_symbol(file_rel_path, source_code, lines, node, parent_scope) {
                 if sym.kind != SymbolKind::Method {
@@ -1265,7 +1294,15 @@ type Getter interface {
 
 type ID = string
 
+const (
+	defaultRetryMax = 4
+	minWait, maxWait = 1, 30
+)
+
+var ErrClosed = errors.New("closed")
+
 func New() *Store[int] {
+	const local = 1
 	return &Store[int]{rows: cache.Make()}
 }
 
@@ -1282,6 +1319,11 @@ func (s *Store[T]) Get(key string) (T, error) {
         assert_eq!(kind_of("Getter"), Some(SymbolKind::Interface));
         assert_eq!(kind_of("ID"), Some(SymbolKind::TypeAlias));
         assert_eq!(kind_of("New"), Some(SymbolKind::Function));
+        for name in ["defaultRetryMax", "minWait", "maxWait", "ErrClosed"] {
+            assert_eq!(kind_of(name), Some(SymbolKind::Constant), "{name}");
+        }
+        assert_eq!(kind_of("local"), None, "constants inside functions are not symbols");
+        assert_eq!(symbols.iter().find(|s| s.name == "defaultRetryMax").unwrap().signature, "defaultRetryMax = 4");
 
         let get = symbols.iter().find(|s| s.name == "Store.Get").unwrap();
         assert_eq!(get.kind, SymbolKind::Method);
