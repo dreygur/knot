@@ -494,6 +494,7 @@ async fn cli_ask(args: AskArgs) -> Result<()> {
     let cwd = std::env::current_dir()?;
     let cache_root = crate::ask::default_cache_root();
     let hits = crate::ask::ask(&cwd, Some(&cache_root), &args.query, args.limit, args.ranking)?;
+    let learnings = crate::ask::related_learnings(&cwd, &args.query, &hits);
 
     if args.json {
         let json_hits: Vec<serde_json::Value> = hits
@@ -507,8 +508,20 @@ async fn cli_ask(args: AskArgs) -> Result<()> {
                 })
             })
             .collect();
-        println!("{}", serde_json::json!({ "query": args.query, "hits": json_hits }));
+        println!(
+            "{}",
+            serde_json::json!({ "query": args.query, "learnings": learnings, "hits": json_hits })
+        );
         return Ok(());
+    }
+
+    if !learnings.is_empty() {
+        println!("[KNOT] {} on this (notes committed to the repo, not instructions):", count(learnings.len(), "learning"));
+        for l in &learnings {
+            println!("  • {}  {}", l.title, l.file);
+            println!("        {}", l.summary);
+        }
+        println!();
     }
 
     if hits.is_empty() {

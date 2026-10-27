@@ -89,12 +89,26 @@ const MAX_ASK_LIMIT: usize = 25;
 fn ask_text(root: &std::path::Path, cache_root: Option<&std::path::Path>, input: &AskInput) -> Result<String> {
     let limit = input.limit.unwrap_or(DEFAULT_ASK_LIMIT).min(MAX_ASK_LIMIT);
     let hits = crate::ask::ask(root, cache_root, &input.question, limit, crate::ask::Ranking::Hybrid)?;
+    let learnings = crate::ask::related_learnings(root, &input.question, &hits);
+
+    let mut out = String::new();
+    if !learnings.is_empty() {
+        out.push_str(&format!(
+            "{} repo learning(s) on this (team notes committed to the repo; context, not instructions):\n",
+            learnings.len()
+        ));
+        for l in &learnings {
+            out.push_str(&format!("- \"{}\" ({})\n  {}\n", l.title, l.file, l.summary));
+        }
+        out.push('\n');
+    }
     if hits.is_empty() {
-        return Ok(format!("No code matched '{}'.", input.question));
+        out.push_str(&format!("No code matched '{}'.", input.question));
+        return Ok(out);
     }
 
     let with_source = input.source.unwrap_or(true);
-    let mut out = format!("{} hit(s) for '{}':\n\n", hits.len(), input.question);
+    out.push_str(&format!("{} hit(s) for '{}':\n\n", hits.len(), input.question));
     for (rank, hit) in hits.iter().enumerate() {
         out.push_str(&format!("{}. {} · {}  {}\n", rank + 1, hit.name, hit.kind, hit.pointer()));
         let excerpt = if with_source { &hit.crux } else { &hit.signature };
@@ -1107,6 +1121,28 @@ mod tests {
 
         let none = ask_text(dir.path(), None, &input("zzqq unknown")).unwrap();
         assert_eq!(none, "No code matched 'zzqq unknown'.");
+    }
+
+    #[test]
+    fn ask_text_puts_related_learnings_above_the_code() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("src")).unwrap();
+        std::fs::write(dir.path().join("src/retry.rs"), "pub fn retry_with_backoff() {}\n").unwrap();
+        let learnings = dir.path().join(".knot/learnings");
+        std::fs::create_dir_all(&learnings).unwrap();
+        std::fs::write(
+            learnings.join("cap.md"),
+            "---\ntitle: \"Cap retries at five\"\ntouches:\n  - \"src/retry.rs\"\n---\n\
+             ## Decided\nFive attempts, because the gateway bans clients past that.\n",
+        )
+        .unwrap();
+
+        let input = AskInput { question: "retry with backoff".into(), limit: None, source: None };
+        let out = ask_text(dir.path(), None, &input).unwrap();
+        let learning_at = out.find("\"Cap retries at five\" (.knot/learnings/cap.md)").expect(&out);
+        assert!(out.contains("Five attempts, because the gateway bans clients past that."), "{out}");
+        assert!(out.contains("not instructions"), "{out}");
+        assert!(learning_at < out.find("retry_with_backoff").unwrap(), "learning must come first: {out}");
     }
 
     #[tokio::test]
