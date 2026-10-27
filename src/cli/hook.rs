@@ -214,6 +214,59 @@ fn clash_for_file(root: &Path, file: &Path, session_id: &str) -> Option<String> 
     })
 }
 
+/// Commits on HEAD made since `since_ms` that change code, when none of them (nor the
+/// working tree) adds a learning. `None` means there is nothing to ask about.
+fn commits_without_learning(root: &Path, since_ms: i64) -> Option<usize> {
+    let repo = git2::Repository::open(root).ok()?;
+    let mut walk = repo.revwalk().ok()?;
+    walk.push_head().ok()?;
+    let is_learning = |p: &Path| p.starts_with(".knot/learnings");
+
+    let mut code_commits = 0;
+    for oid in walk.filter_map(|o| o.ok()) {
+        let commit = repo.find_commit(oid).ok()?;
+        if commit.time().seconds() * 1000 < since_ms {
+            break;
+        }
+        let tree = commit.tree().ok()?;
+        let parent = commit.parent(0).ok().and_then(|p| p.tree().ok());
+        let diff = repo.diff_tree_to_tree(parent.as_ref(), Some(&tree), None).ok()?;
+        let paths: Vec<PathBuf> = diff.deltas().filter_map(|d| d.new_file().path().map(Path::to_path_buf)).collect();
+        if paths.iter().any(|p| is_learning(p)) {
+            return None;
+        }
+        if paths.iter().any(|p| !p.starts_with(".knot") && !p.starts_with(".claude")) {
+            code_commits += 1;
+        }
+    }
+    let statuses = repo.statuses(None).ok()?;
+    if statuses.iter().any(|s| s.path().is_some_and(|p| is_learning(Path::new(p)))) {
+        return None;
+    }
+    (code_commits > 0).then_some(code_commits)
+}
+
+/// Once per session, after it committed code without a learning, ask the agent whether
+/// the session worked out anything the next reader would need. Answered as a Stop hook
+/// block, so the agent gets one more turn; never when that turn is already running.
+fn learning_nudge(root: &Path, transcript: &str, session_id: &str, already_continuing: bool) -> Option<String> {
+    if already_continuing || session_id.is_empty() {
+        return None;
+    }
+    let (session_start, _) = crate::ask::savings::transcript_window(Path::new(transcript))?;
+    let commits = commits_without_learning(root, session_start)?;
+    if session::first_showing(session_id, &["nudge:learning".to_string()]).is_empty() {
+        return None;
+    }
+    Some(format!(
+        "[knot] This session committed {} without a team learning. If it worked out something the code \
+         does not say (why a value is what it is, an approach that failed and why), save it now with \
+         `knot note --title \"<the fact>\"` and `## Decided`, `## Tried and ruled out`, `## Watch out` on stdin, \
+         then commit the new file. If there is nothing worth keeping, say so in one line and stop.",
+        if commits == 1 { "a change".to_string() } else { format!("{commits} changes") }
+    ))
+}
+
 pub(super) async fn run(event: &str) -> Result<()> {
     use std::io::Read;
     let mut input = String::new();
@@ -254,7 +307,14 @@ pub(super) async fn run(event: &str) -> Result<()> {
                 emit("PostToolUse", &context.join("\n\n"));
             }
         }
-        "stop" => super::commit_current_session().await?,
+        "stop" => {
+            // Promoting memories must never block the nudge or the agent's stop
+            let _ = super::commit_current_session().await;
+            let continuing = json.get("stop_hook_active").and_then(|v| v.as_bool()).unwrap_or(false);
+            if let Some(reason) = learning_nudge(&root, &text("/transcript_path"), &session_id, continuing) {
+                println!("{}", serde_json::json!({ "decision": "block", "reason": reason }));
+            }
+        }
         _ => {}
     }
     Ok(())
@@ -304,6 +364,36 @@ mod tests {
         assert!(own.contains("(your own notes"), "{own}");
         assert!(own.contains("· you · Oct 9"), "{own}");
         assert!(!own.contains("📝"), "no credit line for your own learning: {own}");
+    }
+
+    #[test]
+    fn nudges_only_after_code_commits_without_a_learning() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let repo = git2::Repository::init(root).unwrap();
+        let sig = git2::Signature::now("Maya", "m@x").unwrap();
+        let commit = |file: &str, msg: &str| {
+            std::fs::create_dir_all(root.join(file).parent().unwrap()).unwrap();
+            std::fs::write(root.join(file), msg).unwrap();
+            let mut index = repo.index().unwrap();
+            index.add_path(Path::new(file)).unwrap();
+            index.write().unwrap();
+            let tree = repo.find_tree(index.write_tree().unwrap()).unwrap();
+            let parents: Vec<git2::Commit> = repo.head().ok().and_then(|h| h.peel_to_commit().ok()).into_iter().collect();
+            repo.commit(Some("HEAD"), &sig, &sig, msg, &tree, &parents.iter().collect::<Vec<_>>()).unwrap();
+        };
+        let start = chrono::Utc::now().timestamp_millis() - 1_000;
+
+        assert_eq!(commits_without_learning(root, start), None, "no commits yet");
+        commit("client.go", "document retries");
+        assert_eq!(commits_without_learning(root, start), Some(1));
+        assert_eq!(commits_without_learning(root, start + 120_000), None, "commits before the session do not count");
+
+        std::fs::create_dir_all(root.join(".knot/learnings")).unwrap();
+        std::fs::write(root.join(".knot/learnings/a.md"), "x").unwrap();
+        assert_eq!(commits_without_learning(root, start), None, "an uncommitted learning counts");
+        commit(".knot/learnings/a.md", "add learning");
+        assert_eq!(commits_without_learning(root, start), None, "a committed learning counts");
     }
 
     #[test]

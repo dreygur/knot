@@ -472,6 +472,21 @@ pub fn check_git_diff(repo_root: &Path, base_ref: Option<&str>) -> Result<CheckR
         }
     };
 
+    // A learning added in this same change records it; checking the change against it
+    // would flag the decision the learning was written to explain.
+    let added_here: HashSet<std::path::PathBuf> = diff
+        .deltas()
+        .filter(|d| d.status() == git2::Delta::Added || d.status() == git2::Delta::Untracked)
+        .filter_map(|d| d.new_file().path().map(|p| work_root.join(p)))
+        .collect();
+    let learnings: Vec<RepoLearning> = learnings
+        .into_iter()
+        .filter(|l| {
+            let path = std::fs::canonicalize(&l.file_path).unwrap_or_else(|_| l.file_path.clone());
+            !added_here.iter().any(|a| std::fs::canonicalize(a).unwrap_or_else(|_| a.clone()) == path)
+        })
+        .collect();
+
     let mut checked_files = Vec::new();
     let mut findings = Vec::new();
 
@@ -730,6 +745,17 @@ mod tests {
         let report = check_git_diff(root, Some(&base))?;
         assert!(report.ok, "{:?}", report.findings);
         assert!(report.findings[0].overridden_by.is_some());
+
+        // A learning added on the branch records the branch's own change: it is not checked against it
+        std::fs::write(
+            root.join(".knot/learnings/2026-10-28_eleven.md"),
+            "---\ntitle: \"Default retries are now 11\"\nauthor: \"Kumar\"\ntouches:\n  - \"client.go#defaultRetryMax\"\n---\n\
+             ## Decided\n`defaultRetryMax = 11` for the importer.\n\n## Tried and ruled out\nRaising the default retry count to 10.\n",
+        )?;
+        commit_all("Record why")?;
+        let report = check_git_diff(root, Some(&base))?;
+        assert_eq!(report.learnings_checked, 1, "only the pre-existing learning is checked");
+        assert!(report.findings.iter().all(|f| f.author == "Maya"), "{:?}", report.findings);
         Ok(())
     }
 }

@@ -309,18 +309,23 @@ async fn commit_current_session() -> Result<()> {
     let project = from_origin
         .or_else(|| root.file_name().map(|n| n.to_string_lossy().into_owned()))
         .unwrap_or_else(|| "project".into());
-    cli_commit(session_id, &project).await
+    commit_session_report(session_id, &project).await.map(|_| ())
 }
 
 async fn cli_commit(session_id: &str, project_id: &str) -> Result<()> {
+    warn_if_not_in_path();
+    let report = commit_session_report(session_id, project_id).await?;
+    print!("{}", format_commit_cli(&report));
+    Ok(())
+}
+
+/// Promote a session's verified memories, printing nothing (hooks answer in JSON).
+async fn commit_session_report(session_id: &str, project_id: &str) -> Result<CommitReport> {
     let filter = std::env::var("KNOT_LOG").unwrap_or_else(|_| "knot=error".into());
     let data_dir = std::env::var("KNOT_DATA_DIR").unwrap_or_else(|_| resolve_data_dir());
     let _guard = logging::init(&filter, Some(&log_path_for(&data_dir)));
-    warn_if_not_in_path();
     let engine = StorageEngine::new(&data_dir).await?;
-    let report = engine.commit_session(session_id, project_id).await?;
-    print!("{}", format_commit_cli(&report));
-    Ok(())
+    engine.commit_session(session_id, project_id).await
 }
 
 async fn cli_status() -> Result<()> {
