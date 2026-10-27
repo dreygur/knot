@@ -154,6 +154,152 @@ pub fn detect_remote_collisions(repo_root: &Path) -> Result<RemoteCheckReport> {
     })
 }
 
+/// A symbol you and a teammate both changed in the same file since your branches split.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SymbolClash {
+    pub file: String,
+    pub symbol: String,
+    pub branch: String,
+    pub author: String,
+    pub commit_oid: String,
+    /// For a constant, its value before and after on their branch and in your tree.
+    pub theirs: Option<(String, String)>,
+    pub ours: Option<(String, String)>,
+}
+
+fn blob_text(repo: &Repository, commit: Oid, rel_file: &str) -> Option<String> {
+    let tree = repo.find_commit(commit).ok()?.tree().ok()?;
+    let entry = tree.get_path(Path::new(rel_file)).ok()?;
+    let blob = repo.find_blob(entry.id()).ok()?;
+    Some(String::from_utf8_lossy(blob.content()).into_owned())
+}
+
+/// Symbols by name, with each one's content hash and, for constants, its value.
+fn symbol_states(rel_file: &str, source: &str) -> std::collections::HashMap<String, (String, Option<String>)> {
+    let Some(lang) = crate::ast::SupportedLang::from_path(Path::new(rel_file)) else {
+        return Default::default();
+    };
+    crate::ast::extract_file_symbols(rel_file, source, lang)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|s| {
+            let value = (s.kind == crate::ast::SymbolKind::Constant)
+                .then(|| constant_value(&s.signature, &s.name))
+                .flatten();
+            (s.name, (s.hash, value))
+        })
+        .collect()
+}
+
+/// `4` from `defaultRetryMax = 4` or `const MAX: u32 = 4;`.
+fn constant_value(signature: &str, name: &str) -> Option<String> {
+    let after_name = &signature[signature.find(name)? + name.len()..];
+    let value = after_name.split_once('=')?.1;
+    // A trailing comment is not part of the value
+    let value = ["//", "/*", " #"].iter().fold(value, |v, marker| v.split(marker).next().unwrap_or(v));
+    let value = value.trim().trim_end_matches([';', ',']).trim();
+    (!value.is_empty()).then(|| value.to_string())
+}
+
+/// Branches with no commit for this long are left out of clash reports.
+const STALE_BRANCH_SECS: i64 = 60 * 24 * 60 * 60;
+
+/// Names whose content differs between `base` and `changed`, added or removed included.
+fn changed_names(
+    base: &std::collections::HashMap<String, (String, Option<String>)>,
+    changed: &std::collections::HashMap<String, (String, Option<String>)>,
+) -> HashSet<String> {
+    base.keys()
+        .chain(changed.keys())
+        .filter(|name| base.get(*name).map(|s| &s.0) != changed.get(*name).map(|s| &s.0))
+        .cloned()
+        .collect()
+}
+
+/// Symbols in `rel_file` whose content differs between HEAD and the working tree.
+pub fn changed_symbols(repo_root: &Path, rel_file: &str) -> Vec<String> {
+    let Ok(repo) = Repository::discover(repo_root) else { return Vec::new() };
+    let Some(workdir) = repo.workdir() else { return Vec::new() };
+    let ours = std::fs::read_to_string(workdir.join(rel_file)).unwrap_or_default();
+    let head = repo
+        .head()
+        .ok()
+        .and_then(|h| h.target())
+        .and_then(|oid| blob_text(&repo, oid, rel_file))
+        .unwrap_or_default();
+    let mut names: Vec<String> =
+        changed_names(&symbol_states(rel_file, &head), &symbol_states(rel_file, &ours)).into_iter().collect();
+    names.sort();
+    names
+}
+
+/// Symbols in `rel_file` that the working tree and some remote branch both changed
+/// since they split. Reads only local remote-tracking refs; fetching is the caller's job.
+pub fn symbol_clashes(repo_root: &Path, rel_file: &str) -> Result<Vec<SymbolClash>> {
+    let repo = Repository::discover(repo_root).context("Failed to open git repository")?;
+    let workdir = repo.workdir().context("bare repository")?.to_path_buf();
+    let Ok(ours_text) = std::fs::read_to_string(workdir.join(rel_file)) else {
+        return Ok(Vec::new());
+    };
+    let Some(head_oid) = repo.head().ok().and_then(|h| h.target()) else {
+        return Ok(Vec::new());
+    };
+    // What you are changing: the working tree against your HEAD. Measuring from the
+    // merge base instead would count everything main gained since an old branch split.
+    let head = symbol_states(rel_file, &blob_text(&repo, head_oid, rel_file).unwrap_or_default());
+    let ours = symbol_states(rel_file, &ours_text);
+    let ours_changed = changed_names(&head, &ours);
+    if ours_changed.is_empty() {
+        return Ok(Vec::new());
+    }
+    let now = chrono::Utc::now().timestamp();
+
+    let mut clashes = Vec::new();
+    for branch_res in repo.branches(Some(BranchType::Remote))? {
+        let (branch, _) = branch_res?;
+        let branch_name = branch.name()?.unwrap_or("").to_string();
+        let Some(tip) = branch.get().target() else { continue };
+        if branch_name.is_empty() || branch_name.ends_with(REMOTE_HEAD_SUFFIX) || tip == head_oid {
+            continue;
+        }
+        let Ok(base_oid) = repo.merge_base(head_oid, tip) else { continue };
+        if base_oid == tip {
+            continue;
+        }
+        let Ok(tip_commit) = repo.find_commit(tip) else { continue };
+        if now - tip_commit.time().seconds() > STALE_BRANCH_SECS {
+            continue;
+        }
+        let base_text = blob_text(&repo, base_oid, rel_file).unwrap_or_default();
+        let Some(theirs_text) = blob_text(&repo, tip, rel_file) else { continue };
+        if theirs_text == base_text {
+            continue;
+        }
+
+        let base = symbol_states(rel_file, &base_text);
+        let theirs = symbol_states(rel_file, &theirs_text);
+        let mut both: Vec<String> = ours_changed.intersection(&changed_names(&base, &theirs)).cloned().collect();
+        both.sort();
+
+        let author = tip_commit.author().name().unwrap_or("unknown").to_string();
+        let value = |states: &std::collections::HashMap<String, (String, Option<String>)>, name: &str| {
+            states.get(name).and_then(|s| s.1.clone())
+        };
+        for name in both {
+            clashes.push(SymbolClash {
+                file: rel_file.to_string(),
+                symbol: name.clone(),
+                branch: branch_name.clone(),
+                author: author.clone(),
+                commit_oid: tip.to_string(),
+                theirs: value(&base, &name).zip(value(&theirs, &name)),
+                ours: value(&head, &name).zip(value(&ours, &name)),
+            });
+        }
+    }
+    Ok(clashes)
+}
+
 pub struct BranchMonitorHandle {
     latest_collisions: Arc<Mutex<Vec<RemoteCollision>>>,
     shutdown_tx: watch::Sender<bool>,
@@ -369,6 +515,39 @@ mod tests {
         let report = detect_remote_collisions(&mine)?;
         assert_eq!(report.collisions.len(), 1);
         assert_eq!(report.collisions[0].branch, "origin/feature");
+        Ok(())
+    }
+
+    #[test]
+    fn symbol_clashes_name_the_shared_symbol_and_both_values() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let seed = Repository::init(temp_dir.path().join("seed"))?;
+        let v1 = "package r\n\nconst (\n\tdefaultRetryMax = 4\n\tdefaultWait = 1\n)\n\nfunc Do() {}\n";
+        create_commit(&seed, "client.go", v1, "initial")?;
+        git(temp_dir.path(), &["clone", "--quiet", "--bare", "seed", "origin.git"]);
+        let origin = temp_dir.path().join("origin.git");
+        git(temp_dir.path(), &["clone", "--quiet", origin.to_str().unwrap(), "mine"]);
+        git(temp_dir.path(), &["clone", "--quiet", origin.to_str().unwrap(), "theirs"]);
+        let (mine, theirs) = (temp_dir.path().join("mine"), temp_dir.path().join("theirs"));
+
+        // They raise the retry count and also rewrite Do on a branch
+        fs::write(theirs.join("client.go"), v1.replace("= 4", "= 10").replace("func Do() {}", "func Do() { retry() }"))?;
+        git(&theirs, &["checkout", "--quiet", "-b", "kumar/retry"]);
+        git(&theirs, &["-c", "user.name=Kumar", "-c", "user.email=k@x", "commit", "--quiet", "-am", "raise"]);
+        git(&theirs, &["push", "--quiet", "origin", "kumar/retry"]);
+        git(&mine, &["fetch", "--quiet"]);
+
+        // Nothing edited yet: nothing to clash with
+        assert!(symbol_clashes(&mine, "client.go")?.is_empty());
+
+        // You lower the same constant and leave Do alone
+        fs::write(mine.join("client.go"), v1.replace("= 4", "= 3"))?;
+        let clashes = symbol_clashes(&mine, "client.go")?;
+        assert_eq!(clashes.len(), 1, "{clashes:?}");
+        let c = &clashes[0];
+        assert_eq!((c.symbol.as_str(), c.branch.as_str(), c.author.as_str()), ("defaultRetryMax", "origin/kumar/retry", "Kumar"));
+        assert_eq!(c.theirs, Some(("4".into(), "10".into())));
+        assert_eq!(c.ours, Some(("4".into(), "3".into())));
         Ok(())
     }
 }

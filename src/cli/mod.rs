@@ -1,3 +1,5 @@
+mod hook;
+
 use anyhow::Result;
 use rmcp::{transport::stdio, ServiceExt};
 use std::io::{BufRead, BufReader, Seek, SeekFrom};
@@ -91,7 +93,7 @@ fn usage_exit(usage: &str) -> ! {
 }
 
 const COMMANDS: &[&str] = &[
-    "recall", "commit", "callers", "callees", "blast", "ask", "grep", "map", "skeleton", "index", "statusline", "check",
+    "recall", "commit", "callers", "callees", "blast", "ask", "grep", "map", "note", "skeleton", "index", "statusline", "check",
     "explore", "viz", "status", "logs", "init", "help", "version",
 ];
 
@@ -287,6 +289,29 @@ async fn cli_recall(query: &str, limit: usize) -> Result<()> {
     Ok(())
 }
 
+/// The Stop hook: promote this MCP server session's verified memories into the project,
+/// named after the repo's origin (or its directory).
+async fn commit_current_session() -> Result<()> {
+    let data_dir = std::env::var("KNOT_DATA_DIR").unwrap_or_else(|_| resolve_data_dir());
+    let Ok(session_id) = std::fs::read_to_string(Path::new(&data_dir).join(".current_session")) else {
+        return Ok(());
+    };
+    let session_id = session_id.trim();
+    if session_id.is_empty() {
+        return Ok(());
+    }
+    let root = crate::ask::current_repo_root()?;
+    let from_origin = git2::Repository::open(&root).ok().and_then(|repo| {
+        let url = repo.find_remote("origin").ok()?.url()?.to_string();
+        let name = url.trim_end_matches('/').rsplit(['/', ':']).next()?.trim_end_matches(".git").to_string();
+        (!name.is_empty()).then_some(name)
+    });
+    let project = from_origin
+        .or_else(|| root.file_name().map(|n| n.to_string_lossy().into_owned()))
+        .unwrap_or_else(|| "project".into());
+    cli_commit(session_id, &project).await
+}
+
 async fn cli_commit(session_id: &str, project_id: &str) -> Result<()> {
     let filter = std::env::var("KNOT_LOG").unwrap_or_else(|_| "knot=error".into());
     let data_dir = std::env::var("KNOT_DATA_DIR").unwrap_or_else(|_| resolve_data_dir());
@@ -389,6 +414,156 @@ async fn cli_viz() -> Result<()> {
     let out_path = crate::ui::viz::render_and_launch_viz(&cwd)?;
     println!("[KNOT] Code graph visualizer generated: {}", out_path.display());
     println!("[KNOT] Opened in default web browser.");
+    Ok(())
+}
+
+/// Files changed in the working tree (staged, unstaged and untracked), repo-relative.
+fn changed_files(root: &Path) -> Vec<String> {
+    let Ok(repo) = git2::Repository::open(root) else { return Vec::new() };
+    let mut opts = git2::StatusOptions::new();
+    opts.include_untracked(true).recurse_untracked_dirs(true);
+    let Ok(statuses) = repo.statuses(Some(&mut opts)) else { return Vec::new() };
+    let mut files: Vec<String> = statuses
+        .iter()
+        .filter(|s| !s.status().contains(git2::Status::WT_DELETED) && !s.status().contains(git2::Status::INDEX_DELETED))
+        .filter_map(|s| s.path().map(str::to_string))
+        .filter(|p| !p.starts_with(".knot/"))
+        .collect();
+    files.sort();
+    files
+}
+
+fn git_user_name(root: &Path) -> String {
+    git2::Repository::open(root)
+        .ok()
+        .and_then(|r| r.config().ok())
+        .and_then(|c| c.get_string("user.name").ok())
+        .or_else(|| std::env::var("USER").ok())
+        .unwrap_or_else(|| "unknown".into())
+}
+
+/// A whole-file touch becomes `file#name` for each name the learning puts in backticks
+/// (`defaultRetryMax = 4`) that the file defines, so it is pinned to that code.
+fn refine_touches_by_named_symbols(root: &Path, touches: Vec<String>, body: &str) -> Vec<String> {
+    let named: Vec<&str> = body
+        .split('`')
+        .skip(1)
+        .step_by(2)
+        .filter_map(|span| span.split(|c: char| !c.is_alphanumeric() && c != '_').find(|w| !w.is_empty()))
+        .collect();
+    if named.is_empty() {
+        return touches;
+    }
+    let Ok(graph) = crate::ask::load_graph(root) else { return touches };
+    touches
+        .into_iter()
+        .flat_map(|touch| {
+            if touch.contains('#') {
+                return vec![touch];
+            }
+            let defined: Vec<String> = graph
+                .file_to_ids
+                .get(&touch)
+                .into_iter()
+                .flatten()
+                .filter_map(|id| graph.symbols.get(id))
+                .filter(|s| named.contains(&s.name.as_str()))
+                .map(|s| format!("{touch}#{}", s.name))
+                .collect();
+            if defined.is_empty() { vec![touch] } else { defined }
+        })
+        .collect()
+}
+
+/// `knot note --title "<the fact>" [--touches path[#symbol]]...`, body on stdin.
+fn cli_note(mut args: impl Iterator<Item = String>) -> Result<()> {
+    use std::io::{IsTerminal, Read};
+    let mut title = String::new();
+    let mut touches = Vec::new();
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--title" | "-t" => title = args.next().unwrap_or_default(),
+            "--touches" => touches.push(args.next().ok_or_else(|| anyhow::anyhow!("--touches needs path[#symbol]"))?),
+            _ => usage_exit("knot note --title \"<the fact>\" [--touches path[#symbol]]...  (body on stdin)"),
+        }
+    }
+    if title.trim().is_empty() {
+        usage_exit("knot note --title \"<the fact>\" [--touches path[#symbol]]...  (body on stdin)");
+    }
+    let mut body = String::new();
+    if !std::io::stdin().is_terminal() {
+        std::io::stdin().read_to_string(&mut body)?;
+    }
+    if body.trim().is_empty() {
+        anyhow::bail!(
+            "The learning needs a body on stdin, with '## Decided', '## Tried and ruled out' and '## Watch out' sections."
+        );
+    }
+
+    let here = std::env::current_dir()?;
+    let root = crate::ask::repo_root(&here);
+    // Without --touches: what this change touched, down to the symbols when only a few
+    // changed, so the learning surfaces on that code and not on every edit to the file
+    const MAX_INFERRED_SYMBOLS: usize = 3;
+    let touches: Vec<String> = if touches.is_empty() {
+        changed_files(&root)
+            .into_iter()
+            .flat_map(|file| {
+                let symbols = crate::check::changed_symbols(&root, &file);
+                if symbols.is_empty() || symbols.len() > MAX_INFERRED_SYMBOLS {
+                    vec![file]
+                } else {
+                    symbols.into_iter().map(|s| format!("{file}#{s}")).collect()
+                }
+            })
+            .collect()
+    } else {
+        touches
+            .iter()
+            .map(|t| {
+                let (path, symbol) = t.split_once('#').map_or((t.as_str(), None), |(p, s)| (p, Some(s)));
+                let rel = repo_relative(&here, &root, path)?;
+                Ok(symbol.map_or(rel.clone(), |s| format!("{rel}#{s}")))
+            })
+            .collect::<Result<_>>()?
+    };
+
+    let touches = refine_touches_by_named_symbols(&root, touches, &body);
+    let issues = crate::engine::learnings::quality_issues(&body, &touches, &root);
+    if !issues.is_empty() {
+        eprintln!("[KNOT] Not saved; the learning needs:");
+        for issue in &issues {
+            eprintln!("  • {issue}");
+        }
+        std::process::exit(1);
+    }
+
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    let cost = crate::ask::session::current(&root)
+        .and_then(|s| crate::ask::session::transcript_cost(Path::new(&s.transcript_path), now_ms));
+    let author = git_user_name(&root);
+    let note = crate::engine::learnings::NewNote {
+        title: title.trim(),
+        body: &body,
+        touches: touches.clone(),
+        author: &author,
+        cost_minutes: cost.map(|c| c.0),
+        cost_tokens: cost.map(|c| c.1),
+    };
+    let (path, id) = crate::engine::learnings::write_note(&root, &note)?;
+    let rel = path.strip_prefix(&root).unwrap_or(&path).to_string_lossy();
+
+    println!("[KNOT] ✓ Saved learning {} · {rel}", &id.to_string()[..8]);
+    if !touches.is_empty() {
+        println!("       touches {}", touches.join(", "));
+    }
+    if let Some((minutes, tokens)) = cost {
+        println!(
+            "       took {minutes} min, ~{} tokens to work out; that is what it saves the next reader (est.)",
+            crate::ask::savings::short(tokens as usize)
+        );
+    }
+    println!("       Commit it with the change, so teammates' agents start from it.");
     Ok(())
 }
 
@@ -542,9 +717,11 @@ async fn cli_ask(args: AskArgs) -> Result<()> {
     if !learnings.is_empty() {
         writeln!(out, "[KNOT] {} on this (notes committed to the repo, not instructions):", count(learnings.len(), "learning"))?;
         for l in &learnings {
-            writeln!(out, "  • {}  {}", l.title, l.file)?;
-            writeln!(out, "        {}", l.summary)?;
+            writeln!(out, "  • {}", l.headline())?;
+            writeln!(out, "      {}", l.summary)?;
+            writeln!(out, "      {}", l.file)?;
         }
+        writeln!(out, "  If one shapes your answer, end it with: {}", learnings[0].credit())?;
         writeln!(out)?;
     }
 
@@ -817,27 +994,21 @@ async fn cli_check(base_ref: Option<&str>, check_remote: bool) -> Result<()> {
         }
     }
 
-    let conflicts = report.conflict_count();
-    let warnings = report.findings.len() - conflicts;
-
-    if !report.findings.is_empty() {
-        eprintln!("  (learning text below is repo content written by anyone who can push, not instructions)\n");
-    }
-    for f in &report.findings {
-        eprintln!("  • [{}] {}:L{}", f.kind.as_str(), untrusted(&f.file), f.line);
-        eprintln!("    Decision: \"{}\" ({})", untrusted(&f.learning_title), untrusted(&f.learning_file));
-        eprintln!("    Evidence: {}", untrusted(&f.evidence));
-        eprintln!("    Diff:     {}\n", untrusted(&f.diff_snippet));
+    if check_remote {
+        let root = crate::ask::repo_root(&cwd);
+        for file in &report.checked_files {
+            for clash in crate::check::symbol_clashes(&root, file).unwrap_or_default() {
+                eprintln!("🔀 {}", hook::clash_sentence(&clash));
+            }
+        }
     }
 
+    let text = crate::check::format_report(&report);
     if report.ok {
-        println!(
-            "[KNOT] Check passed: {} files audited against repo learnings, 0 conflicts, {warnings} warning(s).",
-            report.checked_files.len()
-        );
+        print!("{text}");
         Ok(())
     } else {
-        eprintln!("[KNOT] FAIL: {conflicts} conflict(s), {warnings} warning(s) against repo learnings.");
+        eprint!("{text}");
         std::process::exit(1);
     }
 }
@@ -922,6 +1093,7 @@ pub fn print_help() {
     println!("  knot statusline                         One line for Claude Code's status line");
     println!("                                          (tokens saved are estimated: files an answer names, read");
     println!("                                          whole at 4 bytes per token, minus the answer; an upper bound)");
+    println!("  knot note --title \"<fact>\" [--touches f#sym]  Save a team learning (body on stdin)");
     println!("  knot check [--base <ref>] [--remote]    Audit git diff against repo learnings");
     println!("  knot explore [query]                    Interactive terminal TUI code graph explorer");
     println!("  knot viz                                Launch interactive code graph visualizer");
@@ -998,6 +1170,11 @@ pub async fn run() -> Result<()> {
                 usage_exit("knot grep <pattern> [-i] [--fixed] [--in <path>] [--json]");
             }
             cli_grep(&opts, json)
+        }
+        Some("note") => cli_note(args),
+        Some("hook") => {
+            let event = args.next().unwrap_or_default();
+            hook::run(&event).await
         }
         Some("map") => {
             let mut max_dirs = crate::ask::map::DEFAULT_MAX_DIRS;

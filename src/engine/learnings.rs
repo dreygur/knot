@@ -7,7 +7,7 @@ use uuid::Uuid;
 
 use crate::memory::KnowledgeNode;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct LearningFrontmatter {
     pub id: Uuid,
     pub title: String,
@@ -16,6 +16,12 @@ pub struct LearningFrontmatter {
     pub touches: Vec<String>,
     pub tags: Vec<String>,
     pub scope: String,
+    /// What working this out took in the session that wrote it, so readers can see
+    /// what the learning saves them. Estimated from the session transcript.
+    #[serde(default)]
+    pub cost_minutes: Option<u64>,
+    #[serde(default)]
+    pub cost_tokens: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -49,6 +55,12 @@ fn format_frontmatter(f: &LearningFrontmatter) -> String {
     out.push_str(&format!("author: \"{}\"\n", f.author));
     out.push_str(&format!("date: \"{}\"\n", f.date));
     out.push_str(&format!("scope: \"{}\"\n", f.scope));
+    if let Some(minutes) = f.cost_minutes {
+        out.push_str(&format!("cost_minutes: {minutes}\n"));
+    }
+    if let Some(tokens) = f.cost_tokens {
+        out.push_str(&format!("cost_tokens: {tokens}\n"));
+    }
 
     if !f.touches.is_empty() {
         out.push_str("touches:\n");
@@ -85,6 +97,8 @@ fn parse_yaml_frontmatter(content: &str) -> Option<(LearningFrontmatter, String)
     let mut scope = "project".to_string();
     let mut touches = Vec::new();
     let mut tags = Vec::new();
+    let mut cost_minutes = None;
+    let mut cost_tokens = None;
 
     let mut in_touches = false;
     let mut in_tags = false;
@@ -135,6 +149,8 @@ fn parse_yaml_frontmatter(content: &str) -> Option<(LearningFrontmatter, String)
                 "author" => author = val.to_string(),
                 "date" => date = val.to_string(),
                 "scope" => scope = val.to_string(),
+                "cost_minutes" => cost_minutes = val.parse().ok(),
+                "cost_tokens" => cost_tokens = val.parse().ok(),
                 _ => {}
             }
         }
@@ -148,6 +164,8 @@ fn parse_yaml_frontmatter(content: &str) -> Option<(LearningFrontmatter, String)
         touches,
         tags,
         scope,
+        cost_minutes,
+        cost_tokens,
     };
 
     Some((fm, body))
@@ -278,6 +296,7 @@ pub fn write_learning_file(
         touches,
         tags: node.tags.clone(),
         scope: node.scope.scope_type().to_string(),
+        ..Default::default()
     };
 
     let frontmatter_str = format_frontmatter(&fm);
@@ -285,6 +304,45 @@ pub fn write_learning_file(
 
     fs::write(&file_path, full_content)?;
     Ok(file_path)
+}
+
+/// A learning written directly (`knot note`), as opposed to one promoted from a session.
+pub struct NewNote<'a> {
+    pub title: &'a str,
+    pub body: &'a str,
+    pub touches: Vec<String>,
+    pub author: &'a str,
+    pub cost_minutes: Option<u64>,
+    pub cost_tokens: Option<u64>,
+}
+
+/// Write `.knot/learnings/<date>_<slug>.md` for `note`, never overwriting an existing one.
+pub fn write_note(repo_root: &Path, note: &NewNote) -> Result<(PathBuf, Uuid)> {
+    let dir = learnings_dir(repo_root);
+    fs::create_dir_all(&dir)?;
+    let date = Utc::now().format("%Y-%m-%d").to_string();
+    let slug: String = sanitize_slug(note.title).chars().take(60).collect();
+    let mut file_path = dir.join(format!("{date}_{slug}.md"));
+    let mut n = 2;
+    while file_path.exists() {
+        file_path = dir.join(format!("{date}_{slug}_{n}.md"));
+        n += 1;
+    }
+
+    let id = Uuid::new_v4();
+    let fm = LearningFrontmatter {
+        id,
+        title: note.title.to_string(),
+        author: note.author.to_string(),
+        date,
+        touches: note.touches.clone(),
+        scope: "project".into(),
+        cost_minutes: note.cost_minutes,
+        cost_tokens: note.cost_tokens,
+        ..Default::default()
+    };
+    fs::write(&file_path, format!("{}\n{}\n", format_frontmatter(&fm), note.body.trim()))?;
+    Ok((file_path, id))
 }
 
 pub fn scan_repo_learnings(repo_root: &Path) -> Result<Vec<RepoLearning>> {

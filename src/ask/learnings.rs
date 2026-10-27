@@ -29,6 +29,43 @@ pub struct LearningHit {
     /// Hit files this learning lists in `touches`.
     pub touched: Vec<String>,
     pub score: f64,
+    /// First name of whoever wrote it, and when.
+    pub author: String,
+    pub date: String,
+    /// What it took to work out, when recorded.
+    pub cost_minutes: Option<u64>,
+    pub cost_tokens: Option<u64>,
+}
+
+impl LearningHit {
+    /// `"Keep … at 4" · Maya · Oct 9 · took 12 min, ~27k tokens to work out`
+    pub fn headline(&self) -> String {
+        let date = chrono::NaiveDate::parse_from_str(&self.date, "%Y-%m-%d")
+            .map_or_else(|_| self.date.clone(), |d| d.format("%b %-d").to_string());
+        let mut line = match self.known_author() {
+            Some(author) => format!("\"{}\" · {author} · {date}", self.title),
+            None => format!("\"{}\" · {date}", self.title),
+        };
+        let short = |t: u64| super::savings::short(t as usize);
+        match (self.cost_minutes, self.cost_tokens) {
+            (Some(m), Some(t)) => line.push_str(&format!(" · took {m} min, ~{} tokens to work out", short(t))),
+            (None, Some(t)) => line.push_str(&format!(" · took ~{} tokens to work out", short(t))),
+            (Some(m), None) => line.push_str(&format!(" · took {m} min to work out")),
+            (None, None) => {}
+        }
+        line
+    }
+
+    fn known_author(&self) -> Option<&str> {
+        (!self.author.is_empty() && self.author != "unknown").then_some(self.author.as_str())
+    }
+
+    /// The line to end a reply with when this learning shaped it.
+    pub fn credit(&self) -> String {
+        let cost = self.cost_tokens.map(|t| format!(" · it took ~{} tokens to work out", super::savings::short(t as usize)));
+        let whose = self.known_author().map_or("a team learning".to_string(), |a| format!("{a}'s learning"));
+        format!("📝 Started from {whose}{}", cost.unwrap_or_default())
+    }
 }
 
 /// One line with no control characters, cut to `max` characters.
@@ -105,6 +142,10 @@ pub fn related_learnings(repo_root: &Path, query: &str, hits: &[AskHit]) -> Vec<
                 summary: summary_of(&l.body),
                 touched,
                 score,
+                author: flatten(l.frontmatter.author.split_whitespace().next().unwrap_or("someone"), 40),
+                date: flatten(&l.frontmatter.date, 20),
+                cost_minutes: l.frontmatter.cost_minutes,
+                cost_tokens: l.frontmatter.cost_tokens,
             })
         })
         .collect();

@@ -2,111 +2,16 @@ use anyhow::Result;
 use serde_json::json;
 use std::path::{Path, PathBuf};
 
-const PRE_TOOL_SH: &str = r#"#!/usr/bin/env bash
-TOOL_JSON=$(cat)
-TOOL_NAME=$(printf '%s' "$TOOL_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin).get('tool_name',''))" 2>/dev/null)
-case "$TOOL_NAME" in
-  Bash|Edit|Write)
-    QUERY=$(printf '%s' "$TOOL_JSON" | python3 -c "
-import sys, json
-d = json.load(sys.stdin)
-inp = d.get('tool_input', {})
-print((inp.get('command') or inp.get('file_path') or inp.get('description') or '')[:150])
-" 2>/dev/null)
-    if [ -n "$QUERY" ]; then
-      KNOT_DATA_DIR="${KNOT_DATA_DIR:-$HOME/.knot}" KNOT_LOG=knot=error \
-        __KNOT_BIN__ recall "$QUERY" --limit 3 2>/dev/null || true
-    fi
-    ;;
-esac
-exit 0
-"#;
+/// Markers that identify Knot's own entries in `~/.claude/settings.json`: the current
+/// `knot hook` commands and the older shell script hooks they replace.
+const KNOT_HOOK_MARKERS: &[&str] = &[" hook post-tool", " hook stop", "knot-pre-tool", "knot-stop"];
 
-const STOP_SH: &str = r#"#!/usr/bin/env bash
-KNOT_DATA_DIR="${KNOT_DATA_DIR:-$HOME/.knot}"
-SESSION_FILE="$KNOT_DATA_DIR/.current_session"
-if [ ! -f "$SESSION_FILE" ]; then exit 0; fi
-SESSION_ID=$(cat "$SESSION_FILE")
-if [ -z "$SESSION_ID" ]; then exit 0; fi
-PROJECT=$(git remote get-url origin 2>/dev/null | sed 's|.*/||; s|\.git$||' || basename "$PWD")
-KNOT_DATA_DIR="$KNOT_DATA_DIR" KNOT_LOG=knot=error \
-  __KNOT_BIN__ commit "$SESSION_ID" "$PROJECT" 2>/dev/null || true
-exit 0
-"#;
-
-#[cfg(windows)]
-const PRE_TOOL_PS1: &str = r#"$raw = [Console]::In.ReadToEnd()
-try { $d = $raw | ConvertFrom-Json } catch { exit 0 }
-if ($d.tool_name -notin @('Bash', 'Edit', 'Write')) { exit 0 }
-$inp = $d.tool_input
-$query = @($inp.command, $inp.file_path, $inp.description) | Where-Object { $_ } | Select-Object -First 1
-if (-not $query) { exit 0 }
-if ($query.Length -gt 150) { $query = $query.Substring(0, 150) }
-$env:KNOT_DATA_DIR = if ($env:KNOT_DATA_DIR) { $env:KNOT_DATA_DIR } else { "$env:USERPROFILE\.knot" }
-$env:KNOT_LOG = 'knot=error'
-& '__KNOT_BIN__' recall $query --limit 3 2>$null
-exit 0
-"#;
-
-#[cfg(windows)]
-const STOP_PS1: &str = r#"$dataDir = if ($env:KNOT_DATA_DIR) { $env:KNOT_DATA_DIR } else { "$env:USERPROFILE\.knot" }
-$sessionFile = Join-Path $dataDir '.current_session'
-if (-not (Test-Path $sessionFile)) { exit 0 }
-$sessionId = (Get-Content $sessionFile -ErrorAction SilentlyContinue | Select-Object -First 1)
-if (-not $sessionId) { exit 0 }
-$project = $null
-try {
-    $origin = (git remote get-url origin 2>$null)
-    if ($origin) { $project = [System.IO.Path]::GetFileNameWithoutExtension($origin.Split('/')[-1]) }
-} catch {}
-if (-not $project) { $project = Split-Path -Leaf (Get-Location).Path }
-$env:KNOT_DATA_DIR = $dataDir
-$env:KNOT_LOG = 'knot=error'
-& '__KNOT_BIN__' commit $sessionId $project 2>$null
-exit 0
-"#;
-
-/// Register Claude Code hooks. Returns `Ok(true)` when newly registered, `Ok(false)` when
-/// already in place (idempotent - safe to call on every server start).
-pub fn register(data_dir: &str, bin_path: &Path) -> Result<bool> {
-    let hook_dir = PathBuf::from(data_dir).join("hooks");
-    std::fs::create_dir_all(&hook_dir)?;
-    let bin_str = bin_path.to_string_lossy().into_owned();
-    let (pre_cmd, stop_cmd) = write_hooks(&hook_dir, &bin_str)?;
-    let statusline_cmd = format!("\"{bin_str}\" statusline");
+/// Register Claude Code hooks and, when none is set, the status line. Returns `Ok(true)`
+/// when settings changed, `Ok(false)` when already in place (safe on every server start).
+pub fn register(_data_dir: &str, bin_path: &Path) -> Result<bool> {
+    let bin = format!("\"{}\"", bin_path.to_string_lossy());
     let settings = claude_settings_path()?;
-    merge_settings(&settings, &pre_cmd, &stop_cmd, &statusline_cmd)
-}
-
-#[cfg(unix)]
-fn write_hooks(hook_dir: &Path, bin_str: &str) -> Result<(String, String)> {
-    let pre = hook_dir.join("knot-pre-tool.sh");
-    let stp = hook_dir.join("knot-stop.sh");
-    std::fs::write(&pre, PRE_TOOL_SH.replace("__KNOT_BIN__", bin_str))?;
-    std::fs::write(&stp, STOP_SH.replace("__KNOT_BIN__", bin_str))?;
-    set_executable(&pre)?;
-    set_executable(&stp)?;
-    Ok((
-        pre.to_string_lossy().into_owned(),
-        stp.to_string_lossy().into_owned(),
-    ))
-}
-
-#[cfg(windows)]
-fn write_hooks(hook_dir: &Path, bin_str: &str) -> Result<(String, String)> {
-    let pre = hook_dir.join("knot-pre-tool.ps1");
-    let stp = hook_dir.join("knot-stop.ps1");
-    std::fs::write(&pre, PRE_TOOL_PS1.replace("__KNOT_BIN__", bin_str))?;
-    std::fs::write(&stp, STOP_PS1.replace("__KNOT_BIN__", bin_str))?;
-    let pre_cmd = format!(
-        "powershell.exe -NoProfile -NonInteractive -File \"{}\"",
-        pre.to_string_lossy()
-    );
-    let stp_cmd = format!(
-        "powershell.exe -NoProfile -NonInteractive -File \"{}\"",
-        stp.to_string_lossy()
-    );
-    Ok((pre_cmd, stp_cmd))
+    merge_settings(&settings, &bin)
 }
 
 fn claude_settings_path() -> Result<PathBuf> {
@@ -119,37 +24,72 @@ fn claude_settings_path() -> Result<PathBuf> {
     Ok(PathBuf::from(home).join(".claude").join("settings.json"))
 }
 
-fn merge_settings(settings: &Path, pre_cmd: &str, stop_cmd: &str, statusline_cmd: &str) -> Result<bool> {
+fn is_knot_entry(entry: &serde_json::Value) -> bool {
+    entry
+        .get("hooks")
+        .and_then(|h| h.as_array())
+        .is_some_and(|hooks| {
+            hooks.iter().any(|h| {
+                h.get("command")
+                    .and_then(|c| c.as_str())
+                    .is_some_and(|c| KNOT_HOOK_MARKERS.iter().any(|m| c.contains(m)))
+            })
+        })
+}
+
+/// The hook entries Knot wants, by event.
+fn wanted_hooks(bin: &str) -> Vec<(&'static str, serde_json::Value)> {
+    vec![
+        (
+            // Learnings on the file just read or edited, and teammates' clashing edits
+            "PostToolUse",
+            json!({
+                "matcher": "Read|Edit|Write|MultiEdit",
+                "hooks": [{"type": "command", "command": format!("{bin} hook post-tool")}]
+            }),
+        ),
+        ("Stop", json!({"hooks": [{"type": "command", "command": format!("{bin} hook stop")}]})),
+    ]
+}
+
+fn merge_settings(settings: &Path, bin: &str) -> Result<bool> {
     let mut cfg: serde_json::Value = if settings.exists() {
         let s = std::fs::read_to_string(settings)?;
         serde_json::from_str(&s).unwrap_or_else(|_| json!({}))
     } else {
         json!({})
     };
+    let before = cfg.clone();
 
-    // Idempotency: skip hooks already registered
-    let hooks_present = cfg
-        .pointer("/hooks/PreToolUse")
-        .and_then(|v| v.as_array())
-        .is_some_and(|arr| {
-            arr.iter().any(|e| {
-                e.pointer("/hooks/0/command")
-                    .and_then(|v| v.as_str())
-                    .is_some_and(|s| s.contains("knot-pre-tool"))
-            })
-        });
+    if !cfg.get("hooks").is_some_and(|h| h.is_object()) {
+        cfg["hooks"] = json!({});
+    }
+    // Drop every Knot entry (older script hooks included) and add the current ones, so a
+    // moved binary or an upgrade leaves exactly one set. Other tools' hooks are untouched.
+    for event in ["PreToolUse", "PostToolUse", "Stop"] {
+        if let Some(list) = cfg["hooks"].get_mut(event).and_then(|v| v.as_array_mut()) {
+            list.retain(|e| !is_knot_entry(e));
+        }
+    }
+    for (event, entry) in wanted_hooks(bin) {
+        if !cfg["hooks"].get(event).is_some_and(|v| v.is_array()) {
+            cfg["hooks"][event] = json!([]);
+        }
+        cfg["hooks"][event].as_array_mut().unwrap().push(entry);
+    }
+    for event in ["PreToolUse", "PostToolUse", "Stop"] {
+        if cfg["hooks"].get(event).and_then(|v| v.as_array()).is_some_and(|a| a.is_empty()) {
+            cfg["hooks"].as_object_mut().unwrap().remove(event);
+        }
+    }
     // A status line the user already set, ours or anyone's, is left alone
-    let statusline_added = cfg.get("statusLine").is_none();
-    if statusline_added {
-        cfg["statusLine"] = json!({"type": "command", "command": statusline_cmd});
+    if cfg.get("statusLine").is_none() {
+        cfg["statusLine"] = json!({"type": "command", "command": format!("{bin} statusline")});
     }
-    if !hooks_present {
-        add_hooks(&mut cfg, pre_cmd, stop_cmd);
-    }
-    if hooks_present && !statusline_added {
+
+    if cfg == before {
         return Ok(false);
     }
-
     if let Some(parent) = settings.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -157,41 +97,6 @@ fn merge_settings(settings: &Path, pre_cmd: &str, stop_cmd: &str, statusline_cmd
     content.push('\n');
     std::fs::write(settings, content)?;
     Ok(true)
-}
-
-fn add_hooks(cfg: &mut serde_json::Value, pre_cmd: &str, stop_cmd: &str) {
-    if cfg.get("hooks").is_none() {
-        cfg["hooks"] = json!({});
-    }
-    if cfg["hooks"].get("PreToolUse").is_none() {
-        cfg["hooks"]["PreToolUse"] = json!([]);
-    }
-    if cfg["hooks"].get("Stop").is_none() {
-        cfg["hooks"]["Stop"] = json!([]);
-    }
-
-    cfg["hooks"]["PreToolUse"]
-        .as_array_mut()
-        .unwrap()
-        .push(json!({
-            "matcher": "Bash|Edit|Write",
-            "hooks": [{"type": "command", "command": pre_cmd}]
-        }));
-    cfg["hooks"]["Stop"]
-        .as_array_mut()
-        .unwrap()
-        .push(json!({
-            "hooks": [{"type": "command", "command": stop_cmd}]
-        }));
-}
-
-#[cfg(unix)]
-fn set_executable(path: &Path) -> Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-    let mut perms = std::fs::metadata(path)?.permissions();
-    perms.set_mode(0o755);
-    std::fs::set_permissions(path, perms)?;
-    Ok(())
 }
 
 #[cfg(test)]
@@ -202,40 +107,56 @@ mod tests {
         serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
     }
 
-    #[test]
-    fn merge_adds_hooks_and_statusline_once() {
-        let dir = tempfile::tempdir().unwrap();
-        let settings = dir.path().join("settings.json");
-
-        assert!(merge_settings(&settings, "knot-pre-tool.sh", "knot-stop.sh", "knot statusline").unwrap());
-        assert!(!merge_settings(&settings, "knot-pre-tool.sh", "knot-stop.sh", "knot statusline").unwrap());
-
-        let cfg = read(&settings);
-        assert_eq!(cfg["statusLine"]["command"], "knot statusline");
-        assert_eq!(cfg["hooks"]["PreToolUse"].as_array().unwrap().len(), 1);
+    fn commands(cfg: &serde_json::Value, event: &str) -> Vec<String> {
+        cfg.pointer(&format!("/hooks/{event}"))
+            .and_then(|v| v.as_array())
+            .map(|a| a.iter().filter_map(|e| e.pointer("/hooks/0/command")?.as_str().map(String::from)).collect())
+            .unwrap_or_default()
     }
 
     #[test]
-    fn merge_keeps_an_existing_statusline() {
+    fn registers_hooks_and_statusline_once() {
         let dir = tempfile::tempdir().unwrap();
         let settings = dir.path().join("settings.json");
-        std::fs::write(&settings, r#"{"statusLine":{"type":"command","command":"mine"}}"#).unwrap();
 
-        merge_settings(&settings, "knot-pre-tool.sh", "knot-stop.sh", "knot statusline").unwrap();
-        assert_eq!(read(&settings)["statusLine"]["command"], "mine");
+        assert!(merge_settings(&settings, "\"/bin/knot\"").unwrap());
+        assert!(!merge_settings(&settings, "\"/bin/knot\"").unwrap(), "second run changes nothing");
+
+        let cfg = read(&settings);
+        assert_eq!(commands(&cfg, "PostToolUse"), vec!["\"/bin/knot\" hook post-tool"]);
+        assert_eq!(commands(&cfg, "Stop"), vec!["\"/bin/knot\" hook stop"]);
+        assert_eq!(cfg.pointer("/hooks/PostToolUse/0/matcher").unwrap(), "Read|Edit|Write|MultiEdit");
+        assert_eq!(cfg["statusLine"]["command"], "\"/bin/knot\" statusline");
     }
 
     #[test]
-    fn merge_adds_statusline_when_hooks_were_registered_before_it_existed() {
+    fn replaces_old_script_hooks_and_keeps_other_tools_hooks() {
         let dir = tempfile::tempdir().unwrap();
         let settings = dir.path().join("settings.json");
-        let mut old = json!({});
-        add_hooks(&mut old, "knot-pre-tool.sh", "knot-stop.sh");
-        std::fs::write(&settings, old.to_string()).unwrap();
+        std::fs::write(
+            &settings,
+            json!({
+                "statusLine": {"type": "command", "command": "mine"},
+                "hooks": {
+                    "PreToolUse": [
+                        {"matcher": "Bash|Edit|Write", "hooks": [{"type": "command", "command": "/h/.knot/hooks/knot-pre-tool.sh"}]},
+                        {"matcher": "Bash", "hooks": [{"type": "command", "command": "other-tool check"}]}
+                    ],
+                    "Stop": [{"hooks": [{"type": "command", "command": "/h/.knot/hooks/knot-stop.sh"}]}]
+                }
+            })
+            .to_string(),
+        )
+        .unwrap();
 
-        assert!(merge_settings(&settings, "knot-pre-tool.sh", "knot-stop.sh", "knot statusline").unwrap());
+        assert!(merge_settings(&settings, "\"/new/knot\"").unwrap());
         let cfg = read(&settings);
-        assert_eq!(cfg["statusLine"]["command"], "knot statusline");
-        assert_eq!(cfg["hooks"]["PreToolUse"].as_array().unwrap().len(), 1);
+        assert_eq!(commands(&cfg, "PreToolUse"), vec!["other-tool check"]);
+        assert_eq!(commands(&cfg, "Stop"), vec!["\"/new/knot\" hook stop"]);
+        assert_eq!(cfg["statusLine"]["command"], "mine", "an existing status line is kept");
+
+        // A moved binary replaces its own entries rather than adding a second set
+        merge_settings(&settings, "\"/moved/knot\"").unwrap();
+        assert_eq!(commands(&read(&settings), "PostToolUse"), vec!["\"/moved/knot\" hook post-tool"]);
     }
 }
