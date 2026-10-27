@@ -63,19 +63,66 @@ fn format_status_cli(r: &StatusReport) -> String {
     )
 }
 
-fn parse_limit_args(mut args: impl Iterator<Item = String>) -> usize {
+/// The value of `--limit`/`--depth` (or `-l`/`-d`), 5 when absent. A value that is not a
+/// whole number is an error rather than a silent fallback.
+fn parse_limit_args(mut args: impl Iterator<Item = String>) -> Result<usize> {
     while let Some(arg) = args.next() {
-        if arg == "--limit" || arg == "-l" || arg == "--depth" || arg == "-d" {
-            if let Some(n) = args.next().and_then(|s| s.parse().ok()) {
-                return n;
-            }
-        } else if let Some(n) = arg.strip_prefix("--limit=").and_then(|s| s.parse().ok()) {
-            return n;
-        } else if let Some(n) = arg.strip_prefix("--depth=").and_then(|s| s.parse().ok()) {
-            return n;
+        let value = if ["--limit", "-l", "--depth", "-d"].contains(&arg.as_str()) {
+            Some((arg.clone(), args.next().unwrap_or_default()))
+        } else {
+            ["--limit=", "--depth="]
+                .iter()
+                .find_map(|p| arg.strip_prefix(p).map(|v| (p.trim_end_matches('=').to_string(), v.to_string())))
+        };
+        if let Some((flag, value)) = value {
+            return value
+                .parse()
+                .map_err(|_| anyhow::anyhow!("{flag} needs a whole number, got '{value}'"));
         }
     }
-    5
+    Ok(5)
+}
+
+/// Print a usage line for a command given bad arguments, then exit with status 2.
+fn usage_exit(usage: &str) -> ! {
+    eprintln!("[KNOT] Usage: {usage}");
+    eprintln!("       Run 'knot --help' for all commands.");
+    std::process::exit(2);
+}
+
+const COMMANDS: &[&str] = &[
+    "recall", "commit", "callers", "callees", "blast", "ask", "skeleton", "index", "statusline", "check",
+    "explore", "viz", "status", "logs", "init", "help", "version",
+];
+
+const SUPPORTED_LANGUAGES: &str = "Rust, Python, TypeScript/JavaScript, Go, Java";
+
+/// `1 file`, `3 files`.
+fn count(n: usize, noun: &str) -> String {
+    format!("{n} {noun}{}", if n == 1 { "" } else { "s" })
+}
+
+/// Levenshtein distance, for suggesting the command a typo meant.
+fn edit_distance(a: &str, b: &str) -> usize {
+    let b: Vec<char> = b.chars().collect();
+    let mut prev: Vec<usize> = (0..=b.len()).collect();
+    for (i, ca) in a.chars().enumerate() {
+        let mut row = vec![i + 1];
+        for (j, cb) in b.iter().enumerate() {
+            row.push((prev[j] + usize::from(ca != *cb)).min(prev[j + 1] + 1).min(row[j] + 1));
+        }
+        prev = row;
+    }
+    prev[b.len()]
+}
+
+fn closest_command(typed: &str) -> Option<&'static str> {
+    COMMANDS
+        .iter()
+        .map(|c| (edit_distance(typed, c), *c))
+        .filter(|(d, _)| *d <= 2)
+        .min()
+        .map(|(_, c)| c)
 }
 
 fn is_in_path(dir: &Path) -> bool {
@@ -299,14 +346,35 @@ fn cli_init() -> Result<()> {
     register_path(bin_dir)?;
 
     let cwd = std::env::current_dir()?;
-    if let Ok(targets) = crate::hosts::configure_agent_hosts(&cwd) {
-        if !targets.is_empty() {
+    match crate::hosts::configure_agent_hosts(&cwd) {
+        Ok(targets) if !targets.is_empty() => {
             println!("[KNOT] Configured agent hosts:");
             for t in targets {
                 println!("  • {t}");
             }
         }
+        Ok(_) => {}
+        Err(e) => eprintln!("[KNOT] WARN:  Agent host setup skipped: {e}"),
     }
+
+    // Index now so the first question an agent asks is answered from a warm cache
+    let cache_root = crate::ask::default_cache_root();
+    let started = std::time::Instant::now();
+    match crate::ask::load_corpus(&cwd, Some(&cache_root)) {
+        Ok((corpus, stats)) if stats.parsed + stats.reused > 0 => println!(
+            "[KNOT] Indexed {}, {} in {} ms.",
+            count(stats.parsed + stats.reused, "file"),
+            count(corpus.graph.symbols.len(), "symbol"),
+            started.elapsed().as_millis()
+        ),
+        Ok(_) => println!("[KNOT] No {SUPPORTED_LANGUAGES} files here yet; code commands index on first use."),
+        Err(e) => eprintln!("[KNOT] WARN:  Indexing skipped: {e}"),
+    }
+
+    println!();
+    println!("[KNOT] Next:");
+    println!("  knot ask \"<question>\"      find the code that answers a question");
+    println!("  restart your agent         it loads Knot's MCP tools, hooks and status line on start");
     Ok(())
 }
 
@@ -444,7 +512,11 @@ async fn cli_ask(args: AskArgs) -> Result<()> {
     }
 
     if hits.is_empty() {
-        println!("[KNOT] No code matched '{}'.", args.query);
+        if crate::ast::resolve::list_supported_files(&cwd)?.is_empty() {
+            println!("[KNOT] No {SUPPORTED_LANGUAGES} files under {}.", cwd.display());
+        } else {
+            println!("[KNOT] No code matched '{}'. Try other words, or 'knot skeleton <file>' for one file.", args.query);
+        }
         return Ok(());
     }
     println!("[KNOT] {} hit(s) for '{}':", hits.len(), args.query);
@@ -472,11 +544,11 @@ fn cli_index(quiet: bool) -> Result<()> {
     let (corpus, stats) = result?;
     if !quiet {
         println!(
-            "[KNOT] Indexed {} files ({} parsed, {} unchanged), {} symbols in {} ms.",
-            stats.parsed + stats.reused,
+            "[KNOT] Indexed {} ({} parsed, {} unchanged), {} in {} ms.",
+            count(stats.parsed + stats.reused, "file"),
             stats.parsed,
             stats.reused,
-            corpus.graph.symbols.len(),
+            count(corpus.graph.symbols.len(), "symbol"),
             started.elapsed().as_millis()
         );
     }
@@ -561,6 +633,12 @@ fn cli_statusline() -> Result<()> {
 
 async fn cli_skeleton(file: &str) -> Result<()> {
     let cwd = std::env::current_dir()?;
+    if !cwd.join(file).is_file() {
+        anyhow::bail!("No file '{file}' (paths are relative to {}).", cwd.display());
+    }
+    if crate::ast::SupportedLang::from_path(Path::new(file)).is_none() {
+        anyhow::bail!("'{file}' is not a source file Knot reads ({SUPPORTED_LANGUAGES}).");
+    }
     let graph = crate::ask::load_graph(&cwd)?;
     let items = graph.file_skeleton(file);
 
@@ -577,6 +655,11 @@ async fn cli_skeleton(file: &str) -> Result<()> {
 
 async fn cli_check(base_ref: Option<&str>, check_remote: bool) -> Result<()> {
     let cwd = std::env::current_dir()?;
+    if git2::Repository::discover(&cwd).is_err() {
+        anyhow::bail!(
+            "Not inside a git repository. 'knot check' compares your branch's changes with the repo's learnings; run it from a git checkout."
+        );
+    }
     let report = crate::check::check_git_diff(&cwd, base_ref)?;
 
     let mut remote_collisions = Vec::new();
@@ -708,7 +791,10 @@ pub fn print_help() {
     println!("  knot viz                                Launch interactive code graph visualizer");
     println!("  knot status                             Vault health check");
     println!("  knot logs [--follow|-f]                 View activity log");
-    println!("  knot init                               Register binary directory in PATH");
+    println!("  knot init                               Add knot to PATH, wire agent hosts, index this repo");
+    println!("  knot --version                          Print the version");
+    println!();
+    println!("Code commands read {SUPPORTED_LANGUAGES} under the current directory.");
 }
 
 pub async fn run() -> Result<()> {
@@ -717,19 +803,15 @@ pub async fn run() -> Result<()> {
         Some("recall") => {
             let query = args.next().unwrap_or_default();
             if query.is_empty() {
-                eprintln!("Usage: knot recall <query> [--limit N]");
-                std::process::exit(1);
+                usage_exit("knot recall <query> [--limit N]");
             }
-            let limit = parse_limit_args(args);
+            let limit = parse_limit_args(args)?;
             cli_recall(&query, limit).await
         }
         Some("commit") => {
-            let session_id = args
-                .next()
-                .ok_or_else(|| anyhow::anyhow!("Usage: knot commit <session_id> <project_id>"))?;
-            let project_id = args
-                .next()
-                .ok_or_else(|| anyhow::anyhow!("Usage: knot commit <session_id> <project_id>"))?;
+            let (Some(session_id), Some(project_id)) = (args.next(), args.next()) else {
+                usage_exit("knot commit <session_id> <project_id>");
+            };
             cli_commit(&session_id, &project_id).await
         }
         Some("status") => cli_status().await,
@@ -741,41 +823,36 @@ pub async fn run() -> Result<()> {
         Some("callers") => {
             let symbol = args.next().unwrap_or_default();
             if symbol.is_empty() {
-                eprintln!("Usage: knot callers <symbol>");
-                std::process::exit(1);
+                usage_exit("knot callers <symbol>");
             }
             cli_callers(&symbol).await
         }
         Some("callees") => {
             let symbol = args.next().unwrap_or_default();
             if symbol.is_empty() {
-                eprintln!("Usage: knot callees <symbol>");
-                std::process::exit(1);
+                usage_exit("knot callees <symbol>");
             }
             cli_callees(&symbol).await
         }
         Some("blast") => {
             let symbol = args.next().unwrap_or_default();
             if symbol.is_empty() {
-                eprintln!("Usage: knot blast <symbol> [--depth N]");
-                std::process::exit(1);
+                usage_exit("knot blast <symbol> [--depth N]");
             }
-            let depth = parse_limit_args(args);
+            let depth = parse_limit_args(args)?;
             cli_blast(&symbol, depth).await
         }
         Some("ask") => {
             let ask_args = parse_ask_args(args);
             if ask_args.query.trim().is_empty() {
-                eprintln!("Usage: knot ask <question> [--json] [--source] [-n N] [--no-graph]");
-                std::process::exit(1);
+                usage_exit("knot ask <question> [--json] [--source] [-n N] [--no-graph]");
             }
             cli_ask(ask_args).await
         }
         Some("skeleton") => {
             let file = args.next().unwrap_or_default();
             if file.is_empty() {
-                eprintln!("Usage: knot skeleton <file>");
-                std::process::exit(1);
+                usage_exit("knot skeleton <file>");
             }
             cli_skeleton(&file).await
         }
@@ -800,16 +877,55 @@ pub async fn run() -> Result<()> {
             cli_explore(query.as_deref()).await
         }
         Some("viz") => cli_viz().await,
-        Some("--help") | Some("-h") => {
+        Some("--help") | Some("-h") | Some("help") => {
             print_help();
             Ok(())
         }
+        Some("--version") | Some("-V") | Some("version") => {
+            println!("knot {}", env!("CARGO_PKG_VERSION"));
+            Ok(())
+        }
         Some(cmd) => {
-            eprintln!(
-                "[KNOT] ERROR: Unknown command '{cmd}'. Available: recall, commit, callers, callees, blast, ask, skeleton, index, statusline, check, explore, viz, status, logs, init"
-            );
-            std::process::exit(1);
+            eprintln!("[KNOT] ERROR: Unknown command '{cmd}'.");
+            if let Some(suggestion) = closest_command(cmd) {
+                eprintln!("       Did you mean 'knot {suggestion}'?");
+            }
+            eprintln!("       Run 'knot --help' for all commands.");
+            std::process::exit(2);
         }
         None => run_mcp_server().await,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn args(list: &[&str]) -> impl Iterator<Item = String> {
+        list.iter().map(|s| s.to_string()).collect::<Vec<_>>().into_iter()
+    }
+
+    #[test]
+    fn limit_args_parse_both_forms_and_reject_garbage() {
+        assert_eq!(parse_limit_args(args(&[])).unwrap(), 5);
+        assert_eq!(parse_limit_args(args(&["--depth", "3"])).unwrap(), 3);
+        assert_eq!(parse_limit_args(args(&["--limit=7"])).unwrap(), 7);
+        let err = parse_limit_args(args(&["--depth", "x"])).unwrap_err().to_string();
+        assert_eq!(err, "--depth needs a whole number, got 'x'");
+    }
+
+    #[test]
+    fn typos_suggest_the_nearest_command() {
+        assert_eq!(closest_command("aks"), Some("ask"));
+        assert_eq!(closest_command("calers"), Some("callers"));
+        assert_eq!(closest_command("frobnicate"), None);
+    }
+
+    #[test]
+    fn statusline_reads_project_dir_before_cwd() {
+        let json = r#"{"cwd":"/a/sub","workspace":{"current_dir":"/a/sub","project_dir":"/a"}}"#;
+        assert_eq!(statusline_dir(json), Some(PathBuf::from("/a")));
+        assert_eq!(statusline_dir(r#"{"cwd":"/b"}"#), Some(PathBuf::from("/b")));
+        assert_eq!(statusline_dir("not json"), None);
     }
 }

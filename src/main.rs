@@ -1,6 +1,10 @@
-use anyhow::Result;
-
 #[tokio::main]
-async fn main() -> Result<()> {
-    knot::cli::run().await
+async fn main() {
+    if let Err(e) = knot::cli::run().await {
+        eprintln!("[KNOT] ERROR: {e}");
+        for cause in e.chain().skip(1) {
+            eprintln!("       caused by: {cause}");
+        }
+        std::process::exit(1);
+    }
 }
