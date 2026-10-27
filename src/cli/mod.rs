@@ -1079,7 +1079,7 @@ pub async fn run_mcp_server() -> Result<()> {
 
 pub fn print_help() {
     println!("knot v{}", env!("CARGO_PKG_VERSION"));
-    println!("Persistent memory pool and code graph MCP server");
+    println!("Code graph search and team learnings for coding agents (CLI and MCP server)");
     println!();
     println!("USAGE:");
     println!("  knot                                    Start MCP server (stdio)");
@@ -1106,7 +1106,7 @@ pub fn print_help() {
     println!("  knot init                               Add knot to PATH, wire agent hosts, index this repo");
     println!("  knot --version                          Print the version");
     println!();
-    println!("Code commands read {SUPPORTED_LANGUAGES} under the current directory.");
+    println!("Code commands read {SUPPORTED_LANGUAGES} across the git repository you are in.");
 }
 
 pub async fn run() -> Result<()> {

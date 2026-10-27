@@ -133,6 +133,9 @@ const FETCH_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5 * 6
 /// Start `git fetch` detached when the last one for `root` is older than the interval,
 /// so later edits see teammates' newer pushes without waiting on the network now.
 fn fetch_in_background(root: &Path) {
+    if std::env::var_os("KNOT_NO_FETCH").is_some() {
+        return;
+    }
     let marker = crate::ask::default_cache_root()
         .join("sessions")
         .join(format!("fetch-{}", &blake3::hash(root.to_string_lossy().as_bytes()).to_hex()[..16]));

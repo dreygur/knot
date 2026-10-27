@@ -72,9 +72,7 @@ if [[ -z "$VERSION" ]]; then
   exit 1
 fi
 
-echo "╔═══════════════════════════════════════════╗"
-echo "║      Knot MCP Plugin Installer            ║"
-echo "╚═══════════════════════════════════════════╝"
+echo "Knot installer"
 echo ""
 echo "[KNOT] INFO:  Version  : $VERSION"
 echo "[KNOT] INFO:  Data dir : $DATA_DIR"
@@ -83,12 +81,8 @@ echo ""
 echo "[KNOT] INFO:  This script will:"
 echo "[KNOT] INFO:    1. Download the knot binary to $INSTALL_DIR"
 echo "[KNOT] INFO:    2. Create a data directory at $DATA_DIR"
-echo "[KNOT] INFO:    3. Register knot as an MCP server (Claude Code / OpenCode)"
-echo "[KNOT] INFO:    4. Write hook scripts to $DATA_DIR/hooks/"
-echo "[KNOT] INFO:    5. Add hook entries to ~/.claude/settings.json"
-echo "[KNOT] INFO:    6. Append the Knot Protocol to ~/.clauderules / ~/AGENTS.md"
-echo ""
-echo "[KNOT] INFO:  Nothing outside these paths is touched."
+echo "[KNOT] INFO:    3. Register knot as an MCP server with the agent CLIs it finds"
+echo "[KNOT] INFO:       (Claude Code, Codex) and print the config for every other client"
 echo ""
 
 ARTIFACT="$(detect_target)"
@@ -118,188 +112,52 @@ fi
 BIN_PATH="$(resolve_abs "$BIN_PATH")"
 echo "[KNOT] PERM:  Create data directory $DATA_DIR"
 mkdir -p "$DATA_DIR"
+echo ""
 
-install_opencode() {
-  echo "[KNOT] PERM:  Register MCP server with OpenCode (opencode mcp add)"
-  opencode mcp add --name "$MCP_NAME" --command "$BIN_PATH" \
-    -e "KNOT_DATA_DIR=$DATA_DIR" \
-    -e "KNOT_LOG=knot=info"
-  echo "[KNOT] INFO:  Done. Restart OpenCode, then: opencode mcp list"
-}
+REGISTERED=()
 
-install_claude() {
-  echo "[KNOT] PERM:  Register MCP server with Claude Code (claude mcp add --scope user)"
-  claude mcp add --name "$MCP_NAME" --command "$BIN_PATH" \
-    --scope user \
-    -e "KNOT_DATA_DIR=$DATA_DIR" \
-    -e "KNOT_LOG=knot=info"
-  inject_claude_hooks
-  echo "[KNOT] INFO:  Done. Restart Claude Code, then: claude mcp list"
-}
-
-inject_claude_hooks() {
-  local hook_dir="$DATA_DIR/hooks"
-  local pre_tool_script="$hook_dir/knot-pre-tool.sh"
-  local stop_script="$hook_dir/knot-stop.sh"
-  local claude_settings="$HOME/.claude/settings.json"
-  local marker="knot-pre-tool"
-
-  mkdir -p "$hook_dir"
-
-  # PreToolUse hook: inject relevant memories before Bash/Edit/Write
-  cat > "$pre_tool_script" <<HOOK
-#!/usr/bin/env bash
-TOOL_JSON=\$(cat)
-TOOL_NAME=\$(printf '%s' "\$TOOL_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin).get('tool_name',''))" 2>/dev/null)
-case "\$TOOL_NAME" in
-  Bash|Edit|Write)
-    QUERY=\$(printf '%s' "\$TOOL_JSON" | python3 -c "
-import sys, json
-d = json.load(sys.stdin)
-inp = d.get('tool_input', {})
-print((inp.get('command') or inp.get('file_path') or inp.get('description') or '')[:150])
-" 2>/dev/null)
-    if [ -n "\$QUERY" ]; then
-      KNOT_DATA_DIR="\${KNOT_DATA_DIR:-\$HOME/.knot}" KNOT_LOG=knot=error \\
-        "$BIN_PATH" recall "\$QUERY" --limit 3 2>/dev/null || true
-    fi
-    ;;
-esac
-exit 0
-HOOK
-  chmod +x "$pre_tool_script"
-
-  # Stop hook: commit session memories to project scope
-  cat > "$stop_script" <<HOOK
-#!/usr/bin/env bash
-KNOT_DATA_DIR="\${KNOT_DATA_DIR:-\$HOME/.knot}"
-SESSION_FILE="\$KNOT_DATA_DIR/.current_session"
-if [ ! -f "\$SESSION_FILE" ]; then exit 0; fi
-SESSION_ID=\$(cat "\$SESSION_FILE")
-if [ -z "\$SESSION_ID" ]; then exit 0; fi
-PROJECT=\$(git remote get-url origin 2>/dev/null | sed 's|.*/||; s|\\.git\$||' || basename "\$PWD")
-KNOT_DATA_DIR="\$KNOT_DATA_DIR" KNOT_LOG=knot=error \\
-  "$BIN_PATH" commit "\$SESSION_ID" "\$PROJECT" 2>/dev/null || true
-exit 0
-HOOK
-  chmod +x "$stop_script"
-
-  if ! command -v python3 &>/dev/null; then
-    echo "[KNOT] WARN:  python3 not found - skipping hook registration in $claude_settings"
-    echo "[KNOT] WARN:  Add hooks manually: $pre_tool_script, $stop_script"
-    return
-  fi
-
-  if grep -qF "$marker" "$claude_settings" 2>/dev/null; then
-    echo "[KNOT] INFO:  Knot hooks already in $claude_settings"
-    return
-  fi
-
-  python3 - "$claude_settings" "$pre_tool_script" "$stop_script" <<'PY'
-import sys, json, os
-
-settings_path, pre_tool, stop_hook = sys.argv[1], sys.argv[2], sys.argv[3]
-
-cfg = {}
-if os.path.exists(settings_path):
-    try:
-        with open(settings_path) as f:
-            cfg = json.load(f)
-    except (json.JSONDecodeError, IOError):
-        pass
-
-cfg.setdefault("hooks", {})
-cfg["hooks"].setdefault("PreToolUse", [])
-cfg["hooks"].setdefault("Stop", [])
-
-cfg["hooks"]["PreToolUse"].append({
-    "matcher": "Bash|Edit|Write",
-    "hooks": [{"type": "command", "command": pre_tool}]
-})
-cfg["hooks"]["Stop"].append({
-    "hooks": [{"type": "command", "command": stop_hook}]
-})
-
-os.makedirs(os.path.dirname(os.path.abspath(settings_path)), exist_ok=True)
-with open(settings_path, "w") as f:
-    json.dump(cfg, f, indent=2)
-    f.write("\n")
-PY
-
-  echo "[KNOT] PERM:  Add hook entries to $claude_settings"
-  if [[ $? -eq 0 ]]; then
-    echo "[KNOT] INFO:  Registered hooks in $claude_settings"
-    echo "[KNOT] INFO:    PreToolUse : $pre_tool_script"
-    echo "[KNOT] INFO:    Stop       : $stop_script"
-  else
-    echo "[KNOT] WARN:  Hook registration failed"
-  fi
-}
-
-inject_rules() {
-  local agent="$1"
-  local rules_file=""
-
-  case "$agent" in
-    opencode) rules_file="$HOME/AGENTS.md" ;;
-    claude)   rules_file="$HOME/.clauderules" ;;
-    *)        return ;;
-  esac
-
-  local marker="# Knot Protocol"
-
-  if [[ ! -f "$rules_file" ]]; then
-    touch "$rules_file"
-    echo "[KNOT] INFO:  Created $rules_file"
-  fi
-
-  echo "[KNOT] PERM:  Append Knot Protocol to $rules_file"
-  if grep -qF "$marker" "$rules_file" 2>/dev/null; then
-    echo "[KNOT] INFO:  Knot Protocol already present in $rules_file"
-    return
-  fi
-
-  cat >> "$rules_file" <<'EOF'
-
-# Knot Protocol
-- Before starting any task, call recall_memory to check for prior context.
-- After completing multi-step tasks (exit 0), call save_skill to formalize the procedure.
-- Use recall_skills to find reusable skills before manual execution.
-- Use commit_session to promote session learnings to project scope.
-EOF
-  echo "[KNOT] INFO:  Injected Knot Protocol into $rules_file"
-}
-
-REGISTERED=0
-
-if command -v opencode &>/dev/null; then
-  install_opencode
-  inject_rules "opencode"
-  REGISTERED=1
-fi
-
+# Claude Code. Knot adds its own hooks and status line to ~/.claude/settings.json the
+# first time Claude Code starts it, so nothing else is needed here.
 if command -v claude &>/dev/null; then
-  install_claude
-  inject_rules "claude"
-  REGISTERED=1
+  if claude mcp get "$MCP_NAME" &>/dev/null; then
+    echo "[KNOT] INFO:  Claude Code already has an MCP server named '$MCP_NAME'"
+  elif claude mcp add -s user "$MCP_NAME" -- "$BIN_PATH"; then
+    REGISTERED+=("Claude Code")
+  else
+    echo "[KNOT] WARN:  Claude Code registration failed; run: claude mcp add -s user $MCP_NAME -- '$BIN_PATH'"
+  fi
 fi
 
-if [[ $REGISTERED -eq 0 ]]; then
-  echo "[KNOT] WARN:  No MCP client detected (opencode / claude)."
-  echo ""
-  echo "Manual installation:"
-  echo ""
-  echo "  OpenCode:"
-  echo "    opencode mcp add --name $MCP_NAME --command '$BIN_PATH' \\"
-  echo "      -e 'KNOT_DATA_DIR=$DATA_DIR'"
-  echo ""
-  echo "  Claude Code:"
-  echo "    claude mcp add --name $MCP_NAME --command '$BIN_PATH' \\"
-  echo "      --scope user -e 'KNOT_DATA_DIR=$DATA_DIR'"
+# OpenAI Codex CLI
+if command -v codex &>/dev/null; then
+  if codex mcp add "$MCP_NAME" -- "$BIN_PATH"; then
+    REGISTERED+=("Codex")
+  else
+    echo "[KNOT] WARN:  Codex registration failed; add to ~/.codex/config.toml:"
+    echo "               [mcp_servers.$MCP_NAME]"
+    echo "               command = \"$BIN_PATH\""
+  fi
 fi
 
 echo ""
-echo "[KNOT] INFO:  Binary    : $BIN_PATH"
-echo "[KNOT] INFO:  Data dir  : $DATA_DIR"
-echo "[KNOT] INFO:  Configure : export KNOT_DATA_DIR='<path>'"
-echo "[KNOT] INFO:  Read-only : export KNOT_READ_ONLY=1"
+if [[ ${#REGISTERED[@]} -gt 0 ]]; then
+  echo "[KNOT] INFO:  Registered with: ${REGISTERED[*]}"
+fi
+cat <<EOF
+
+Other agents: Knot is a stdio MCP server; point any client at the binary.
+
+  Gemini CLI    ~/.gemini/settings.json   "mcpServers": { "knot": { "command": "$BIN_PATH" } }
+  OpenCode      opencode.json             "mcp": { "knot": { "type": "local", "command": ["$BIN_PATH"], "enabled": true } }
+  Cursor        ~/.cursor/mcp.json        "mcpServers": { "knot": { "command": "$BIN_PATH" } }
+  Windsurf      ~/.codeium/windsurf/mcp_config.json   "mcpServers": { "knot": { "command": "$BIN_PATH" } }
+  VS Code       .vscode/mcp.json          "servers": { "knot": { "type": "stdio", "command": "$BIN_PATH" } }
+
+Next, in each repository:
+  knot init        add knot to PATH, write agent instructions (AGENTS.md, CLAUDE.md,
+                   GEMINI.md, Cursor rule), and index the code
+
+[KNOT] INFO:  Binary    : $BIN_PATH
+[KNOT] INFO:  Data dir  : $DATA_DIR   (override with KNOT_DATA_DIR)
+[KNOT] INFO:  Read-only : export KNOT_READ_ONLY=1
+EOF
