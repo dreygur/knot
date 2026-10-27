@@ -4,6 +4,9 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
+    # Disabled on 2026-10-27 while GitHub Actions is unavailable on this account (Dependabot
+    # update jobs run on Actions). Remove this line to turn version update PRs back on.
+    open-pull-requests-limit: 0
     ignore:
       # rand 0.8.x is only an optional transitive dep from sqlx-mysql/sqlx-postgres,
       # which are disabled via default-features = false. It is never compiled into our
