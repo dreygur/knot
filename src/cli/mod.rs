@@ -695,7 +695,8 @@ fn statusline_text(status: &crate::ask::IndexStatus, learnings: usize, saved: Op
     }
     if let Some((reply, session)) = saved.filter(|(_, session)| *session > 0) {
         use crate::ask::savings::short;
-        parts.push(format!("saved ~{} this reply, ~{} session", short(reply), short(session)));
+        // An upper bound: it assumes every file an answer names would have been read whole
+        parts.push(format!("≤{} saved this reply, ≤{} session (est.)", short(reply), short(session)));
     }
     parts.join(" · ")
 }
@@ -919,6 +920,8 @@ pub fn print_help() {
     println!("                                          Every match in indexed code, grouped by symbol");
     println!("  knot index [--quiet]                    Refresh the code index (graph commands also do this)");
     println!("  knot statusline                         One line for Claude Code's status line");
+    println!("                                          (tokens saved are estimated: files an answer names, read");
+    println!("                                          whole at 4 bytes per token, minus the answer; an upper bound)");
     println!("  knot check [--base <ref>] [--remote]    Audit git diff against repo learnings");
     println!("  knot explore [query]                    Interactive terminal TUI code graph explorer");
     println!("  knot viz                                Launch interactive code graph visualizer");
