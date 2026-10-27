@@ -114,6 +114,15 @@ pub struct CodeGraph {
 /// same-file match to narrow it, is left unresolved rather than linked to all of them.
 const MAX_UNRESOLVED_CANDIDATES: usize = 3;
 
+/// Method names every standard library defines on many types. A call like `x.is_empty()`
+/// whose receiver type is unknown is far more likely the std method than a repo method
+/// that happens to share the name, so it is not guessed.
+const UBIQUITOUS_METHODS: &[&str] = &[
+    "append", "clear", "clone", "contains", "extend", "filter", "find", "get", "insert", "is_empty", "items",
+    "iter", "join", "keys", "len", "map", "next", "pop", "push", "read", "remove", "split", "to_string",
+    "trim", "update", "values", "write",
+];
+
 /// Path segments that carry no location information.
 const NON_LOCATING_SEGMENTS: &[&str] = &["crate", "self", "super", "Self", "this", "src", "lib", ""];
 
@@ -267,11 +276,33 @@ impl CodeGraph {
             }
         }
 
-        if candidates.len() <= MAX_UNRESOLVED_CANDIDATES {
-            candidates.clone()
-        } else {
-            Vec::new()
+        if candidates.len() > MAX_UNRESOLVED_CANDIDATES {
+            return Vec::new();
         }
+        if qualifier.is_empty() {
+            return candidates.clone();
+        }
+        // A qualified call that no type, import or module path located: `fs::write` and
+        // `path.join` name things outside the repo, so only a method can be guessed, and
+        // not one of the names every std type has.
+        if UBIQUITOUS_METHODS.contains(&bare) {
+            return Vec::new();
+        }
+        // `Options::from_str` names its type; the exact `Type::method` lookup above
+        // already failed, so it is some other type's method, likely outside the repo
+        if qualifier.last().is_some_and(|q| q.starts_with(char::is_uppercase)) {
+            return Vec::new();
+        }
+        // `serde_json::from_str` is a path, and module paths were tried above; only a
+        // call on a value (`x.method()`) can be a repo method reached through a variable
+        if call.contains("::") {
+            return Vec::new();
+        }
+        candidates
+            .iter()
+            .filter(|id| self.symbols.get(*id).is_some_and(|s| s.kind == crate::ast::SymbolKind::Method))
+            .cloned()
+            .collect()
     }
 
     /// Files that import the given symbol (import edges), sorted.
@@ -620,6 +651,28 @@ pub fn start_server() {{
         let graph = CodeGraph::build(root)?;
         let callees: Vec<String> = graph.get_callees("submit").into_iter().map(|s| s.id).collect();
         assert_eq!(callees, vec!["src/api.ts::save".to_string()]);
+        Ok(())
+    }
+
+    #[test]
+    fn test_unlocated_qualified_calls_are_not_guessed() -> Result<()> {
+        let dir = tempdir()?;
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("src"))?;
+        std::fs::write(
+            root.join("src/lib.rs"),
+            "pub struct Aliases;\nimpl Aliases {\n    pub fn is_empty(&self) -> bool { true }\n    pub fn rebalance(&self) {}\n}\n\
+             pub fn write() {}\n",
+        )?;
+        std::fs::write(
+            root.join("src/run.rs"),
+            "fn run(v: Vec<u8>, t: Tree) {\n    v.is_empty();\n    std::fs::write(\"a\", \"b\");\n    Other::rebalance();\n    other_mod::rebalance();\n    t.rebalance();\n}\n",
+        )?;
+
+        let graph = CodeGraph::build(root)?;
+        let callees: Vec<String> = graph.get_callees("run").into_iter().map(|s| s.name).collect();
+        // `t.rebalance()` may well be the repo's method; std names and module paths are not
+        assert_eq!(callees, vec!["Aliases::rebalance".to_string()]);
         Ok(())
     }
 

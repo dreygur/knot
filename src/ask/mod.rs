@@ -2,6 +2,7 @@ mod cache;
 pub mod grep;
 mod index;
 mod learnings;
+pub mod map;
 mod tokenize;
 
 pub use cache::{claim_reindex, index_status, load_corpus, release_reindex, Corpus, IndexStatus, LoadStats};

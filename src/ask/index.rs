@@ -105,8 +105,26 @@ fn is_test_symbol(sym: &SymbolNode, annotated_test: bool) -> bool {
         || file.rsplit('/').next().is_some_and(|f| f.starts_with("test_"))
 }
 
+/// Whether `start_line` (1-indexed) of a Rust file lies after a `#[cfg(test)]` module
+/// opens, where helpers like fixtures carry no test attribute of their own.
+fn in_rust_test_module(file: &str, lines: &[&str], start_line: usize) -> bool {
+    if !file.ends_with(".rs") {
+        return false;
+    }
+    let before = &lines[..start_line.saturating_sub(1).min(lines.len())];
+    before.iter().enumerate().any(|(i, l)| {
+        l.trim() == "#[cfg(test)]"
+            && before[i + 1..]
+                .iter()
+                .map(|n| n.trim())
+                .find(|n| !n.is_empty())
+                .is_some_and(|n| n.starts_with("mod ") || n.starts_with("pub mod "))
+    })
+}
+
 pub(super) fn build_doc(sym: &SymbolNode, lines: &[&str]) -> SymbolDoc {
     let (comment, annotated_test) = leading_comment(lines, sym.span.0);
+    let annotated_test = annotated_test || in_rust_test_module(&sym.file, lines, sym.span.0);
     let doc_text = format!("{comment}\n{}", docstring(lines, sym.span));
 
     let body_start = sym.span.0.min(lines.len());
@@ -153,6 +171,11 @@ impl LexicalIndex {
 
     pub fn doc(&self, idx: usize) -> &SymbolDoc {
         &self.docs[idx]
+    }
+
+    /// Ids of symbols that are test code (by path, name or test attribute).
+    pub fn test_ids(&self) -> std::collections::HashSet<&str> {
+        self.docs.iter().filter(|d| d.is_test).map(|d| d.id.as_str()).collect()
     }
 
     /// BM25F scores for `query`, as (doc index, score), best first.
@@ -220,6 +243,15 @@ mod tests {
         let lines: Vec<&str> = src.lines().collect();
         assert_eq!(leading_comment(&lines, 3), ("/// Normalizes ranks.".to_string(), false));
         assert!(leading_comment(&lines, 6).1);
+    }
+
+    #[test]
+    fn helpers_inside_a_rust_test_module_are_tests() {
+        let src = "pub fn real() {}\n\n#[cfg(test)]\nmod tests {\n    fn fixture() {}\n}\n";
+        let lines: Vec<&str> = src.lines().collect();
+        assert!(!in_rust_test_module("src/a.rs", &lines, 1));
+        assert!(in_rust_test_module("src/a.rs", &lines, 5));
+        assert!(!in_rust_test_module("src/a.py", &lines, 5), "Rust only");
     }
 
     #[test]

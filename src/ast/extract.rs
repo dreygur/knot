@@ -29,6 +29,17 @@ impl SupportedLang {
         }
     }
 
+    /// Display name; TypeScript and JavaScript files share one grammar family.
+    pub fn name(&self) -> &'static str {
+        match self {
+            SupportedLang::Rust => "Rust",
+            SupportedLang::Python => "Python",
+            SupportedLang::TypeScript | SupportedLang::Tsx => "TypeScript/JavaScript",
+            SupportedLang::Go => "Go",
+            SupportedLang::Java => "Java",
+        }
+    }
+
     pub fn tree_sitter_language(&self) -> Language {
         match self {
             SupportedLang::Rust => tree_sitter_rust::LANGUAGE.into(),

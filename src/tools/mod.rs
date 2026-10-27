@@ -620,6 +620,14 @@ impl KnotServer {
         Ok(self.with_alerts(crate::ask::grep::format_report(&report)))
     }
 
+    #[tool(description = "Orientation for an unfamiliar repo: file, symbol and edge counts, languages, directory clusters with their most called symbols, and the most central non-test code by PageRank ($0, no LLM). Call once at the start of work in a new codebase.")]
+    async fn knot_map(&self) -> Result<CallToolResult, McpError> {
+        let cwd = std::env::current_dir().map_err(|e| mcp_err(e.into()))?;
+        let map = crate::ask::map::map(&cwd, Some(&crate::ask::default_cache_root()), crate::ask::map::DEFAULT_MAX_DIRS)
+            .map_err(mcp_err)?;
+        Ok(self.with_alerts(crate::ask::map::format_map(&map)))
+    }
+
     #[tool(description = "Signatures-only view of one file — returns every function, struct, and method signature with exact line spans (~10x token savings vs reading the full file).")]
     async fn knot_file_api(
         &self,

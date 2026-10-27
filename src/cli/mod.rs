@@ -91,7 +91,7 @@ fn usage_exit(usage: &str) -> ! {
 }
 
 const COMMANDS: &[&str] = &[
-    "recall", "commit", "callers", "callees", "blast", "ask", "grep", "skeleton", "index", "statusline", "check",
+    "recall", "commit", "callers", "callees", "blast", "ask", "grep", "map", "skeleton", "index", "statusline", "check",
     "explore", "viz", "status", "logs", "init", "help", "version",
 ];
 
@@ -583,6 +583,17 @@ fn cli_grep(opts: &crate::ask::grep::GrepOptions, json: bool) -> Result<()> {
     Ok(())
 }
 
+fn cli_map(max_dirs: usize, json: bool) -> Result<()> {
+    let cwd = std::env::current_dir()?;
+    let map = crate::ask::map::map(&cwd, Some(&crate::ask::default_cache_root()), max_dirs)?;
+    if json {
+        println!("{}", serde_json::to_string(&map)?);
+    } else {
+        print!("{}", crate::ask::map::format_map(&map));
+    }
+    Ok(())
+}
+
 /// Bring the parse cache up to date with the working tree. Graph commands already do
 /// this on their own; running it ahead of time only makes the next one fast.
 fn cli_index(quiet: bool) -> Result<()> {
@@ -842,6 +853,7 @@ pub fn print_help() {
     println!("  knot blast <symbol> [--depth N]         Transitive blast radius analysis");
     println!("  knot ask <question> [--source] [--json] Ranked code answers with file:line spans");
     println!("  knot skeleton <file>                    File API outline (signatures and line spans)");
+    println!("  knot map [--max-dirs N] [--json]        Orientation: directories, hubs, most central code");
     println!("  knot grep <pattern> [-i] [--fixed] [--in <path>] [--json]");
     println!("                                          Every match in indexed code, grouped by symbol");
     println!("  knot index [--quiet]                    Refresh the code index (graph commands also do this)");
@@ -922,6 +934,23 @@ pub async fn run() -> Result<()> {
                 usage_exit("knot grep <pattern> [-i] [--fixed] [--in <path>] [--json]");
             }
             cli_grep(&opts, json)
+        }
+        Some("map") => {
+            let mut max_dirs = crate::ask::map::DEFAULT_MAX_DIRS;
+            let mut json = false;
+            while let Some(arg) = args.next() {
+                match arg.as_str() {
+                    "--json" => json = true,
+                    "--max-dirs" => {
+                        let value = args.next().unwrap_or_default();
+                        max_dirs = value
+                            .parse()
+                            .map_err(|_| anyhow::anyhow!("--max-dirs needs a whole number, got '{value}'"))?;
+                    }
+                    _ => usage_exit("knot map [--max-dirs N] [--json]"),
+                }
+            }
+            cli_map(max_dirs, json)
         }
         Some("index") => cli_index(args.any(|a| a == "--quiet" || a == "-q")),
         Some("statusline") => cli_statusline(),
