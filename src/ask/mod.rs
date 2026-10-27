@@ -5,7 +5,7 @@ mod tokenize;
 
 pub use cache::{claim_reindex, index_status, load_corpus, release_reindex, Corpus, IndexStatus, LoadStats};
 pub use index::LexicalIndex;
-pub use learnings::{related_learnings, LearningHit};
+pub use learnings::{flatten, related_learnings, LearningHit};
 pub use tokenize::tokenize;
 
 use serde::Serialize;

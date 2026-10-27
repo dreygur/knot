@@ -680,8 +680,18 @@ mod tests {
         let updated = engine.graph.get_node(id).await.unwrap().unwrap();
         assert!(updated.content.contains("synchronous=NORMAL"));
 
-        let results = engine.recall("checkpoint throughput", 5).await.unwrap();
-        assert!(results.iter().any(|r| r.node.id == id));
+        let repo = std::fs::canonicalize(dir.path()).unwrap();
+        let results = engine.recall_in("checkpoint throughput", 5, Some(&repo)).await.unwrap();
+        let hit = results.iter().find(|r| r.node.id == id).expect("learning recalled inside its repo");
+        assert!(hit.annotated_content.starts_with("[REPO LEARNING"), "{}", hit.annotated_content);
+
+        // Another repo, or no repo, never sees it
+        let elsewhere = tempfile::tempdir().unwrap();
+        let other = std::fs::canonicalize(elsewhere.path()).unwrap();
+        for current in [Some(other.as_path()), None] {
+            let results = engine.recall_in("checkpoint throughput", 5, current).await.unwrap();
+            assert!(!results.iter().any(|r| r.node.id == id), "leaked into {current:?}");
+        }
     }
 
     fn write_learning(dir: &std::path::Path, id: uuid::Uuid, touches: &str) {
