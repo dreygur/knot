@@ -1021,6 +1021,7 @@ dependencies = [
  "dirs",
  "git2",
  "ignore",
+ "libc",
  "once_cell",
  "petgraph",
  "ratatui",

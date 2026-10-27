@@ -1,12 +1,15 @@
 use crate::ast::extract::{extract_file_symbols, SupportedLang};
 use crate::memory::node::{KnowledgeNode, VerificationResult, VerificationStatus};
-use std::path::Path;
+use crate::memory::MemoryScope;
+use std::fs::File;
+use std::io::Read;
+use std::path::{Path, PathBuf};
 
 pub fn parse_target(target: &str) -> (&str, Option<&str>) {
     if let Some((path, symbol)) = target.split_once('#') {
         (path.trim(), Some(symbol.trim()))
     } else if let Some((path, symbol)) = target.split_once("::") {
-        if path.contains('/') || path.contains('\\') || path.ends_with(".rs") || path.ends_with(".py") || path.ends_with(".ts") {
+        if path.contains('/') || path.contains('\\') || SupportedLang::from_path(Path::new(path)).is_some() {
             (path.trim(), Some(symbol.trim()))
         } else {
             (target, None)
@@ -20,21 +23,77 @@ pub fn hash_path(path: &str) -> Option<String> {
     crate::utils::calculate_hash(Path::new(path)).ok()
 }
 
-pub fn hash_target(target: &str) -> Option<String> {
-    let (file_path, symbol_opt) = parse_target(target);
-    let path = Path::new(file_path);
-
-    if !path.exists() {
+/// The real path of an open file, read from its descriptor rather than its name.
+#[cfg(target_os = "macos")]
+fn opened_path(file: &File) -> Option<PathBuf> {
+    use std::os::unix::ffi::OsStrExt;
+    use std::os::unix::io::AsRawFd;
+    let mut buf = vec![0u8; libc::PATH_MAX as usize];
+    // SAFETY: F_GETPATH writes at most PATH_MAX bytes, NUL terminated, into `buf`.
+    let rc = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_GETPATH, buf.as_mut_ptr()) };
+    if rc == -1 {
         return None;
     }
+    let len = buf.iter().position(|&b| b == 0)?;
+    Some(PathBuf::from(std::ffi::OsStr::from_bytes(&buf[..len])))
+}
 
-    if let Some(symbol_name) = symbol_opt {
-        match lookup_symbol(path, symbol_name)? {
+#[cfg(target_os = "linux")]
+fn opened_path(file: &File) -> Option<PathBuf> {
+    use std::os::unix::io::AsRawFd;
+    std::fs::read_link(format!("/proc/self/fd/{}", file.as_raw_fd())).ok()
+}
+
+/// Elsewhere the name is resolved separately from the open, which narrows the race
+/// with a swapped symlink but cannot close it.
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+fn opened_path(_file: &File) -> Option<PathBuf> {
+    None
+}
+
+/// Read the file behind `path`. With a `root`, the file actually opened must lie inside
+/// it: the check is made on the open handle and the bytes come from that same handle, so
+/// swapping a path component for a symlink after an earlier check cannot redirect the read.
+pub fn read_target_file(path: &Path, root: Option<&Path>) -> Option<Vec<u8>> {
+    let mut file = File::open(path).ok()?;
+    if let Some(root) = root {
+        let root = std::fs::canonicalize(root).ok()?;
+        let opened = opened_path(&file).or_else(|| std::fs::canonicalize(path).ok())?;
+        if !opened.starts_with(&root) {
+            return None;
+        }
+    }
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes).ok()?;
+    Some(bytes)
+}
+
+/// The directory a memory's target must stay inside: the repository of a learning
+/// synced from `.knot/learnings`, whose project id is the repo's canonical path.
+/// Memories the user saved themselves name any file they like and have no root.
+pub fn containment_root(node: &KnowledgeNode) -> Option<PathBuf> {
+    match &node.scope {
+        MemoryScope::Project(id) if Path::new(id).is_absolute() => Some(PathBuf::from(id)),
+        _ => None,
+    }
+}
+
+pub fn hash_target(target: &str) -> Option<String> {
+    hash_target_within(target, None)
+}
+
+/// [`hash_target`], refusing a file that is not inside `root` when read.
+pub fn hash_target_within(target: &str, root: Option<&Path>) -> Option<String> {
+    let (file_path, symbol_opt) = parse_target(target);
+    let path = Path::new(file_path);
+    let bytes = read_target_file(path, root)?;
+
+    match symbol_opt {
+        Some(symbol_name) => match lookup_symbol_in(path, &String::from_utf8(bytes).ok()?, symbol_name)? {
             SymbolLookup::Found(hash) => Some(hash),
             SymbolLookup::Missing | SymbolLookup::Ambiguous(_) => None,
-        }
-    } else {
-        hash_path(file_path)
+        },
+        None => Some(blake3::hash(&bytes).to_hex().to_string()),
     }
 }
 
@@ -51,12 +110,26 @@ pub enum SymbolLookup {
 /// otherwise a bare name must match exactly one symbol, since hashing an arbitrary
 /// one of several would verify the wrong code.
 pub fn lookup_symbol(path: &Path, symbol_name: &str) -> Option<SymbolLookup> {
-    let lang = SupportedLang::from_path(path)?;
     let content = std::fs::read_to_string(path).ok()?;
-    let symbols = extract_file_symbols(&path.to_string_lossy(), &content, lang).ok()?;
+    lookup_symbol_in(path, &content, symbol_name)
+}
 
-    if let Some(exact) = symbols.iter().find(|s| s.name == symbol_name) {
-        return Some(SymbolLookup::Found(exact.hash.clone()));
+/// [`lookup_symbol`] over source already read. Overloads share a name, so several exact
+/// matches are ambiguous too; each is named by its id suffix (`Type.method#2`).
+fn lookup_symbol_in(path: &Path, content: &str, symbol_name: &str) -> Option<SymbolLookup> {
+    let lang = SupportedLang::from_path(path)?;
+    let file = path.to_string_lossy();
+    let symbols = extract_file_symbols(&file, content, lang).ok()?;
+    let id_name = |id: &str| id.strip_prefix(&format!("{file}::")).unwrap_or(id).to_string();
+
+    let exact: Vec<_> = symbols
+        .iter()
+        .filter(|s| s.name == symbol_name || id_name(&s.id) == symbol_name)
+        .collect();
+    match exact.as_slice() {
+        [only] => return Some(SymbolLookup::Found(only.hash.clone())),
+        [] => {}
+        many => return Some(SymbolLookup::Ambiguous(many.iter().map(|s| id_name(&s.id)).collect())),
     }
 
     let candidates: Vec<_> = symbols
@@ -115,7 +188,19 @@ pub fn verify(node: &KnowledgeNode) -> VerificationResult {
         };
     }
 
-    let current_hash = hash_target(raw_target);
+    // A learning's file must still be inside its repo when read, not only when synced
+    let root = containment_root(node);
+    if let Some(root) = root.as_deref() {
+        if read_target_file(Path::new(file_path), Some(root)).is_none() {
+            return VerificationResult {
+                node_id: node.id,
+                status: VerificationStatus::StaleMissing,
+                detail: format!("Path no longer resolves inside the repository: {file_path}"),
+            };
+        }
+    }
+
+    let current_hash = hash_target_within(raw_target, root.as_deref());
 
     match (&node.content_hash, current_hash) {
         (Some(stored), Some(current)) if stored == &current => VerificationResult {
@@ -243,6 +328,51 @@ pub fn validate_jwt(token: &str) -> bool {
         let res3 = verify(&node);
         assert_eq!(res3.status, VerificationStatus::StaleModified);
 
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn learning_target_swapped_for_symlink_out_of_repo_is_refused() -> anyhow::Result<()> {
+        let repo = tempdir()?;
+        let outside = tempdir()?;
+        let repo_root = std::fs::canonicalize(repo.path())?;
+        std::fs::create_dir_all(repo_root.join("src"))?;
+        std::fs::write(repo_root.join("src/db.rs"), "pub fn open_pool() {}\n")?;
+        std::fs::write(outside.path().join("db.rs"), "pub fn open_pool() {}\n")?;
+
+        let target = format!("{}#open_pool", repo_root.join("src/db.rs").display());
+        let mut node = make_node(Some(target), None);
+        node.scope = MemoryScope::Project(repo_root.to_string_lossy().into_owned());
+        assert_eq!(verify(&node).status, VerificationStatus::Verified);
+
+        // After the sync-time check, `src` becomes a link to a directory outside the repo
+        std::fs::remove_dir_all(repo_root.join("src"))?;
+        std::os::unix::fs::symlink(outside.path(), repo_root.join("src"))?;
+        let result = verify(&node);
+        assert_eq!(result.status, VerificationStatus::StaleMissing);
+        assert!(result.detail.contains("inside the repository"), "{}", result.detail);
+
+        // A memory the user saved has no repo to stay in, so the same link is followed
+        node.scope = MemoryScope::Global;
+        assert_eq!(verify(&node).status, VerificationStatus::Verified);
+        Ok(())
+    }
+
+    #[test]
+    fn overloads_are_ambiguous_until_qualified_by_id() -> anyhow::Result<()> {
+        let dir = tempdir()?;
+        let file_path = dir.path().join("Billing.java");
+        std::fs::write(
+            &file_path,
+            "class Billing {\n  void charge(String id) {}\n  void charge(String id, int cents) {}\n}\n",
+        )?;
+        let base = file_path.to_string_lossy().to_string();
+
+        assert!(hash_target(&format!("{base}#Billing.charge")).is_none());
+        let err = target_error(&format!("{base}#Billing.charge")).unwrap();
+        assert!(err.contains("Billing.charge, Billing.charge#2"), "{err}");
+        assert!(hash_target(&format!("{base}#Billing.charge#2")).is_some());
         Ok(())
     }
 

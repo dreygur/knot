@@ -76,5 +76,9 @@ crossterm = "0.28"
 [target.'cfg(windows)'.dependencies]
 winreg = "0.52"
 
+# Path of an open file descriptor, so Jit-V checks the file it actually read
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [dev-dependencies]
 tempfile = "3"
