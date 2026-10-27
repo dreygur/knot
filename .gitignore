@@ -1,2 +1,25 @@
-/target
-.knot/
+# Rust build artifacts
+/target/
+**/*.rs.bk
+
+# Knot local runtime data (team learnings are committed)
+.knot/*
+!.knot/learnings/
+*.db
+*.db-wal
+*.db-shm
+
+# Reference codebases (kept locally for comparison & benchmarks)
+reference/
+
+# macOS system and AppleDouble metadata files
+.DS_Store
+._*
+.Spotlight-V100
+.Trashes
+
+# Editor & IDE configs
+.idea/
+.vscode/
+*.swp
+*.swo

@@ -1,9 +1,12 @@
 name: Release
 
+# Disabled on 2026-10-27 while GitHub Actions is unavailable on this account: runs only when
+# started by hand. To re-enable tag releases, restore:
+#   push:
+#     tags:
+#       - 'v*'
 on:
-  push:
-    tags:
-      - 'v*'
+  workflow_dispatch:
 
 permissions:
   contents: write

@@ -1,0 +1,32 @@
+{
+  "corpora": {
+    "knot": { "path": "reference/knot-snapshot", "lang": "rust" },
+    "trail-code": { "path": "reference/trail-code", "lang": "typescript" },
+    "requests": { "path": "reference/requests", "lang": "python" }
+  },
+  "questions": [
+    { "corpus": "knot", "q": "insert or replace the protocol block inside an agent instructions file", "expect": [{ "file": "src/hosts/mod.rs", "symbol": "upsert_block_into_file" }] },
+    { "corpus": "knot", "q": "turn a learning title into a safe file name", "expect": [{ "file": "src/engine/learnings.rs", "symbol": "sanitize_slug" }] },
+    { "corpus": "knot", "q": "how many memories exist at each level", "expect": [{ "file": "src/engine/graph.rs", "symbol": "count_nodes_by_scope" }] },
+    { "corpus": "knot", "q": "move a stale memory into the archive", "expect": [{ "file": "src/engine/graph.rs", "symbol": "archive_node" }] },
+    { "corpus": "knot", "q": "which files import this symbol", "expect": [{ "file": "src/ast/resolve.rs", "symbol": "get_importers" }] },
+    { "corpus": "knot", "q": "everything affected transitively if this function changes", "expect": [{ "file": "src/ast/resolve.rs", "symbol": "blast_radius" }] },
+    { "corpus": "knot", "q": "read custom secret patterns from the privacy rules json", "expect": [{ "file": "src/memory/privacy.rs", "symbol": "load_rules" }] },
+
+    { "corpus": "trail-code", "q": "people who recently committed to these files, excluding me and bots", "expect": [{ "file": "src/notes/git-facts.ts", "symbol": "teammatesOn" }] },
+    { "corpus": "trail-code", "q": "make a commit message safe to show the agent", "expect": [{ "file": "src/notes/edit-overlap.ts", "symbol": "cleanSubject" }] },
+    { "corpus": "trail-code", "q": "github username from a noreply email address", "expect": [{ "file": "src/blast/owners.ts", "symbol": "githubHandle" }] },
+    { "corpus": "trail-code", "q": "install trail globally for claude code in the home directory", "expect": [{ "file": "src/hosts/claude-global.ts", "symbol": "installClaudeGlobal" }] },
+    { "corpus": "trail-code", "q": "list source files under a directory without following symlinks", "expect": [{ "file": "src/ingest/fs.ts", "symbol": "walkDir" }] },
+    { "corpus": "trail-code", "q": "validate structural invariants of a built graph", "expect": [{ "file": "src/graph/invariants.ts", "symbol": "checkGraphInvariants" }] },
+    { "corpus": "trail-code", "q": "id for a new learning derived from a hash of its file name", "expect": [{ "file": "src/notes/learning-fields.ts", "symbol": "newLearningId" }] },
+
+    { "corpus": "requests", "q": "extract username and password embedded in a url", "expect": [{ "file": "src/requests/utils.py", "symbol": "get_auth_from_url" }] },
+    { "corpus": "requests", "q": "normalize and encode the request url with params", "expect": [{ "file": "src/requests/models.py", "symbol": "prepare_url" }] },
+    { "corpus": "requests", "q": "recompute proxy settings after a redirect", "expect": [{ "file": "src/requests/sessions.py", "symbol": "rebuild_proxies" }] },
+    { "corpus": "requests", "q": "the default user agent string", "expect": [{ "file": "src/requests/utils.py", "symbol": "default_user_agent" }] },
+    { "corpus": "requests", "q": "iterate over the response one line at a time", "expect": [{ "file": "src/requests/models.py", "symbol": "iter_lines" }] },
+    { "corpus": "requests", "q": "proxies configured through environment variables", "expect": [{ "file": "src/requests/utils.py", "symbol": "get_environ_proxies" }] },
+    { "corpus": "requests", "q": "decode percent escapes for unreserved characters only", "expect": [{ "file": "src/requests/utils.py", "symbol": "unquote_unreserved" }] }
+  ]
+}

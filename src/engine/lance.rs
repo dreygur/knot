@@ -149,7 +149,7 @@ fn l2_normalize(v: &mut [f32]) {
     }
 }
 
-fn cosine_distance(a: &[f32], b: &[f32]) -> f32 {
+pub fn cosine_distance(a: &[f32], b: &[f32]) -> f32 {
     // Vectors are L2-normalised, so dot product == cosine similarity.
     let dot: f32 = a.iter().zip(b.iter()).map(|(x, y)| x * y).sum();
     1.0 - dot.clamp(-1.0, 1.0)

@@ -1,0 +1,51 @@
+{
+  "corpora": {
+    "cobra": {
+      "path": "reference/cobra",
+      "lang": "go",
+      "git": "https://github.com/spf13/cobra.git",
+      "rev": "v1.8.1"
+    },
+    "gson": {
+      "path": "reference/gson",
+      "lang": "java",
+      "git": "https://github.com/google/gson.git",
+      "rev": "gson-parent-2.11.0"
+    }
+  },
+  "questions": [
+    { "corpus": "cobra", "q": "suggest similar command names when the user mistypes a subcommand", "expect": [{ "file": "command.go", "symbol": "SuggestionsFor" }] },
+    { "corpus": "cobra", "q": "edit distance between two strings", "expect": [{ "file": "cobra.go", "symbol": "ld" }] },
+    { "corpus": "cobra", "q": "fail when a command gets more positional arguments than allowed", "expect": [{ "file": "args.go", "symbol": "MaximumNArgs" }] },
+    { "corpus": "cobra", "q": "combine several argument validators into one", "expect": [{ "file": "args.go", "symbol": "MatchAll" }] },
+    { "corpus": "cobra", "q": "walk up to the top level command", "expect": [{ "file": "command.go", "symbol": "Root" }] },
+    { "corpus": "cobra", "q": "copy persistent flags from parent commands into the child", "expect": [{ "file": "command.go", "symbol": "mergePersistentFlags" }, { "file": "command.go", "symbol": "updateParentsPflags" }] },
+    { "corpus": "cobra", "q": "check that every flag marked required was given", "expect": [{ "file": "command.go", "symbol": "ValidateRequiredFlags" }] },
+    { "corpus": "cobra", "q": "look up a flag by name, searching parent commands too", "expect": [{ "file": "command.go", "symbol": "Flag" }, { "file": "command.go", "symbol": "persistentFlag" }] },
+    { "corpus": "cobra", "q": "register a function that suggests values for a flag during shell completion", "expect": [{ "file": "completions.go", "symbol": "RegisterFlagCompletionFunc" }] },
+    { "corpus": "cobra", "q": "write the bash completion script", "expect": [{ "file": "bash_completions.go", "symbol": "GenBashCompletion" }, { "file": "bash_completionsV2.go", "symbol": "GenBashCompletionV2" }] },
+    { "corpus": "cobra", "q": "generate man pages for a command and all its subcommands", "expect": [{ "file": "doc/man_docs.go", "symbol": "GenManTree" }, { "file": "doc/man_docs.go", "symbol": "GenManTreeFromOpts" }] },
+    { "corpus": "cobra", "q": "detach a subcommand from its parent", "expect": [{ "file": "command.go", "symbol": "RemoveCommand" }] },
+    { "corpus": "cobra", "q": "hook functions that run before any command executes", "expect": [{ "file": "cobra.go", "symbol": "OnInitialize" }] },
+    { "corpus": "cobra", "q": "find which subcommand the command line arguments refer to", "expect": [{ "file": "command.go", "symbol": "Find" }, { "file": "command.go", "symbol": "Traverse" }] },
+    { "corpus": "cobra", "q": "add a hidden command that answers shell completion requests", "expect": [{ "file": "completions.go", "symbol": "initCompleteCmd" }] },
+    { "corpus": "cobra", "q": "write markdown docs for every command into a directory", "expect": [{ "file": "doc/md_docs.go", "symbol": "GenMarkdownTree" }, { "file": "doc/md_docs.go", "symbol": "GenMarkdownTreeCustom" }] },
+
+    { "corpus": "gson", "q": "read the next string value from a JSON stream", "expect": [{ "file": "gson/src/main/java/com/google/gson/stream/JsonReader.java", "symbol": "nextString" }] },
+    { "corpus": "gson", "q": "escape quotes and control characters when writing a string", "expect": [{ "file": "gson/src/main/java/com/google/gson/stream/JsonWriter.java", "symbol": "string" }] },
+    { "corpus": "gson", "q": "decide whether a field is left out of serialization", "expect": [{ "file": "gson/src/main/java/com/google/gson/internal/Excluder.java", "symbol": "excludeField" }] },
+    { "corpus": "gson", "q": "turn a camel case field name into lower case words joined by underscores", "expect": [{ "file": "gson/src/main/java/com/google/gson/FieldNamingPolicy.java", "symbol": "separateCamelCase" }] },
+    { "corpus": "gson", "q": "parse an ISO 8601 date string", "expect": [{ "file": "gson/src/main/java/com/google/gson/internal/bind/util/ISO8601Utils.java", "symbol": "parse" }] },
+    { "corpus": "gson", "q": "create an object of a class that has no no-argument constructor", "expect": [{ "file": "gson/src/main/java/com/google/gson/internal/UnsafeAllocator.java", "symbol": "create" }, { "file": "gson/src/main/java/com/google/gson/internal/ConstructorConstructor.java", "symbol": "newUnsafeAllocator" }] },
+    { "corpus": "gson", "q": "element type of a generic collection type", "expect": [{ "file": "gson/src/main/java/com/google/gson/internal/$Gson$Types.java", "symbol": "getCollectionElementType" }] },
+    { "corpus": "gson", "q": "deep copy of a JSON array", "expect": [{ "file": "gson/src/main/java/com/google/gson/JsonArray.java", "symbol": "deepCopy" }] },
+    { "corpus": "gson", "q": "restore tree balance after inserting or removing a map node", "expect": [{ "file": "gson/src/main/java/com/google/gson/internal/LinkedTreeMap.java", "symbol": "rebalance" }] },
+    { "corpus": "gson", "q": "register a custom serializer or deserializer for one type", "expect": [{ "file": "gson/src/main/java/com/google/gson/GsonBuilder.java", "symbol": "registerTypeAdapter" }] },
+    { "corpus": "gson", "q": "output JSON with indentation and line breaks", "expect": [{ "file": "gson/src/main/java/com/google/gson/GsonBuilder.java", "symbol": "setPrettyPrinting" }] },
+    { "corpus": "gson", "q": "skip a value the reader does not need, including nested arrays and objects", "expect": [{ "file": "gson/src/main/java/com/google/gson/stream/JsonReader.java", "symbol": "skipValue" }] },
+    { "corpus": "gson", "q": "serialize map keys that are complex objects as arrays", "expect": [{ "file": "gson/src/main/java/com/google/gson/GsonBuilder.java", "symbol": "enableComplexMapKeySerialization" }] },
+    { "corpus": "gson", "q": "collect the fields of a class that get bound to JSON properties", "expect": [{ "file": "gson/src/main/java/com/google/gson/internal/bind/ReflectiveTypeAdapterFactory.java", "symbol": "getBoundFields" }] },
+    { "corpus": "gson", "q": "parse a JSON string into a tree of elements", "expect": [{ "file": "gson/src/main/java/com/google/gson/JsonParser.java", "symbol": "parseString" }] },
+    { "corpus": "gson", "q": "use the runtime type of a value when it is more specific than the declared type", "expect": [{ "file": "gson/src/main/java/com/google/gson/internal/bind/TypeAdapterRuntimeTypeWrapper.java", "symbol": "getRuntimeTypeIfMoreSpecific" }] }
+  ]
+}
