@@ -1,0 +1,32 @@
+{
+  "corpora": {
+    "taxonomy": {
+      "path": "reference/taxonomy",
+      "lang": "typescript",
+      "git": "https://github.com/shadcn-ui/taxonomy.git",
+      "rev": "298a885"
+    }
+  },
+  "questions": [
+    { "corpus": "taxonomy", "q": "work out whether a user is on the pro plan and when it ends", "expect": [{ "file": "lib/subscription.ts", "symbol": "getUserSubscriptionPlan" }] },
+    { "corpus": "taxonomy", "q": "build a table of contents from markdown headings", "expect": [{ "file": "lib/toc.ts", "symbol": "getTableOfContents" }, { "file": "lib/toc.ts", "symbol": "getItems" }] },
+    { "corpus": "taxonomy", "q": "who is the signed in user on the server", "expect": [{ "file": "lib/session.ts", "symbol": "getCurrentUser" }] },
+    { "corpus": "taxonomy", "q": "merge tailwind class names", "expect": [{ "file": "lib/utils.ts", "symbol": "cn" }] },
+    { "corpus": "taxonomy", "q": "turn a relative path into a full site URL", "expect": [{ "file": "lib/utils.ts", "symbol": "absoluteUrl" }] },
+    { "corpus": "taxonomy", "q": "error thrown when a free user exceeds their post limit", "expect": [{ "file": "lib/exceptions.ts", "symbol": "RequiresProPlanError" }] },
+    { "corpus": "taxonomy", "q": "next-auth configuration with providers and session callbacks", "expect": [{ "file": "lib/auth.ts", "symbol": "authOptions" }] },
+    { "corpus": "taxonomy", "q": "check that a post belongs to the current user before changing it", "expect": [{ "file": "app/api/posts/[postId]/route.ts", "symbol": "verifyCurrentUserHasAccessToPost" }] },
+    { "corpus": "taxonomy", "q": "update a post's title and content through the API", "expect": [{ "file": "app/api/posts/[postId]/route.ts", "symbol": "PATCH" }] },
+    { "corpus": "taxonomy", "q": "create a new post, refusing when the free plan limit is reached", "expect": [{ "file": "app/api/posts/route.ts", "symbol": "POST" }] },
+    { "corpus": "taxonomy", "q": "handle stripe checkout and invoice webhook events", "expect": [{ "file": "app/api/webhooks/stripe/route.ts", "symbol": "POST" }] },
+    { "corpus": "taxonomy", "q": "send the user to stripe checkout or the billing portal", "expect": [{ "file": "app/api/users/stripe/route.ts", "symbol": "GET" }] },
+    { "corpus": "taxonomy", "q": "render the open graph image for a page", "expect": [{ "file": "app/api/og/route.tsx", "symbol": "GET" }] },
+    { "corpus": "taxonomy", "q": "delete a post from the dashboard menu", "expect": [{ "file": "components/post-operations.tsx", "symbol": "deletePost" }, { "file": "components/post-operations.tsx", "symbol": "PostOperations" }] },
+    { "corpus": "taxonomy", "q": "save the post content from the rich text editor", "expect": [{ "file": "components/editor.tsx", "symbol": "onSubmit" }, { "file": "components/editor.tsx", "symbol": "Editor" }] },
+    { "corpus": "taxonomy", "q": "show a toast notification", "expect": [{ "file": "components/ui/use-toast.ts", "symbol": "toast" }, { "file": "components/ui/use-toast.ts", "symbol": "useToast" }] },
+    { "corpus": "taxonomy", "q": "stop the page from scrolling while the mobile menu is open", "expect": [{ "file": "hooks/use-lock-body.ts", "symbol": "useLockBody" }] },
+    { "corpus": "taxonomy", "q": "highlight the heading currently in view as the reader scrolls", "expect": [{ "file": "components/toc.tsx", "symbol": "useActiveItem" }] },
+    { "corpus": "taxonomy", "q": "sign in with an email magic link or github", "expect": [{ "file": "components/user-auth-form.tsx", "symbol": "UserAuthForm" }, { "file": "components/user-auth-form.tsx", "symbol": "onSubmit" }] },
+    { "corpus": "taxonomy", "q": "map markdown elements to styled react components", "expect": [{ "file": "components/mdx-components.tsx", "symbol": "components" }, { "file": "components/mdx-components.tsx", "symbol": "Mdx" }] }
+  ]
+}

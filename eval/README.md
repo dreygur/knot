@@ -48,6 +48,14 @@ and never used to choose settings, so it is the number to trust.
 | held out | trail | 21 | 38% | 43% | 76% | 0.405 |
 | Go and Java | knot | 32 | 50% | 78% | 88% | 0.618 |
 | Go and Java | trail | 32 | 31% | 44% | 78% | 0.370 |
+| TS app (taxonomy) | knot | 20 | 70% | 75% | 75% | 0.717 |
+| TS app (taxonomy) | trail | 20 | 45% | 70% | 80% | 0.581 |
+
+`v2.json` is 20 untuned questions on shadcn-ui/taxonomy at 298a885
+(`git clone https://github.com/shadcn-ui/taxonomy.git reference/taxonomy`), a Next.js
+app built on `@/` path aliases and `export const` components, which no other corpus has.
+Knot's misses there are real (e.g. the open graph question finds the page that builds
+the image URL, not the route that renders it).
 
 `langs.json` covers spf13/cobra v1.8.1 (Go) and google/gson 2.11.0 (Java), 16
 questions each, written from the sources' doc comments after Go and Java support
