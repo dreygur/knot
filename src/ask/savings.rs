@@ -150,7 +150,8 @@ fn last_prompt_ms(transcript: &Path) -> Option<i64> {
         if found.is_some() || window >= len || window >= TRANSCRIPT_MAX_BYTES {
             return found;
         }
-        window *= 8;
+        // Clamped before the next read, so no read exceeds the cap
+        window = (window * 8).min(TRANSCRIPT_MAX_BYTES);
     }
 }
 
