@@ -1,3 +1,10 @@
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/logo-light.png">
+    <img src="assets/logo-dark.png" alt="Knot" width="360">
+  </picture>
+</p>
+
 # Knot
 
 **Code graph search and team learnings for coding agents.**
