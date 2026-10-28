@@ -25,8 +25,9 @@ schemars = "0.8"
 
 # Graph/metadata store (also hosts vectors as JSON blobs in Phase 1)
 # Phase 2: replace with lancedb + candle once protoc is available
-sqlx = { version = "0.8", default-features = false, features = [
-    "runtime-tokio-native-tls",
+sqlx = { version = "0.9", default-features = false, features = [
+    "runtime-tokio",
+    "tls-native-tls",
     "sqlite",
     "uuid",
     "chrono",
