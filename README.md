@@ -121,8 +121,12 @@ writes instructions only for those:
 | `antigravity` | `GEMINI.md` and a skill in `~/.gemini/skills/knot/` |
 | `cursor` | `.cursor/rules/knot.mdc` |
 
-Then it adds Knot to your `PATH` if it isn't there yet and indexes the code into
-`.knot/cache/`. `knot init --agents claude,codex` skips the picker; `knot init --yes` takes
+It also registers Knot's MCP server with each picked agent in that agent's user config
+(the MCP column under [Agent support](#agent-support)): through `claude mcp add` and
+`codex mcp add` for Claude Code and Codex, and by adding a `knot` entry to the JSON file for
+the others. An existing `knot` entry is left as it is, and a config file that doesn't parse
+is reported, not rewritten. Then it adds Knot to your `PATH` if it isn't there yet and indexes
+the code into `.knot/cache/`. `knot init --agents claude,codex` skips the picker; `knot init --yes` takes
 every agent found on this machine. The instructions sit between `<!-- knot:start -->` and
 `<!-- knot:end -->` markers, so re-running `init` updates them in place and leaves the rest
 of each file alone.
@@ -151,9 +155,9 @@ also get learnings and clash warnings pushed to them while they work.
 | Claude Code | `claude mcp add -s user knot -- knot` (or the plugin) | `CLAUDE.md` | Yes, registered automatically on first start |
 | OpenAI Codex CLI | `codex mcp add knot -- knot` | `AGENTS.md` | - |
 | Gemini CLI | `~/.gemini/settings.json`: `"mcpServers": {"knot": {"command": "knot"}}` | `GEMINI.md` | - |
-| OpenCode | `opencode.json`: `"mcp": {"knot": {"type": "local", "command": ["knot"], "enabled": true}}` | `AGENTS.md` | - |
+| OpenCode | `~/.config/opencode/opencode.json`: `"mcp": {"knot": {"type": "local", "command": ["knot"], "enabled": true}}` | `AGENTS.md` | - |
 | Cursor | `~/.cursor/mcp.json`: `"mcpServers": {"knot": {"command": "knot"}}` | `.cursor/rules/knot.mdc` | - |
-| Antigravity | its MCP settings, `command: knot` | `GEMINI.md`, `~/.gemini/skills/knot/SKILL.md` | - |
+| Antigravity | `~/.gemini/config/mcp_config.json`: `"mcpServers": {"knot": {"command": "knot"}}` | `GEMINI.md`, `~/.gemini/skills/knot/SKILL.md` | - |
 | Windsurf | `~/.codeium/windsurf/mcp_config.json`: `"mcpServers": {"knot": {"command": "knot"}}` | `AGENTS.md` if you pick `codex` or `opencode` | - |
 | VS Code (Copilot) | `.vscode/mcp.json`: `"servers": {"knot": {"type": "stdio", "command": "knot"}}` | `AGENTS.md` if you pick `codex` or `opencode` | - |
 | Any other MCP client | stdio server, command `knot`, no arguments | `AGENTS.md` if you pick `codex` or `opencode` | - |

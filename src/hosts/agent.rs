@@ -123,16 +123,27 @@ impl Agent {
         }
     }
 
+    /// The user config under `~` that lists this agent's MCP servers, and the key that
+    /// holds them. OpenCode's is the user one, not the repo's `opencode.json`, because
+    /// the entry carries this machine's binary path.
+    pub fn mcp_config(self) -> (&'static str, &'static str) {
+        match self {
+            Agent::Claude => (".claude.json", "mcpServers"),
+            Agent::Codex => (".codex/config.toml", "mcp_servers"),
+            Agent::Gemini => (".gemini/settings.json", "mcpServers"),
+            Agent::Antigravity => (".gemini/config/mcp_config.json", "mcpServers"),
+            Agent::Cursor => (".cursor/mcp.json", "mcpServers"),
+            Agent::OpenCode => (".config/opencode/opencode.json", "mcp"),
+        }
+    }
+
     /// Whether this agent's user config under `home` has a `knot` MCP entry. A missing or
     /// unreadable file counts as not wired.
     pub fn knot_wired(self, home: &Path) -> bool {
-        let (file, key) = match self {
-            Agent::Claude => (".claude.json", "mcpServers"),
-            Agent::Codex => return toml_has_knot(&home.join(".codex/config.toml")),
-            Agent::Gemini | Agent::Antigravity => (".gemini/settings.json", "mcpServers"),
-            Agent::Cursor => (".cursor/mcp.json", "mcpServers"),
-            Agent::OpenCode => (".config/opencode/opencode.json", "mcp"),
-        };
+        let (file, key) = self.mcp_config();
+        if self == Agent::Codex {
+            return toml_has_knot(&home.join(file));
+        }
         let Ok(text) = std::fs::read_to_string(home.join(file)) else { return false };
         serde_json::from_str::<serde_json::Value>(&text).is_ok_and(|json| json.get(key).and_then(|s| s.get("knot")).is_some())
     }
@@ -197,6 +208,7 @@ mod tests {
 
         put(home.path(), ".claude.json", r#"{"mcpServers":{"knot":{}}}"#);
         put(home.path(), ".gemini/settings.json", r#"{"mcpServers":{"knot":{}}}"#);
+        put(home.path(), ".gemini/config/mcp_config.json", r#"{"mcpServers":{"knot":{}}}"#);
         put(home.path(), ".config/opencode/opencode.json", r#"{"mcp":{"knot":{}}}"#);
         put(home.path(), ".codex/config.toml", "[mcp_servers.knot]\ncommand = \"knot\"\n");
         assert_eq!(wired(home.path()), Agent::ALL.to_vec());

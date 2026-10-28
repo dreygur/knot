@@ -176,7 +176,7 @@ fn register_repo_in(repo_root: &Path, bin_path: &Path, home: &Path) -> Result<Sw
     Ok(result)
 }
 
-fn refuse_symlink(path: &Path) -> Result<()> {
+pub(crate) fn refuse_symlink(path: &Path) -> Result<()> {
     if std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink()) {
         anyhow::bail!("{} is a symlink; Knot does not write through it", path.display());
     }
@@ -184,7 +184,7 @@ fn refuse_symlink(path: &Path) -> Result<()> {
 }
 
 /// Write to a sibling temp file and rename it into place, so a crash leaves the old file.
-fn write_atomic(path: &Path, content: &str) -> Result<()> {
+pub(crate) fn write_atomic(path: &Path, content: &str) -> Result<()> {
     refuse_symlink(path)?;
     let mut name = path.file_name().unwrap_or_default().to_os_string();
     name.push(".knot-tmp");
@@ -197,7 +197,7 @@ fn write_atomic(path: &Path, content: &str) -> Result<()> {
 
 /// A missing file is `{}`; one that cannot be read or is not a JSON object is an error
 /// naming it, so a hand-edited file is never overwritten from an empty object.
-fn read_settings(path: &Path) -> Result<serde_json::Value> {
+pub(crate) fn read_settings(path: &Path) -> Result<serde_json::Value> {
     let text = match std::fs::read_to_string(path) {
         Ok(t) => t,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(json!({})),

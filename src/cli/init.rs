@@ -5,6 +5,7 @@ use anyhow::{bail, Result};
 
 use super::picker::{self, Picker, Row};
 use super::{count, register_path, PathChange, SUPPORTED_LANGUAGES};
+use crate::hosts::mcp::{self, Registered};
 use crate::hosts::{Agent, Target};
 
 const USAGE: &str = "knot init [--agents <id,id...>] [--swaps] [-y|--yes]";
@@ -102,14 +103,20 @@ fn summary(agent: Agent) -> String {
     std::iter::once(repo.join(", ")).chain(home).collect::<Vec<_>>().join(" · ")
 }
 
+/// Where `agent` lists its MCP servers, as the person reads it.
+fn mcp_place(agent: Agent) -> String {
+    format!("~/{}", agent.mcp_config().0)
+}
+
+/// Every row writes outside the repo, since each agent's MCP entry is in its user config.
 fn picker_rows(found: &[(Agent, bool)]) -> Vec<Row> {
     found
         .iter()
         .map(|&(agent, detected)| Row {
             label: agent.id().to_string(),
             detected,
-            summary: summary(agent),
-            machine_wide: agent.targets().iter().any(|t| matches!(t, Target::Home(_))),
+            summary: format!("{} · + MCP {}", summary(agent), mcp_place(agent)),
+            machine_wide: true,
         })
         .collect()
 }
@@ -180,13 +187,27 @@ fn tilde(path: &Path, home: &Path) -> String {
     }
 }
 
-/// Write the picked agents' files and index the repo, returning one report line each.
-fn wire(root: &Path, home: &Path, agents: &[Agent]) -> Result<Vec<String>> {
+/// Register Knot's MCP server with `agent`, as one report line.
+fn mcp_line(agent: Agent, home: &Path, bin: &Path, run: mcp::Runner) -> String {
+    let place = mcp_place(agent);
+    let (mark, detail) = match mcp::register(agent, home, bin, run) {
+        Registered::Added => (DONE, format!("added to {place}")),
+        Registered::AlreadyThere => (DONE, format!("already in {place}")),
+        Registered::NoCli(command) => (NOTE, format!("no {} command found; run: {command}", agent.id())),
+        Registered::Failed(e) => (FAILED, format!("not added: {e}")),
+    };
+    line(mark, "mcp", &format!("{} · {detail}", agent.id()))
+}
+
+/// Write the picked agents' files, register Knot's MCP server with each, and index the
+/// repo, returning one report line each. The index line is always last.
+fn wire(root: &Path, home: &Path, agents: &[Agent], bin: &Path, run: mcp::Runner) -> Result<Vec<String>> {
     crate::hosts::configure_agents(root, home, agents)?;
     let mut lines: Vec<String> = agents.iter().map(|a| line(DONE, a.id(), &summary(*a))).collect();
     if agents.is_empty() {
         lines.push(line(NOTE, "agents", "none picked · knot init --agents <id> wires one by name"));
     }
+    lines.extend(agents.iter().map(|a| mcp_line(*a, home, bin, run)));
 
     // Index now so the first question an agent asks is answered from a warm cache
     let started = std::time::Instant::now();
@@ -241,11 +262,10 @@ pub(super) fn run(args: impl IntoIterator<Item = String>) -> Result<()> {
     }
 
     let root = crate::ask::current_repo_root()?;
-    let mut lines = wire(&root, &home, &agents)?;
+    let mut lines = wire(&root, &home, &agents, &bin, &mcp::run_cli)?;
     crate::card::repos::register(&home, &root);
     if swaps {
-        // After the agent lines, before the index line
-        lines.insert(agents.len().max(1), swaps_line(&root, &agents, &bin));
+        lines.insert(lines.len() - 1, swaps_line(&root, &agents, &bin));
     }
     for l in lines.into_iter().chain(next_steps(&agents)) {
         println!("{l}");
@@ -294,17 +314,48 @@ mod tests {
         assert_eq!(summary(Agent::Antigravity), "GEMINI.md · + ~/.gemini/skills/knot/SKILL.md");
     }
 
+    fn no_claude(_: &str, _: &[String]) -> mcp::Ran {
+        mcp::Ran::Missing
+    }
+
+    #[test]
+    fn every_picked_agent_gets_one_mcp_line() {
+        let repo = tempfile::tempdir().unwrap();
+        let home = tempfile::tempdir().unwrap();
+        let ran = |program: &str, _: &[String]| if program == "codex" { mcp::Ran::Done } else { mcp::Ran::Missing };
+
+        let lines = wire(repo.path(), home.path(), &Agent::ALL, Path::new("/bin/knot"), &ran).unwrap();
+
+        let mcp: Vec<&str> = lines.iter().map(String::as_str).filter(|l| l.contains(" mcp ")).collect();
+        assert_eq!(
+            mcp,
+            vec![
+                "· mcp           claude · no claude command found; run: claude mcp add -s user knot -- /bin/knot",
+                "✓ mcp           codex · added to ~/.codex/config.toml",
+                "✓ mcp           opencode · added to ~/.config/opencode/opencode.json",
+                "✓ mcp           gemini · added to ~/.gemini/settings.json",
+                "✓ mcp           antigravity · added to ~/.gemini/config/mcp_config.json",
+                "✓ mcp           cursor · added to ~/.cursor/mcp.json",
+            ]
+        );
+        assert!(lines.last().unwrap().contains(" index "), "the index line stays last: {lines:?}");
+
+        let again = wire(repo.path(), home.path(), &[Agent::Cursor], Path::new("/bin/knot"), &ran).unwrap();
+        assert_eq!(again[1], "✓ mcp           cursor · already in ~/.cursor/mcp.json");
+    }
+
     #[test]
     fn wire_writes_only_picked_agents_and_indexes_into_the_repo() {
         let repo = tempfile::tempdir().unwrap();
         let home = tempfile::tempdir().unwrap();
         std::fs::write(repo.path().join("lib.rs"), "pub fn alpha() {}\n").unwrap();
 
-        let lines = wire(repo.path(), home.path(), &[Agent::Claude]).unwrap();
+        let lines = wire(repo.path(), home.path(), &[Agent::Claude], Path::new("/bin/knot"), &no_claude).unwrap();
 
         assert_eq!(lines[0], "✓ claude        CLAUDE.md");
-        assert!(lines[1].starts_with("✓ index         1 file, 1 symbol in "), "{}", lines[1]);
-        assert!(lines[1].ends_with(" ms · .knot/cache/"), "{}", lines[1]);
+        assert_eq!(lines[1], "· mcp           claude · no claude command found; run: claude mcp add -s user knot -- /bin/knot");
+        assert!(lines[2].starts_with("✓ index         1 file, 1 symbol in "), "{}", lines[2]);
+        assert!(lines[2].ends_with(" ms · .knot/cache/"), "{}", lines[2]);
         assert!(repo.path().join("CLAUDE.md").is_file());
         assert!(!repo.path().join("AGENTS.md").exists());
         assert!(repo.path().join(".knot/cache/index.json").is_file());
@@ -315,7 +366,7 @@ mod tests {
     fn wire_with_no_agents_still_indexes_and_says_so() {
         let repo = tempfile::tempdir().unwrap();
         let home = tempfile::tempdir().unwrap();
-        let lines = wire(repo.path(), home.path(), &[]).unwrap();
+        let lines = wire(repo.path(), home.path(), &[], Path::new("/bin/knot"), &no_claude).unwrap();
         assert_eq!(lines[0], "· agents        none picked · knot init --agents <id> wires one by name");
         assert!(lines[1].starts_with("· index         no "), "{}", lines[1]);
         assert_eq!(next_steps(&[]).len(), 1, "no restart hint when nothing was wired");

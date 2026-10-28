@@ -1,4 +1,5 @@
 mod agent;
+pub mod mcp;
 
 pub use agent::{Agent, Target};
 
