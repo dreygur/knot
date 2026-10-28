@@ -93,3 +93,9 @@ libc = "0.2"
 
 [dev-dependencies]
 tempfile = "3"
+
+# Release builds kept debug symbols and skipped LTO, so the binary grew past 26 MB
+[profile.release]
+strip = true
+lto = "thin"
+codegen-units = 1
