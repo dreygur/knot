@@ -265,6 +265,10 @@ What changes from prototype to product:
 - **Layout.** The folder-anchored ForceAtlas2 setup in `build.js` (see the learning on
   src/ui/viz.rs) runs either in the page, in a web worker, or in Rust before writing.
   Builder's choice; the result must match the prototype's clustering.
+- **Brand.** The header shows the Knot logo from `assets/`: `logo-light.png` on the dark
+  theme, `logo-dark.png` on the light one. The tab icon is the mark: `mark-light-64.png`
+  and `mark-dark-64.png`, picked with `media="(prefers-color-scheme: …)"` on the icon
+  links. Both are inlined as data URIs, so the file stays offline.
 - **Real data.** Folder, kind, line and PageRank come from Knot's graph (src/ast/pagerank.rs
   already computes centrality), and learnings come from `active_learnings`.
 - **Fixes.** The output is written through `state_file`, not a plain `fs::write`, so a
