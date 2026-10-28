@@ -6,9 +6,7 @@ use anyhow::Result;
 use rmcp::{transport::stdio, ServiceExt};
 use std::io::{BufRead, BufReader, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
-use uuid::Uuid;
 
-use crate::engine::{CommitReport, RecallResult, StatusReport, StorageEngine};
 use crate::hooks;
 use crate::logging;
 use crate::ask::render;
@@ -42,8 +40,8 @@ fn records_in(data_dir: &str) -> Option<PathBuf> {
     dir.is_absolute().then(|| dir.join(crate::ask::handoff::RECORDS_FILE))
 }
 
-/// The private file that proves which handoff notes `knot handoff save` wrote, in the
-/// vault's folder so the repo can never supply it.
+/// The private file that proves which handoff notes `knot handoff save` wrote, in
+/// Knot's data folder so the repo can never supply it.
 fn handoff_records() -> Option<PathBuf> {
     records_in(&data_dir())
 }
@@ -55,55 +53,6 @@ fn log_path_for(data_dir: &str) -> PathBuf {
 /// The `KNOT_LOG` filter, else `default`.
 fn log_filter(default: &str) -> String {
     std::env::var("KNOT_LOG").unwrap_or_else(|_| default.into())
-}
-
-/// Log to the activity log and open the vault in the data folder. Keep the guard
-/// alive while logging.
-async fn open_engine() -> Result<(StorageEngine, Option<logging::Guard>)> {
-    let data_dir = data_dir();
-    let guard = logging::init(&log_filter(LOG_FILTER), Some(&log_path_for(&data_dir)));
-    Ok((StorageEngine::new(&data_dir).await?, guard))
-}
-
-fn format_recall_cli(results: &[RecallResult]) -> String {
-    let mut out = format!(
-        "[KNOT] {} relevant memor{}:\n\n",
-        results.len(),
-        if results.len() == 1 { "y" } else { "ies" }
-    );
-    for (i, r) in results.iter().enumerate() {
-        let stale = if r.is_stale { " [STALE]" } else { "" };
-        let preview: String = r.annotated_content.chars().take(120).collect();
-        out.push_str(&format!(
-            "{}. [{}]{} score={:.2}\n   {}\n\n",
-            i + 1,
-            r.node.scope.scope_type(),
-            stale,
-            r.node.utility_score,
-            preview,
-        ));
-    }
-    out
-}
-
-fn format_commit_cli(r: &CommitReport) -> String {
-    let mut out = format!(
-        "[KNOT] commit: {} promoted, {} rejected (project={})\n",
-        r.promoted_count(),
-        r.rejected_count(),
-        r.project_id,
-    );
-    for (id, issues) in &r.learnings_held {
-        out.push_str(&format!("[KNOT] learning not written for {id}: {}\n", issues.join("; ")));
-    }
-    out
-}
-
-fn format_status_cli(r: &StatusReport) -> String {
-    format!(
-        "[KNOT] vault   L1(session)={} L2(project)={} L3(global)={} skills={} ghosts={} db={}\n",
-        r.l1_nodes, r.l2_nodes, r.l3_nodes, r.skills, r.ghost_count, r.db_health,
-    )
 }
 
 /// The value of `--limit`/`--depth` (or `-l`/`-d`), 5 when absent. A value that is not a
@@ -134,7 +83,7 @@ fn usage_exit(usage: &str) -> ! {
 }
 
 const COMMANDS: &[&str] = &[
-    "recall", "commit", "callers", "callees", "blast", "ask", "grep", "map", "note", "handoff", "skeleton", "index", "statusline", "check",
+    "callers", "callees", "blast", "ask", "grep", "map", "note", "handoff", "skeleton", "index", "statusline", "check",
     "explore", "viz", "status", "logs", "init", "card", "help", "version",
 ];
 
@@ -282,60 +231,8 @@ fn register_path(bin_dir: &Path) -> Result<PathChange> {
     Ok(PathChange::Added { place: "the User PATH".into(), activate: "open a new terminal".into() })
 }
 
-async fn cli_recall(query: &str, limit: usize) -> Result<()> {
-    let (engine, _guard) = open_engine().await?;
+fn cli_status() -> Result<()> {
     warn_if_not_in_path();
-    if let Ok(cwd) = crate::ask::current_repo_root() {
-        let _ = engine.refresh_centrality(&cwd).await;
-    }
-    let results = engine.recall(query, limit.min(20)).await?;
-    if !results.is_empty() {
-        print!("{}", format_recall_cli(&results));
-    }
-    Ok(())
-}
-
-/// The Stop hook: promote this MCP server session's verified memories into the project,
-/// named after the repo's origin (or its directory).
-async fn commit_current_session() -> Result<()> {
-    let data_dir = data_dir();
-    let Ok(session_id) = std::fs::read_to_string(Path::new(&data_dir).join(".current_session")) else {
-        return Ok(());
-    };
-    let session_id = session_id.trim();
-    if session_id.is_empty() {
-        return Ok(());
-    }
-    let root = crate::ask::current_repo_root()?;
-    let from_origin = git2::Repository::open(&root).ok().and_then(|repo| {
-        let url = repo.find_remote("origin").ok()?.url().ok()?.to_string();
-        let name = url.trim_end_matches('/').rsplit(['/', ':']).next()?.trim_end_matches(".git").to_string();
-        (!name.is_empty()).then_some(name)
-    });
-    let project = from_origin
-        .or_else(|| root.file_name().map(|n| n.to_string_lossy().into_owned()))
-        .unwrap_or_else(|| "project".into());
-    commit_session_report(session_id, &project).await.map(|_| ())
-}
-
-async fn cli_commit(session_id: &str, project_id: &str) -> Result<()> {
-    warn_if_not_in_path();
-    let report = commit_session_report(session_id, project_id).await?;
-    print!("{}", format_commit_cli(&report));
-    Ok(())
-}
-
-/// Promote a session's verified memories, printing nothing (hooks answer in JSON).
-async fn commit_session_report(session_id: &str, project_id: &str) -> Result<CommitReport> {
-    let (engine, _guard) = open_engine().await?;
-    engine.commit_session(session_id, project_id).await
-}
-
-async fn cli_status() -> Result<()> {
-    let (engine, _guard) = open_engine().await?;
-    warn_if_not_in_path();
-    let status = engine.knot_status().await?;
-    print!("{}", format_status_cli(&status));
     print!("{}", crate::ask::repo_summary(&crate::ask::current_repo_root()?));
     if hooks::usage_warnings_off() {
         println!("[KNOT] {}", hooks::USAGE_WARNINGS_OFF);
@@ -997,24 +894,11 @@ fn cli_explore(query: Option<&str>) -> Result<()> {
 pub async fn run_mcp_server() -> Result<()> {
     let filter = log_filter(MCP_LOG_FILTER);
     let data_dir = data_dir();
-
-    let is_new = !Path::new(&data_dir).exists();
     std::fs::create_dir_all(&data_dir)?;
-
     let _guard = logging::init(&filter, Some(&log_path_for(&data_dir)));
-
-    if is_new {
-        eprintln!("[KNOT] INFO:  Initialized new memory vault at {}", data_dir);
-    }
 
     warn_if_not_in_path();
     tracing::info!("v{} data_dir={data_dir}", env!("CARGO_PKG_VERSION"));
-
-    let engine = StorageEngine::new(&data_dir).await?;
-    let session_id = Uuid::new_v4().to_string();
-    tracing::info!("session={session_id}");
-
-    let _ = std::fs::write(format!("{data_dir}/.current_session"), &session_id);
 
     if let Ok(bin_path) = std::env::current_exe() {
         match hooks::register(&bin_path) {
@@ -1029,22 +913,7 @@ pub async fn run_mcp_server() -> Result<()> {
         crate::card::register_current(&home, &cwd);
     }
 
-    // Syncing writes repo learnings into the vault, which a read-only vault must not get
-    let read_only = std::env::var("KNOT_READ_ONLY").is_ok();
-    if let Some(root) = std::env::current_dir()
-        .ok()
-        .and_then(|cwd| git2::Repository::discover(cwd).ok())
-        .and_then(|repo| repo.workdir().map(|p| p.to_path_buf()))
-        .filter(|_| !read_only)
-    {
-        match engine.sync_repo_learnings(&root).await {
-            Ok(0) => {}
-            Ok(n) => tracing::info!("Indexed {n} repo learning(s) from {}", root.display()),
-            Err(e) => tracing::warn!("Repo learnings sync failed: {e}"),
-        }
-    }
-
-    let mut server = KnotServer::new(engine, session_id);
+    let mut server = KnotServer::new();
     if let Ok(cwd) = std::env::current_dir() {
         server = server.with_branch_monitor(crate::check::start_branch_monitor(cwd));
     }
@@ -1060,8 +929,6 @@ pub fn print_help() {
     println!();
     println!("USAGE:");
     println!("  knot                                    Start MCP server (stdio)");
-    println!("  knot recall <query> [--limit N]         Semantic search");
-    println!("  knot commit <session_id> <project_id>   Commit session to project");
     println!("  knot callers <symbol>                   Find direct callers of a symbol");
     println!("  knot callees <symbol>                   Find direct callees of a symbol");
     println!("  knot blast <symbol> [--depth N]         Transitive blast radius analysis");
@@ -1080,7 +947,7 @@ pub fn print_help() {
     println!("  knot check [--base <ref>] [--remote]    Audit git diff against repo learnings");
     println!("  knot explore [query]                    Interactive terminal TUI code graph explorer");
     println!("  knot viz                                Launch interactive code graph visualizer");
-    println!("  knot status                             Vault health, plus this repo's code index and learnings");
+    println!("  knot status                             This repo's code index, learnings and python block");
     println!("  knot logs [--follow|-f]                 View activity log");
     println!("  knot init [--agents <ids>] [-y|--yes]   Pick agents, write their instructions, index this repo");
     println!("                                          (agents: claude, codex, opencode, gemini, antigravity, cursor)");
@@ -1093,21 +960,7 @@ pub fn print_help() {
 pub async fn run() -> Result<()> {
     let mut args = std::env::args().skip(1);
     match args.next().as_deref() {
-        Some("recall") => {
-            let query = args.next().unwrap_or_default();
-            if query.is_empty() {
-                usage_exit("knot recall <query> [--limit N]");
-            }
-            let limit = parse_limit_args(args)?;
-            cli_recall(&query, limit).await
-        }
-        Some("commit") => {
-            let (Some(session_id), Some(project_id)) = (args.next(), args.next()) else {
-                usage_exit("knot commit <session_id> <project_id>");
-            };
-            cli_commit(&session_id, &project_id).await
-        }
-        Some("status") => cli_status().await,
+        Some("status") => cli_status(),
         Some("logs") => {
             let follow = args.any(|a| a == "--follow" || a == "-f");
             cli_logs(follow).await
@@ -1161,7 +1014,7 @@ pub async fn run() -> Result<()> {
         Some("handoff") => cli_handoff(&args.next().unwrap_or_default()),
         Some("hook") => {
             // Older installs pass `--no-swap` after the event; nothing reads it now
-            hook::run(&args.next().unwrap_or_default()).await
+            hook::run(&args.next().unwrap_or_default())
         }
         Some("map") => {
             let mut max_dirs = crate::ask::map::DEFAULT_MAX_DIRS;

@@ -424,7 +424,7 @@ fn usage_check(root: &Path, session_id: &str) -> Option<serde_json::Value> {
     limit_warning(root, session_id).map(|warning| hook_output("PostToolUse", &warning))
 }
 
-pub(super) async fn run(event: &str) -> Result<()> {
+pub(super) fn run(event: &str) -> Result<()> {
     use std::io::Read;
     let mut input = String::new();
     std::io::stdin().read_to_string(&mut input)?;
@@ -479,8 +479,6 @@ pub(super) async fn run(event: &str) -> Result<()> {
             }
         }
         "stop" => {
-            // Promoting memories must never block the nudge or the agent's stop
-            let _ = super::commit_current_session().await;
             let continuing = json.get("stop_hook_active").and_then(|v| v.as_bool()).unwrap_or(false);
             if let Some(reason) = learning_nudge(&root, &text("/transcript_path"), &session_id, continuing) {
                 println!("{}", serde_json::json!({ "decision": "block", "reason": reason }));

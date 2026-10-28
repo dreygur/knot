@@ -138,7 +138,7 @@ pub fn index_root(repo_root: &Path) -> std::path::PathBuf {
 }
 
 /// A repository's local, never committed state: index, savings ledger, sessions and
-/// the fetch marker, all in `.knot/cache/`. Only the vault and log stay in `~/.knot`.
+/// the fetch marker, all in `.knot/cache/`. Only the log and the handoff records stay in `~/.knot`.
 pub fn state_dir(repo_root: &Path) -> std::path::PathBuf {
     cache::state_dir_in(&index_root(repo_root))
 }
@@ -159,8 +159,7 @@ pub fn current_repo_root() -> std::io::Result<std::path::PathBuf> {
     Ok(repo_root(&std::env::current_dir()?))
 }
 
-/// The code index and learnings of `root`, for status output. The vault counts beside
-/// it are memories, not code, so without this line an empty vault reads as "nothing indexed".
+/// The code index, learnings and python block of `root`, for status output.
 pub fn repo_summary(root: &Path) -> String {
     let index = match index_status(root, &index_root(root)) {
         Err(e) => format!("unreadable ({e})"),

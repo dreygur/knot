@@ -5,7 +5,6 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
-use crate::memory::KnowledgeNode;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct LearningFrontmatter {
@@ -262,7 +261,7 @@ pub fn quality_issues(content: &str, touches: &[String], repo_root: &Path) -> Ve
     }
 
     for touch in touches {
-        let (path, symbol) = crate::jitv::parse_target(touch);
+        let (path, symbol) = super::target::parse_target(touch);
         let Some(abs) = contained_path(repo_root, path) else {
             issues.push(format!("touches '{touch}': path is outside the repository"));
             continue;
@@ -273,7 +272,7 @@ pub fn quality_issues(content: &str, touches: &[String], repo_root: &Path) -> Ve
         }
         if let Some(sym) = symbol {
             let target = format!("{}#{sym}", abs.to_string_lossy());
-            if let Some(err) = crate::jitv::target_error(&target) {
+            if let Some(err) = super::target::target_error(&target) {
                 issues.push(format!("touches '{touch}': {err}"));
             }
         }
@@ -298,44 +297,7 @@ pub fn read_learning_file(path: &Path) -> Result<RepoLearning> {
     })
 }
 
-pub fn write_learning_file(
-    repo_root: &Path,
-    node: &KnowledgeNode,
-    author: &str,
-) -> Result<PathBuf> {
-    let dir = learnings_dir(repo_root);
-    fs::create_dir_all(&dir)?;
-
-    let date_str = node.created_at.format("%Y-%m-%d").to_string();
-    let title_line = node.content.lines().next().unwrap_or("learning").trim();
-    let slug = sanitize_slug(title_line);
-    let filename = format!("{date_str}_{slug}.md");
-    let file_path = dir.join(filename);
-
-    let touches = match &node.verification_path {
-        Some(p) => vec![p.clone()],
-        None => Vec::new(),
-    };
-
-    let fm = LearningFrontmatter {
-        id: node.id,
-        title: title_line.to_string(),
-        author: author.to_string(),
-        date: date_str,
-        touches,
-        tags: node.tags.clone(),
-        scope: node.scope.scope_type().to_string(),
-        ..Default::default()
-    };
-
-    let frontmatter_str = format_frontmatter(&fm);
-    let full_content = format!("{frontmatter_str}\n{}\n", node.content);
-
-    fs::write(&file_path, full_content)?;
-    Ok(file_path)
-}
-
-/// A learning written directly (`knot note`), as opposed to one promoted from a session.
+/// A learning `knot note` writes.
 pub struct NewNote<'a> {
     pub title: &'a str,
     pub body: &'a str,
@@ -442,7 +404,6 @@ pub fn find_learning(repo_root: &Path, id: &str) -> Result<RepoLearning> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::memory::MemoryScope;
     use tempfile::tempdir;
 
     #[test]
@@ -494,41 +455,6 @@ mod tests {
             let issues = quality_issues(why, &[escape.into()], dir.path());
             assert!(issues[0].contains("outside the repository"), "{escape}: {issues:?}");
         }
-    }
-
-    #[test]
-    fn test_write_and_read_learning_markdown() -> Result<()> {
-        let dir = tempdir()?;
-        let node_id = Uuid::new_v4();
-        let node = KnowledgeNode {
-            id: node_id,
-            content: "SQLite WAL mode prevents writer blocking\n\n## Decided\nEnable WAL mode.".into(),
-            tags: vec!["sqlite".into(), "concurrency".into()],
-            verification_path: Some("src/db.rs#init_db".into()),
-            content_hash: Some("abc123hash".into()),
-            utility_score: 0.8,
-            scope: MemoryScope::Project("knot".into()),
-            is_stale: false,
-            parent_id: None,
-            origin_agent: Some("agent-1".into()),
-            created_at: Utc::now(),
-            updated_at: Utc::now(),
-        };
-
-        let saved_path = write_learning_file(dir.path(), &node, "Rakib")?;
-        assert!(saved_path.exists());
-
-        let read = read_learning_file(&saved_path)?;
-        assert_eq!(read.frontmatter.id, node_id);
-        assert_eq!(read.frontmatter.author, "Rakib");
-        assert_eq!(read.frontmatter.touches, vec!["src/db.rs#init_db"]);
-        assert!(read.body.contains("## Decided"));
-
-        let scanned = scan_repo_learnings(dir.path())?;
-        assert_eq!(scanned.len(), 1);
-        assert_eq!(scanned[0].frontmatter.id, node_id);
-
-        Ok(())
     }
 
     fn note() -> NewNote<'static> {

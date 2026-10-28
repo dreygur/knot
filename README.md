@@ -35,8 +35,6 @@ account: everything runs locally and learnings travel through git.
 - [Team learnings](#team-learnings)
 - [Status line](#status-line)
 - [Share what Knot saved](#share-what-knot-saved)
-- [Memory vault and Jit-V](#memory-vault-and-jit-v)
-- [Skills](#skills)
 - [Command reference](#command-reference)
 - [MCP tools](#mcp-tools)
 - [Languages](#languages)
@@ -55,7 +53,6 @@ account: everything runs locally and learnings travel through git.
 | **Team learnings** | `knot note` saves a decision, what was ruled out and why, as a markdown file in `.knot/learnings/`. It surfaces when anyone opens that code, with who wrote it and what it took to work out. |
 | **Pre-PR check** | `knot check` compares your diff with the learnings: changing a value a decision pins (`defaultRetryMax = 4` → `10`) or bringing back a ruled-out approach is a conflict until the commit message says why. |
 | **Branch clashes** | When you edit a symbol a teammate is also changing on an unmerged branch, Knot says so, with both values: *Kumar raises defaultRetryMax from 4 to 10 on origin/kumar/retry; you lower it to 3.* |
-| **Memory vault** | Agents can save and recall knowledge across sessions. Memories tied to a file are re-verified against it on every recall (Jit-V), so stale knowledge is flagged, not trusted. |
 
 ---
 
@@ -296,7 +293,7 @@ knot note --title "Default retry count is 10 for offline importers" --replaces 8
 EOF
 ```
 
-The old file stays in the repo, but `knot ask`, the hooks and recall stop showing it. `knot check`
+The old file stays in the repo, but `knot ask` and the hooks stop showing it. `knot check`
 only stops checking against it once the replacement is on the base branch, so a branch can't
 retire the learning it breaks. Until then the finding says `replaced by knot <id> in this change`,
 and the branch still needs an `Overrides` line.
@@ -311,8 +308,8 @@ unmerged branch (remote branches are fetched in the background, at most every 5 
 `knot check --remote` lists the same clashes from the command line.
 
 Learnings are written by anyone who can push, so Knot treats them as untrusted: their text is
-flattened to single lines with control characters removed, labelled as notes rather than
-instructions, and a learning synced from one repo is only recalled inside that repo.
+flattened to single lines with control characters removed and labelled as notes rather than
+instructions.
 
 ---
 
@@ -363,51 +360,6 @@ estimate; Knot never makes one up, and it makes no network calls.
 
 ---
 
-## Memory vault and Jit-V
-
-Agents can also keep personal and project memory across sessions:
-
-```
-save_wisdom(content="SQLite WAL mode prevents reader/writer blocking",
-            tags=["sqlite"], verification_path="src/db.rs#open_pool")
-recall_memory(query="SQLite concurrency")
-```
-
-A memory tied to a file (or a `file#symbol`) is hashed when saved and re-hashed on every
-recall. If the file or symbol changed it comes back tagged `[STALE:MODIFIED]`; if it is gone,
-`[STALE:MISSING]` (Knot first looks for the same content elsewhere in the repo and relinks it);
-a memory whose parent is stale is `[STALE:INHERITED]`. Stale memories are never promoted.
-
-| Level | Scope | How it gets there |
-|---|---|---|
-| L1 | Session | `save_wisdom` (default) |
-| L2 | Project | `commit_session` promotes verified session memories; the Claude Code Stop hook does this automatically |
-| L3 | Global | `save_wisdom(scope="global")` |
-
-Recall blends vector similarity, SQLite full-text search and code-graph centrality. Content
-is scrubbed of secrets (API keys, bearer tokens, private keys, `KEY=value` lines) before it is
-stored; the patterns are in `PRIVACY_RULES.json`.
-
----
-
-## Skills
-
-Skills are reusable procedures with `{{placeholders}}`, saved once and run by name:
-
-```
-save_skill(name="format-module", description="Format and lint one module",
-           prerequisites=["cmd:cargo"],
-           steps=[{description:"Format", command:"cargo fmt -- {{file_path}}"},
-                  {description:"Lint",   command:"cargo clippy -- -D warnings"}],
-           verification_command="cargo test")
-
-execute_skill(skill_name="format-module", variables=[{key:"file_path", value:"src/main.rs"}])
-```
-
-`execute_skill` dry-runs first and quotes variables for the shell.
-
----
-
 ## Command reference
 
 | Command | What it does |
@@ -426,11 +378,9 @@ execute_skill(skill_name="format-module", variables=[{key:"file_path", value:"sr
 | `knot statusline` | Claude Code's status line: index, learnings, savings, context use, last edit |
 | `knot handoff save\|show\|clear` | The note a session leaves for the next (`save` reads it on stdin) |
 | `knot hook <post-tool\|stop>` | What Knot's Claude Code hooks run |
-| `knot recall <query> [--limit N]` | Search the memory vault |
-| `knot commit <session_id> <project_id>` | Promote a session's memories to a project |
 | `knot explore [query]` | Terminal UI for browsing the code graph |
 | `knot viz` | Open the code graph map (`.knot/cache/graph.html`) |
-| `knot status` / `knot logs [-f]` | Vault health plus this repo's index and learnings; activity log |
+| `knot status` / `knot logs [-f]` | This repo's index, learnings and python block; activity log |
 | `knot card [--repo] [--out <path>]` | Save and copy a picture of what Knot saved |
 | `knot --version` | Version |
 
@@ -446,15 +396,7 @@ execute_skill(skill_name="format-module", variables=[{key:"file_path", value:"sr
 | `knot_trace_calls` | Callers, callees, or blast radius of a symbol |
 | `knot_file_api` | A file's signatures with line spans |
 | `knot_check` | Diff against learnings (and remote clashes with `check_remote`) |
-| `save_wisdom` / `recall_memory` | Save and search the memory vault |
-| `jit_verify` | Re-verify one memory now |
-| `commit_session` | Promote verified session memories to a project |
-| `list_nodes` / `link_nodes` | Browse memories; link them (`depends_on`, `contradicts`, `refines`, `parent_scope`) |
-| `forget_node`, `delete_wisdom`, `delete_skill`, `prune_ghosts` | Remove memories, skills, or memories whose files are gone |
-| `save_skill` / `execute_skill` / `recall_skills` | Reusable procedures |
-| `knot_status` | Vault health and current branch collisions |
-
-With `KNOT_READ_ONLY` set, every tool that writes refuses.
+| `knot_status` | This repo's index, learnings and python block, and current branch collisions |
 
 ---
 
@@ -481,9 +423,8 @@ Files ignored by `.gitignore` are skipped, and so are these directories wherever
 
 | Variable | Default | Effect |
 |---|---|---|
-| `KNOT_DATA_DIR` | `~/.knot` | Where the vault and activity log live |
+| `KNOT_DATA_DIR` | `~/.knot` | Where the activity log and handoff records live |
 | `KNOT_LOG` | `knot=info` | Log level (`knot=debug` for more) |
-| `KNOT_READ_ONLY` | unset | Set to refuse every write through MCP and skip syncing learnings into the vault |
 | `KNOT_NO_FETCH` | unset | Never run `git fetch`; clash checks use the refs already fetched |
 
 ---
@@ -492,7 +433,6 @@ Files ignored by `.gitignore` are skipped, and so are these directories wherever
 
 | Path | Contents |
 |---|---|
-| `~/.knot/knot.db` | Memory vault (SQLite), shared across repos |
 | `~/.knot/activity.log` | Activity log (`knot logs`) |
 | `~/.knot/repos.txt` | The repos Knot has worked in, one `.knot/cache` path per line, so `knot card` can total them |
 | `~/.knot/handoffs.txt` | The hash of each repo's saved handoff, so a note Knot did not save is never shown |
@@ -507,6 +447,9 @@ Files ignored by `.gitignore` are skipped, and so are these directories wherever
 `.knot/cache/` carries its own `.gitignore`, so nothing in it is ever committed. Knot
 writes anything else into a repository only when you run `knot init` (agent instruction
 files) or `knot note` (a learning).
+
+Earlier versions kept a memory vault in `~/.knot/knot.db` (with `knot.db-wal` and
+`knot.db-shm` beside it). Knot no longer reads it, and you can delete those files.
 
 ---
 

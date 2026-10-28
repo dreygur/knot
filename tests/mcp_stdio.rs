@@ -16,14 +16,9 @@ const INITIALIZE_ID: u64 = 1;
 const TOOLS_LIST_ID: u64 = 2;
 const TOOL_CALL_ID: u64 = 3;
 
-/// Every tool and its input properties, sorted, as v0.4.1 published them.
+/// Every tool and its input properties, sorted: the code graph tools left once the
+/// memory vault was removed.
 const EXPECTED_TOOLS: &[(&str, &[&str])] = &[
-    ("commit_session", &["project_id"]),
-    ("delete_skill", &["force", "skill_name"]),
-    ("delete_wisdom", &["node_id"]),
-    ("execute_skill", &["skill_name", "variables"]),
-    ("forget_node", &["node_id"]),
-    ("jit_verify", &["node_id"]),
     ("knot_ask", &["limit", "question", "source"]),
     ("knot_check", &["base_ref", "check_remote"]),
     ("knot_file_api", &["file"]),
@@ -31,31 +26,9 @@ const EXPECTED_TOOLS: &[(&str, &[&str])] = &[
     ("knot_map", &[]),
     ("knot_status", &[]),
     ("knot_trace_calls", &["depth", "direction", "symbol"]),
-    ("link_nodes", &["edge_type", "source_id", "target_id"]),
-    ("list_nodes", &["scope_id", "scope_type", "tag_filter"]),
-    ("prune_ghosts", &[]),
-    ("recall_memory", &["full_content", "limit", "query"]),
-    ("recall_skills", &["query"]),
-    (
-        "save_skill",
-        &["description", "name", "prerequisites", "related_node_id", "steps", "verification_command"],
-    ),
-    (
-        "save_wisdom",
-        &[
-            "command_exit_code",
-            "content",
-            "origin_agent",
-            "parent_id",
-            "project_id",
-            "scope",
-            "tags",
-            "verification_path",
-        ],
-    ),
 ];
 
-/// Runs the server against throwaway dirs, so it never touches the real vault or
+/// Runs the server against throwaway dirs, so it never touches the real data folder or
 /// ~/.claude/settings.json, from a cwd outside any git repo.
 fn start_server(sandbox: &std::path::Path) -> Child {
     let cwd = sandbox.join("cwd");
@@ -64,7 +37,6 @@ fn start_server(sandbox: &std::path::Path) -> Child {
         .current_dir(&cwd)
         .env("HOME", sandbox.join("home"))
         .env("KNOT_DATA_DIR", sandbox.join("data"))
-        .env_remove("KNOT_READ_ONLY")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -186,7 +158,7 @@ fn bad_arguments_are_tool_errors() {
     initialize(&mut stdin, &messages, PROTOCOL_VERSION);
 
     let missing = call_tool(&mut stdin, &messages, "knot_ask", json!({}));
-    let wrong_type = call_tool(&mut stdin, &messages, "recall_memory", json!({"query": "x", "limit": "five"}));
+    let wrong_type = call_tool(&mut stdin, &messages, "knot_ask", json!({"question": "x", "limit": "five"}));
     child.kill().ok();
     child.wait().ok();
 
