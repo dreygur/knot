@@ -1218,7 +1218,8 @@ pub async fn run() -> Result<()> {
         Some("note") => cli_note(args),
         Some("hook") => {
             let event = args.next().unwrap_or_default();
-            hook::run(&event).await
+            let flags: Vec<String> = args.collect();
+            hook::run(&event, &flags).await
         }
         Some("map") => {
             let mut max_dirs = crate::ask::map::DEFAULT_MAX_DIRS;

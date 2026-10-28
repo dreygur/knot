@@ -137,6 +137,26 @@ fn first_showing_in(dir: &Path, session_id: &str, ids: &[String]) -> Vec<String>
     fresh
 }
 
+/// True the first time `session_id` runs this exact `command` in `root`, false after.
+/// Used to block a command once and let the same command through when it is repeated.
+pub fn deny_once(root: &Path, session_id: &str, command: &str) -> bool {
+    deny_once_in(&super::state_dir(root), session_id, command)
+}
+
+fn deny_once_in(dir: &Path, session_id: &str, command: &str) -> bool {
+    let name = format!("denied-{}.txt", safe_id(session_id));
+    let hash = blake3::hash(command.as_bytes()).to_hex().to_string();
+    let Ok(path) = super::state_file(dir, &name) else { return false };
+    let seen = std::fs::read_to_string(&path).is_ok_and(|s| s.lines().any(|l| l == hash));
+    if seen {
+        return false;
+    }
+    match std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+        Ok(mut f) => writeln!(f, "{hash}").is_ok(),
+        Err(_) => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -238,5 +258,19 @@ mod tests {
         assert!(first_showing_in(dir.path(), "s1", &ids).is_empty());
         assert_eq!(first_showing_in(dir.path(), "s2", &ids[..1]), vec!["a".to_string()]);
         assert_eq!(first_showing_in(dir.path(), "../evil", &ids).len(), 2, "ids are made file-safe");
+    }
+}
+
+#[cfg(test)]
+mod deny_tests {
+    use super::*;
+
+    #[test]
+    fn deny_once_is_per_session() {
+        let repo = tempfile::tempdir().unwrap();
+        assert!(deny_once(repo.path(), "s1", "python3 -c x"));
+        assert!(!deny_once(repo.path(), "s1", "python3 -c x"), "second time runs");
+        assert!(deny_once(repo.path(), "s1", "python3 -c y"), "another command is denied once too");
+        assert!(deny_once(repo.path(), "s2", "python3 -c x"), "another session has its own");
     }
 }
