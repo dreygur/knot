@@ -72,11 +72,11 @@ fn run_sed(command: &str, file: &str, start: usize, end: usize, root: &Path) -> 
     let lines: Vec<&str> = text.lines().collect();
     let end = end.min(lines.len());
     if start > end {
-        bail!("{file} has {} lines; nothing at {start}", lines.len());
+        return Ok((String::new(), 0)); // raw sed prints nothing past the end either
     }
     let bytes_before: u64 = lines[start - 1..end].iter().map(|l| l.len() as u64 + 1).sum();
-    let graph = crate::ask::load_graph(root)?;
-    let items = graph.file_skeleton(file);
+    // Without an index the lines still print, just not widened.
+    let items = crate::ask::load_graph(root).map(|g| g.file_skeleton(file)).unwrap_or_default();
 
     let mut out = String::new();
     if end - start + 1 > MAX_RANGE_LINES {
@@ -157,6 +157,13 @@ mod tests {
         assert!(out.contains("454 lines is a lot to read"), "{out}");
         assert!(out.contains("fn alpha") && out.contains("fn beta"), "{out}");
         assert!(!out.contains("let a = 1"));
+    }
+
+    #[test]
+    fn sed_range_past_the_end_of_the_file_does_not_fail() {
+        let dir = repo();
+        let out = run("sed -n '500,510p' src/a.rs", dir.path(), dir.path()).unwrap();
+        assert!(!out.contains("fn alpha"), "{out}");
     }
 
     #[test]

@@ -761,12 +761,13 @@ fn cli_grep(opts: &crate::ask::grep::GrepOptions, json: bool) -> Result<()> {
 fn cli_shell(command: &str) -> Result<()> {
     let here = std::env::current_dir()?;
     let root = crate::ask::repo_root(&here);
-    if matches!(crate::shell::classify(command, &root, &here), crate::shell::Plan::PassThrough) {
-        let status = std::process::Command::new("sh").arg("-c").arg(command).status()?;
-        std::process::exit(status.code().unwrap_or(1));
+    // Anything that goes wrong on the Knot path runs the original command instead.
+    if let Ok(out) = crate::shell::run::run(command, &root, &here) {
+        print!("{out}");
+        return Ok(());
     }
-    print!("{}", crate::shell::run::run(command, &root, &here)?);
-    Ok(())
+    let status = std::process::Command::new("sh").arg("-c").arg(command).status()?;
+    std::process::exit(status.code().unwrap_or(1))
 }
 
 fn cli_map(max_dirs: usize, json: bool) -> Result<()> {
