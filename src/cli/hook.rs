@@ -21,7 +21,7 @@ const SESSION_START_SWAPS: &str = "grep and sed over code are answered by knot (
 const HANDOFF_WAITING: &str = "A handoff from an earlier session is waiting: run knot handoff show and continue from it, \
                                then knot handoff clear when done.";
 
-/// Percent of the context window or the 5-hour limit at which the agent is told to
+/// Percent of the context window or the five hour limit at which the agent is told to
 /// write its handoff, early enough to leave room for writing it.
 const LIMIT_WARN_PCT: f64 = 85.0;
 const HANDOFF_OUTLINE: &str =
@@ -416,7 +416,7 @@ fn limit_warning(root: &Path, session_id: &str) -> Option<String> {
     }
     if let Some(pct) = near(usage.five_hour_pct) {
         let reset = usage.five_hour_resets_at.and_then(local_clock).map(|t| format!(" and resets at {t}"));
-        limits.push(("limit:five-hour", format!("your 5-hour limit is {pct:.0}% used{}", reset.unwrap_or_default())));
+        limits.push(("limit:five-hour", format!("your five hour limit is {pct:.0}% used{}", reset.unwrap_or_default())));
     }
     if limits.is_empty() {
         return None;
@@ -454,12 +454,17 @@ fn file_context(root: &Path, session_id: &str, tool: &str, file: &str) -> Vec<St
     context
 }
 
-/// What the PostToolUse hook adds to the agent's context: a limit warning, then what
-/// Knot knows about the file the tool used.
+/// What the file tools' PostToolUse hook adds to the agent's context: what Knot knows
+/// about the file the tool used.
 fn post_tool(root: &Path, session_id: &str, tool: &str, file: &str) -> Option<serde_json::Value> {
-    let mut context: Vec<String> = limit_warning(root, session_id).into_iter().collect();
-    context.extend(file_context(root, session_id, tool, file));
+    let context = file_context(root, session_id, tool, file);
     (!context.is_empty()).then(|| hook_output("PostToolUse", &context.join("\n\n")))
+}
+
+/// What the every-tool PostToolUse hook adds: a limit warning, so a session that only
+/// runs Bash is warned too. It runs after every call, so it only reads one small file.
+fn usage_check(root: &Path, session_id: &str) -> Option<serde_json::Value> {
+    limit_warning(root, session_id).map(|warning| hook_output("PostToolUse", &warning))
 }
 
 pub(super) async fn run(event: &str, flags: &[String]) -> Result<()> {
@@ -480,6 +485,13 @@ pub(super) async fn run(event: &str, flags: &[String]) -> Result<()> {
     // Answered before any session state is written, so a repo without Knot gets no `.knot/`
     if event == "session-start" {
         if let Some(out) = session_start(&root) {
+            println!("{out}");
+        }
+        return Ok(());
+    }
+    // Runs after every tool call, so it skips the session bookkeeping the others do
+    if event == "usage" {
+        if let Some(out) = usage_check(&root, &session_id) {
             println!("{out}");
         }
         return Ok(());
@@ -756,7 +768,7 @@ mod limit_tests {
     }
 
     fn warning(root: &Path) -> Option<String> {
-        let out = post_tool(root, "s1", "Bash", "")?;
+        let out = usage_check(root, "s1")?;
         assert_eq!(out.pointer("/hookSpecificOutput/hookEventName").unwrap(), "PostToolUse");
         out.pointer("/hookSpecificOutput/additionalContext").and_then(|v| v.as_str()).map(str::to_string)
     }
@@ -794,7 +806,7 @@ mod limit_tests {
         );
         let text = warning(root).unwrap();
         let clock = chrono::DateTime::from_timestamp(resets, 0).unwrap().with_timezone(&chrono::Local).format("%H:%M");
-        assert!(text.contains(&format!("your 5-hour limit is 88% used and resets at {clock}")), "{text}");
+        assert!(text.contains(&format!("your five hour limit is 88% used and resets at {clock}")), "{text}");
         assert!(!text.contains("context window"), "the context warning already went out: {text}");
         assert!(warning(root).is_none(), "once per session");
     }
@@ -803,7 +815,26 @@ mod limit_tests {
     fn no_usage_no_warning() {
         let dir = knot_repo();
         assert!(warning(dir.path()).is_none());
-        assert!(post_tool(dir.path(), "", "Bash", "").is_none());
+        assert!(usage_check(dir.path(), "").is_none());
+    }
+
+    #[test]
+    fn the_file_hook_leaves_the_warning_to_the_usage_hook() {
+        let dir = knot_repo();
+        let root = dir.path();
+        std::fs::write(root.join("a.rs"), "fn a() {}\n").unwrap();
+        crate::ask::usage::record(root, "s1", &Usage { context_pct: Some(90.0), ..Default::default() });
+
+        let file = root.join("a.rs").to_string_lossy().into_owned();
+        assert!(post_tool(root, "s1", "Read", &file).is_none(), "no learnings here and no warning from the file hook");
+        assert!(warning(root).unwrap().contains("90% full"), "the usage hook still warns");
+    }
+
+    #[test]
+    fn the_usage_hook_writes_nothing_in_a_folder_without_knot() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(usage_check(dir.path(), "s1").is_none());
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
     }
 }
 

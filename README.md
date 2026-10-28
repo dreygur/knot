@@ -165,9 +165,10 @@ also get learnings and clash warnings pushed to them while they work.
 Agents without hooks still see learnings through `knot ask` / `knot_ask`, and `knot check`
 works anywhere you run it (including CI).
 
-On Claude Code, Knot registers two hooks in `~/.claude/settings.json` the first time it
-starts: `knot hook post-tool` after Read/Edit/Write (learnings on that file, branch clashes)
-and `knot hook stop` (promotes the session's verified memories). It also adds its status line
+On Claude Code, Knot registers its hooks in `~/.claude/settings.json` the first time it
+starts: `knot hook post-tool` after Read/Edit/Write (learnings on that file, branch clashes),
+`knot hook usage` after every tool (a warning to write the handoff when the context window or
+the five hour limit is nearly used up), `knot hook session-start`, and `knot hook stop` (promotes the session's verified memories). It also adds its status line
 when you have none. Other tools' hooks and an existing status line are left alone.
 
 ---

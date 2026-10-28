@@ -15,6 +15,8 @@ const KNOT_HOOK_MARKERS: &[&str] = &[
     "knot.exe\" hook pre-tool",
     "knot\" hook session-start",
     "knot.exe\" hook session-start",
+    "knot\" hook usage",
+    "knot.exe\" hook usage",
 ];
 
 /// Register Claude Code hooks and, when none is set, the status line. Returns `Ok(true)`
@@ -63,6 +65,9 @@ fn wanted_hooks(bin: &str) -> Vec<(&'static str, serde_json::Value)> {
                 "hooks": [{"type": "command", "command": format!("{bin} hook post-tool")}]
             }),
         ),
+        // The limit warning, after every tool, so a session that only runs Bash is warned too.
+        // A separate entry keeps the learnings lookup off every Bash call.
+        ("PostToolUse", json!({"hooks": [{"type": "command", "command": format!("{bin} hook usage")}]})),
         ("Stop", json!({"hooks": [{"type": "command", "command": format!("{bin} hook stop")}]})),
         // Index counts and where to start, so the agent asks Knot before grepping
         ("SessionStart", json!({"hooks": [{"type": "command", "command": format!("{bin} hook session-start")}]})),
@@ -509,6 +514,9 @@ mod tests {
         let entry = json!({"hooks": [{"type": "command", "command": "rtk hook pre-tool"}]});
         assert!(!is_knot_entry(&entry));
         assert!(is_knot_entry(&json!({"hooks": [{"command": "\"/x/knot\" hook pre-tool"}]})));
+        assert!(is_knot_entry(&json!({"hooks": [{"command": "\"/x/knot\" hook usage"}]})));
+        assert!(is_knot_entry(&json!({"hooks": [{"command": "\"C:\\knot.exe\" hook usage"}]})));
+        assert!(!is_knot_entry(&json!({"hooks": [{"command": "ccusage hook usage"}]})));
     }
 
     fn read(path: &Path) -> serde_json::Value {
@@ -531,7 +539,8 @@ mod tests {
         assert!(!merge_settings(&settings, "\"/bin/knot\"").unwrap(), "second run changes nothing");
 
         let cfg = read(&settings);
-        assert_eq!(commands(&cfg, "PostToolUse"), vec!["\"/bin/knot\" hook post-tool"]);
+        assert_eq!(commands(&cfg, "PostToolUse"), vec!["\"/bin/knot\" hook post-tool", "\"/bin/knot\" hook usage"]);
+        assert!(cfg.pointer("/hooks/PostToolUse/1/matcher").is_none(), "the usage check runs after every tool");
         assert_eq!(commands(&cfg, "Stop"), vec!["\"/bin/knot\" hook stop"]);
         assert_eq!(commands(&cfg, "SessionStart"), vec!["\"/bin/knot\" hook session-start"]);
         assert!(cfg.pointer("/hooks/SessionStart/0/matcher").is_none(), "every session start, no matcher");
@@ -567,7 +576,10 @@ mod tests {
 
         // A moved binary replaces its own entries rather than adding a second set
         merge_settings(&settings, "\"/moved/knot\"").unwrap();
-        assert_eq!(commands(&read(&settings), "PostToolUse"), vec!["\"/moved/knot\" hook post-tool"]);
+        assert_eq!(
+            commands(&read(&settings), "PostToolUse"),
+            vec!["\"/moved/knot\" hook post-tool", "\"/moved/knot\" hook usage"]
+        );
         assert_eq!(commands(&read(&settings), "SessionStart"), vec!["\"/moved/knot\" hook session-start"]);
     }
 
