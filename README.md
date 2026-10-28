@@ -462,6 +462,7 @@ Files ignored by `.gitignore` are skipped, and so are these directories wherever
 |---|---|
 | `~/.knot/knot.db` | Memory vault (SQLite), shared across repos |
 | `~/.knot/activity.log` | Activity log (`knot logs`) |
+| `~/.knot/repos.txt` | The repos Knot has worked in, one `.knot/cache` path per line, so `knot card` can total them |
 | `<repo>/.knot/learnings/` | Team learnings, committed to git |
 | `<repo>/.knot/cache/index.json` | Parse cache, keyed by file size and mtime |
 | `<repo>/.knot/cache/events.jsonl` | What Knot did and saved, per agent session |
