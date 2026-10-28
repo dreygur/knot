@@ -1209,7 +1209,21 @@ mod tests {
         }
         assert!(SKILL.contains(VERSION_RULE), "the skill never forbids versions from memory");
         assert!(SKILL.contains(HANDOFF_RULE) && SKILL.contains("commit hashes"), "the skill never asks for a handoff");
-        assert!(SKILL.lines().count() <= 60, "{} lines", SKILL.lines().count());
+        assert!(SKILL.lines().count() <= 80, "{} lines", SKILL.lines().count());
+    }
+
+    /// The MCP summary is a short copy of the skill; everything it names must be in the
+    /// full text, so the two cannot drift apart.
+    #[test]
+    fn instructions_say_nothing_the_skill_does_not() {
+        const SKILL: &str = include_str!("../../skills/knot/SKILL.md");
+        for name in tool_like_names(INSTRUCTIONS) {
+            assert!(SKILL.contains(&format!("`{name}`")), "the skill never names {name}");
+        }
+        for rule in ["`knot note", "`KNOT_RAW=1", "from memory", "`knot handoff"] {
+            assert!(INSTRUCTIONS.contains(rule), "instructions lost {rule}");
+            assert!(SKILL.contains(rule), "the skill never says {rule}");
+        }
     }
 
     #[test]
