@@ -248,6 +248,8 @@ pub(super) fn run(args: impl IntoIterator<Item = String>) -> Result<()> {
 mod tests {
     use super::*;
 
+    const HOME: &str = "/h";
+
     fn args(list: &[&str]) -> Vec<String> {
         list.iter().map(|s| s.to_string()).collect()
     }
@@ -275,10 +277,10 @@ mod tests {
     fn without_a_terminal_only_detected_agents_are_wired() {
         let found = [(Agent::Claude, true), (Agent::Codex, false), (Agent::Cursor, true)];
         let both = Some(vec![Agent::Claude, Agent::Cursor]);
-        assert_eq!(choose(Selection::Ask, &found, Path::new("/h"), Terminal::Piped).unwrap(), both);
-        assert_eq!(choose(Selection::Detected, &found, Path::new("/h"), Terminal::Interactive).unwrap(), both);
+        assert_eq!(choose(Selection::Ask, &found, Path::new(HOME), Terminal::Piped).unwrap(), both);
+        assert_eq!(choose(Selection::Detected, &found, Path::new(HOME), Terminal::Interactive).unwrap(), both);
         let named = Selection::Named(vec![Agent::Codex]);
-        assert_eq!(choose(named, &found, Path::new("/h"), Terminal::Interactive).unwrap(), Some(vec![Agent::Codex]));
+        assert_eq!(choose(named, &found, Path::new(HOME), Terminal::Interactive).unwrap(), Some(vec![Agent::Codex]));
     }
 
     #[test]

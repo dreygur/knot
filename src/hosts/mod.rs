@@ -31,7 +31,8 @@ fn skill_body() -> &'static str {
 /// The skill body one heading level down, so the block sits under the H1 of the file it
 /// lands in. SKILL.md has no code fences, so every line that opens with `#` is a heading.
 fn block_body() -> String {
-    skill_body().lines().map(|l| if l.starts_with('#') { format!("#{l}") } else { l.to_string() }).collect::<Vec<_>>().join("\n")
+    let demote = |line: &str| if line.starts_with('#') { format!("#{line}") } else { line.to_string() };
+    skill_body().lines().map(demote).collect::<Vec<_>>().join("\n")
 }
 
 /// The skill body between the markers a re-run finds and replaces.
