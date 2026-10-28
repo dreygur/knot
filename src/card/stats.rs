@@ -50,6 +50,8 @@ pub fn collect(repos: &[PathBuf], now: DateTime<Local>) -> CardStats {
         .iter()
         .flat_map(|root| events::all(root))
         .filter(|e| matches!(e.kind, EventKind::Answer | EventKind::Swap | EventKind::Learning))
+        // A timestamp that is not a real local time, or lies in the future, is corrupt: skip it
+        .filter(|e| e.ts_ms <= now.timestamp_millis() && Local.timestamp_millis_opt(e.ts_ms).earliest().is_some())
         .collect();
     all.sort_by_key(|e| e.ts_ms);
 
@@ -102,15 +104,19 @@ pub fn collect(repos: &[PathBuf], now: DateTime<Local>) -> CardStats {
     let first_day = all.first().map(|e| day_of(e.ts_ms));
     let trend = match first_day {
         Some(day) if per_day_with_events(&all) >= MIN_TREND_DAYS => {
-            let days = (today - day).num_days().max(0);
-            Trend::Daily((0..=days).map(|i| per_day.get(&(day + Duration::days(i))).copied().unwrap_or(0)).collect())
+            // At most 30 entries; anything older folds into the first so the series still sums
+            let series_start = day.max(today - Duration::days(WINDOW_DAYS - 1));
+            let days = (today - series_start).num_days().max(0);
+            let mut series: Vec<u64> = (0..=days).map(|i| per_day.get(&(series_start + Duration::days(i))).copied().unwrap_or(0)).collect();
+            series[0] += per_day.iter().filter(|(d, _)| **d < series_start).map(|(_, t)| t).sum::<u64>();
+            Trend::Daily(series)
         }
         _ => Trend::PerSession(if sessions.is_empty() { 0 } else { tokens_saved / sessions.len() as u64 }),
     };
 
     CardStats {
         tokens_saved,
-        less_to_read: (before > 0).then(|| 1.0 - after as f64 / before as f64),
+        less_to_read: (before > 0).then(|| (1.0 - after as f64 / before as f64).clamp(0.0, 1.0)),
         graph,
         learnings: learned,
         swaps,
@@ -124,7 +130,7 @@ fn per_day_with_events(events: &[Event]) -> usize {
 }
 
 fn day_of(ts_ms: i64) -> NaiveDate {
-    Local.timestamp_millis_opt(ts_ms).single().map_or(NaiveDate::MIN, |t| t.date_naive())
+    Local.timestamp_millis_opt(ts_ms).earliest().map_or(NaiveDate::MIN, |t| t.date_naive())
 }
 
 fn label(capped: bool, first_day: Option<NaiveDate>, today: NaiveDate) -> String {
@@ -291,5 +297,69 @@ mod tests {
         let stats = collect(&[repo.path().to_path_buf()], now());
         assert_eq!(stats.tokens_saved, 1_000 + 2_500);
         assert_eq!(stats.graph.count, 2_501);
+    }
+
+    #[test]
+    fn future_and_bad_timestamps_are_skipped() {
+        let base = [event(EventKind::Answer, 4, 100), event(EventKind::Answer, 2, 300), event(EventKind::Answer, 0, 50)];
+        let repo = repo_with(&base);
+        let clean = collect(&[repo.path().to_path_buf()], now());
+        for ts_ms in [ts(-3), ts(-4000), i64::MAX, i64::MIN] {
+            let mut bad = event(EventKind::Answer, 0, 9_999);
+            bad.ts_ms = ts_ms;
+            events::append(repo.path(), &bad);
+            let mut bad = learning("z", 0, Some(9_999));
+            bad.ts_ms = ts_ms;
+            events::append(repo.path(), &bad);
+        }
+        let stats = collect(&[repo.path().to_path_buf()], now());
+        assert_eq!(stats, clean);
+        assert!(matches!(&stats.trend, Trend::Daily(d) if d.len() <= 30));
+    }
+
+    #[test]
+    fn daily_trend_has_at_most_thirty_entries_and_sums() {
+        let repo = repo_with(&[
+            event(EventKind::Answer, 40, 1),
+            event(EventKind::Answer, 30, 100),
+            event(EventKind::Answer, 10, 200),
+            event(EventKind::Answer, 0, 300),
+        ]);
+        let stats = collect(&[repo.path().to_path_buf()], now());
+        let Trend::Daily(days) = stats.trend else { panic!("expected daily") };
+        assert_eq!(days.len(), 30);
+        assert_eq!(days.iter().sum::<u64>(), stats.tokens_saved);
+    }
+
+    #[test]
+    fn one_day_label_at_zero_elapsed_days() {
+        let repo = repo_with(&[event(EventKind::Answer, 0, 10)]);
+        assert_eq!(collect(&[repo.path().to_path_buf()], now()).label, "since Oct 28 · 1 day");
+    }
+
+    #[test]
+    fn learning_shown_long_ago_and_yesterday_counts_once() {
+        let repo = repo_with(&[learning("a", 40, Some(1_000)), learning("a", 1, Some(2_000))]);
+        let stats = collect(&[repo.path().to_path_buf()], now());
+        assert_eq!(stats.learnings.count, 1);
+        assert_eq!(stats.learnings.tokens, 2_000);
+    }
+
+    #[test]
+    fn same_learning_in_two_repos_counts_once() {
+        let a = repo_with(&[learning("x", 3, Some(500))]);
+        let b = repo_with(&[learning("x", 1, Some(700))]);
+        let stats = collect(&[a.path().to_path_buf(), b.path().to_path_buf()], now());
+        assert_eq!(stats.learnings.count, 1);
+        assert_eq!(stats.learnings.tokens, 700);
+    }
+
+    #[test]
+    fn less_to_read_is_never_negative() {
+        let mut swap = event(EventKind::Swap, 1, 0);
+        swap.bytes_before = 100;
+        swap.bytes_after = 400;
+        let repo = repo_with(&[swap]);
+        assert_eq!(collect(&[repo.path().to_path_buf()], now()).less_to_read, Some(0.0));
     }
 }
