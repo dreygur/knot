@@ -1191,6 +1191,27 @@ mod tests {
     }
 
     #[test]
+    fn plugin_skill_has_frontmatter_and_the_core_tools() {
+        const SKILL: &str = include_str!("../../skills/knot/SKILL.md");
+        let frontmatter = SKILL
+            .strip_prefix("---\n")
+            .and_then(|rest| rest.split_once("\n---\n"))
+            .map(|(fm, _)| fm)
+            .expect("SKILL.md opens with a --- frontmatter block");
+        assert!(frontmatter.lines().any(|l| l == "name: knot"), "{frontmatter}");
+        assert!(frontmatter.lines().any(|l| l.starts_with("description: ") && l.len() > 40), "{frontmatter}");
+
+        let registered = registered_tools();
+        for tool in CORE_TOOLS {
+            assert!(SKILL.contains(&format!("`{tool}`")), "the skill never names {tool}");
+        }
+        for name in tool_like_names(SKILL) {
+            assert!(registered.iter().any(|r| r == name), "the skill names {name}, which is not a tool");
+        }
+        assert!(SKILL.lines().count() <= 60, "{} lines", SKILL.lines().count());
+    }
+
+    #[test]
     fn ask_text_lists_hits_with_pointers_and_excerpts() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(dir.path().join("src")).unwrap();
