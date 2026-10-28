@@ -761,13 +761,29 @@ fn cli_grep(opts: &crate::ask::grep::GrepOptions, json: bool) -> Result<()> {
 fn cli_shell(command: &str) -> Result<()> {
     let here = std::env::current_dir()?;
     let root = crate::ask::repo_root(&here);
-    // Anything that goes wrong on the Knot path runs the original command instead.
-    if let Ok(out) = crate::shell::run::run(command, &root, &here) {
-        print!("{out}");
-        return Ok(());
+    let raw = |cmd: &str| -> Result<i32> { Ok(std::process::Command::new("sh").arg("-c").arg(cmd).status()?.code().unwrap_or(1)) };
+    match swap_or_raw(command, &root, &here, &mut std::io::stdout(), raw)? {
+        Some(code) => std::process::exit(code),
+        None => Ok(()),
     }
-    let status = std::process::Command::new("sh").arg("-c").arg(command).status()?;
-    std::process::exit(status.code().unwrap_or(1))
+}
+
+/// Print Knot's answer for `command` to `out`. Anything that goes wrong on the Knot path
+/// runs the original command with `raw` instead; its exit code is returned.
+fn swap_or_raw(
+    command: &str,
+    root: &Path,
+    here: &Path,
+    out: &mut impl std::io::Write,
+    raw: impl FnOnce(&str) -> Result<i32>,
+) -> Result<Option<i32>> {
+    match crate::shell::run::run(command, root, here) {
+        Ok(text) => {
+            out.write_all(text.as_bytes())?;
+            Ok(None)
+        }
+        Err(_) => raw(command).map(Some),
+    }
 }
 
 fn cli_map(max_dirs: usize, json: bool) -> Result<()> {
@@ -1285,6 +1301,33 @@ mod tests {
 
     fn args(list: &[&str]) -> impl Iterator<Item = String> {
         list.iter().map(|s| s.to_string()).collect::<Vec<_>>().into_iter()
+    }
+
+    #[test]
+    fn knot_shell_runs_the_original_only_when_knot_has_no_answer() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("src")).unwrap();
+        std::fs::write(dir.path().join("src/a.rs"), "fn alpha() {}\n").unwrap();
+        let body: String = (0..40).map(|i| format!("    let alpha_{i} = \"alpha value with a longer tail of text\";\n")).collect();
+        std::fs::write(dir.path().join("src/big.rs"), format!("fn big() {{\n{body}}}\n")).unwrap();
+        let root = dir.path();
+
+        let mut out = Vec::new();
+        let code = swap_or_raw("grep -rn alpha src", root, root, &mut out, |cmd| panic!("ran {cmd}")).unwrap();
+        assert_eq!(code, None);
+        assert!(String::from_utf8(out).unwrap().starts_with("[knot] ran `knot grep`"));
+
+        for cmd in ["echo hi", "grep -rn alpha src/a.rs", "sed -n '1,1p' src/a.rs"] {
+            let mut out = Vec::new();
+            let mut ran = None;
+            let code = swap_or_raw(cmd, root, root, &mut out, |c| {
+                ran = Some(c.to_string());
+                Ok(3)
+            })
+            .unwrap();
+            assert_eq!((code, ran.as_deref()), (Some(3), Some(cmd)), "{cmd}");
+            assert!(out.is_empty(), "{cmd}");
+        }
     }
 
     #[test]

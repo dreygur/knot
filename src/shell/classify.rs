@@ -4,6 +4,7 @@
 //! the swapped commands, so a wrong guess would run something nobody approved.
 
 use crate::ask::grep::GrepOptions;
+use crate::ast::resolve::ALWAYS_SKIPPED_DIRS;
 use crate::ast::SupportedLang;
 use std::path::{Path, PathBuf};
 
@@ -85,21 +86,33 @@ fn resolve(path: &str, root: &Path, cwd: &Path) -> Option<(PathBuf, String)> {
 /// A repo-relative source file Knot reads, or `None`.
 fn source_file(path: &str, root: &Path, cwd: &Path) -> Option<String> {
     let (full, rel) = resolve(path, root, cwd)?;
-    (full.is_file() && SupportedLang::from_path(&full).is_some()).then_some(rel)
+    (full.is_file() && SupportedLang::from_path(&full).is_some() && !unindexed(root, &rel)).then_some(rel)
 }
 
-/// Whether any file under `dir` is a source file Knot reads.
+/// Whether Knot's index leaves out the repo-relative `rel`: it sits in a hidden or
+/// always-skipped folder, or git ignores it. Knot would find nothing there that grep does.
+fn unindexed(root: &Path, rel: &str) -> bool {
+    if rel.is_empty() {
+        return false;
+    }
+    if rel.split('/').any(|c| c.starts_with('.') || ALWAYS_SKIPPED_DIRS.contains(&c)) {
+        return true;
+    }
+    git2::Repository::open(root).is_ok_and(|repo| repo.is_path_ignored(rel).unwrap_or(true))
+}
+
+/// Whether any file under `dir` is a source file Knot indexes. Walks with the index's
+/// own rules, so an ignored `target/` is neither counted nor walked.
 fn holds_source(dir: &Path) -> bool {
-    let Ok(entries) = std::fs::read_dir(dir) else { return false };
-    entries.flatten().any(|e| {
-        let path = e.path();
-        // file_type does not follow symlinks, so a link loop cannot recurse forever.
-        match e.file_type() {
-            Ok(t) if t.is_dir() => holds_source(&path),
-            Ok(t) if t.is_file() => SupportedLang::from_path(&path).is_some(),
-            _ => false,
-        }
-    })
+    ignore::WalkBuilder::new(dir)
+        .follow_links(false)
+        .filter_entry(|e| {
+            let is_dir = e.file_type().is_some_and(|t| t.is_dir());
+            !(is_dir && e.depth() > 0 && ALWAYS_SKIPPED_DIRS.contains(&e.file_name().to_string_lossy().as_ref()))
+        })
+        .build()
+        .flatten()
+        .any(|e| e.file_type().is_some_and(|t| t.is_file()) && SupportedLang::from_path(e.path()).is_some())
 }
 
 fn classify_grep(prog: &str, args: &[&str], root: &Path, cwd: &Path) -> Option<Plan> {
@@ -147,6 +160,9 @@ fn classify_grep(prog: &str, args: &[&str], root: &Path, cwd: &Path) -> Option<P
         return None; // `-` is stdin; anything else dashed is an option after `--`
     }
     let (full, rel) = resolve(path.unwrap_or("."), root, cwd)?;
+    if unindexed(root, &rel) {
+        return None;
+    }
     if full.is_dir() {
         // Plain grep refuses directories; and a tree with no source has nothing for Knot to search.
         if (!is_rg && !recursive) || !holds_source(&full) {
@@ -369,6 +385,46 @@ mod tests {
         for cmd in ["grep -rn TODO notes", "grep foo app.log", "sed -n '1,5p' notes/todo.txt"] {
             assert_eq!(plan(&dir, cmd), Plan::PassThrough, "{cmd}");
         }
+    }
+
+    #[test]
+    fn ignored_and_skipped_paths_pass_through() {
+        let dir = repo();
+        git2::Repository::init(dir.path()).unwrap();
+        std::fs::write(dir.path().join(".gitignore"), "vendor/\nsrc/gen.rs\n").unwrap();
+        for sub in ["vendor/lib", "target/debug", "node_modules/x", "reference/r", ".hidden"] {
+            std::fs::create_dir_all(dir.path().join(sub)).unwrap();
+            std::fs::write(dir.path().join(sub).join("x.rs"), "fn needle() {}\n").unwrap();
+        }
+        std::fs::write(dir.path().join("src/gen.rs"), "fn needle() {}\n").unwrap();
+        for cmd in [
+            "grep -rn needle vendor",
+            "grep -rn needle vendor/lib",
+            "grep -n needle vendor/lib/x.rs",
+            "grep -rn needle target",
+            "rg needle node_modules/x",
+            "grep -rn needle reference",
+            "grep -rn needle .hidden",
+            "grep -n needle src/gen.rs",
+            "sed -n '1,1p' vendor/lib/x.rs",
+            "sed -n '1,1p' src/gen.rs",
+        ] {
+            assert_eq!(plan(&dir, cmd), Plan::PassThrough, "{cmd}");
+        }
+        // Source outside the ignored folders still swaps
+        assert_eq!(plan(&dir, "grep -rn needle src"), grep("needle", Some("src"), false, false));
+    }
+
+    #[test]
+    fn a_tree_whose_only_source_is_ignored_passes_through() {
+        let dir = tempfile::tempdir().unwrap();
+        git2::Repository::init(dir.path()).unwrap();
+        std::fs::write(dir.path().join(".gitignore"), "gen/\n").unwrap();
+        std::fs::create_dir_all(dir.path().join("pkg/gen")).unwrap();
+        std::fs::create_dir_all(dir.path().join("pkg/target")).unwrap();
+        std::fs::write(dir.path().join("pkg/gen/x.rs"), "fn needle() {}\n").unwrap();
+        std::fs::write(dir.path().join("pkg/target/y.rs"), "fn needle() {}\n").unwrap();
+        assert_eq!(plan(&dir, "grep -rn needle pkg"), Plan::PassThrough);
     }
 
     #[test]
