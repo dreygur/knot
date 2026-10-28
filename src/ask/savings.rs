@@ -5,9 +5,10 @@
 //! Tokens are estimated as bytes / 4, the same rough rule Trail uses, so the two
 //! tools' numbers are comparable but neither is exact.
 
+use crate::ask::events::read_tail;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
-use std::io::{Read, Seek, SeekFrom, Write};
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
 const LEDGER_FILE: &str = "savings.jsonl";
@@ -69,18 +70,6 @@ fn record_at(ledger: &Path, root: &Path, tool: &str, files: &[String], output: &
     if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(ledger) {
         let _ = writeln!(file, "{line}");
     }
-}
-
-fn read_tail(path: &Path, max: u64) -> Option<String> {
-    let mut file = std::fs::File::open(path).ok()?;
-    let len = file.metadata().ok()?.len();
-    let start = len.saturating_sub(max);
-    file.seek(SeekFrom::Start(start)).ok()?;
-    let mut bytes = Vec::new();
-    file.read_to_end(&mut bytes).ok()?;
-    let text = String::from_utf8_lossy(&bytes).into_owned();
-    // Drop a line cut in half by the seek
-    Some(if start > 0 { text.split_once('\n').map_or(String::new(), |(_, rest)| rest.to_string()) } else { text })
 }
 
 fn read_head(path: &Path, max: u64) -> Option<String> {

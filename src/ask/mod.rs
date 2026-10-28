@@ -1,4 +1,5 @@
 mod cache;
+pub mod events;
 pub mod grep;
 mod index;
 mod learnings;
