@@ -95,7 +95,7 @@ fn usage_exit(usage: &str) -> ! {
 }
 
 const COMMANDS: &[&str] = &[
-    "recall", "commit", "callers", "callees", "blast", "ask", "grep", "map", "note", "skeleton", "index", "statusline", "check",
+    "recall", "commit", "callers", "callees", "blast", "ask", "grep", "shell", "map", "note", "skeleton", "index", "statusline", "check",
     "explore", "viz", "status", "logs", "init", "help", "version",
 ];
 
@@ -756,6 +756,19 @@ fn cli_grep(opts: &crate::ask::grep::GrepOptions, json: bool) -> Result<()> {
     Ok(())
 }
 
+/// Print what Knot answers for a swapped command. A command Knot does not answer runs
+/// in the shell unchanged, so a stale rewrite still works.
+fn cli_shell(command: &str) -> Result<()> {
+    let here = std::env::current_dir()?;
+    let root = crate::ask::repo_root(&here);
+    if matches!(crate::shell::classify(command, &root, &here), crate::shell::Plan::PassThrough) {
+        let status = std::process::Command::new("sh").arg("-c").arg(command).status()?;
+        std::process::exit(status.code().unwrap_or(1));
+    }
+    print!("{}", crate::shell::run::run(command, &root, &here)?);
+    Ok(())
+}
+
 fn cli_map(max_dirs: usize, json: bool) -> Result<()> {
     let cwd = crate::ask::current_repo_root()?;
     let map = crate::ask::map::map(&cwd, Some(&crate::ask::index_root(&cwd)), max_dirs)?;
@@ -1109,6 +1122,7 @@ pub fn print_help() {
     println!("  knot map [--max-dirs N] [--json]        Orientation: directories, hubs, most central code");
     println!("  knot grep <pattern> [-i] [--fixed] [--in <path>] [--json]");
     println!("                                          Every match in indexed code, grouped by symbol");
+    println!("  knot shell -- <command>                 Run a grep or sed range the way Knot answers it (used by the hook)");
     println!("  knot index [--quiet]                    Refresh the code index (graph commands also do this)");
     println!("  knot statusline                         Claude Code's status line (index, learnings, savings, context)");
     println!("                                          (tokens saved are estimated: files an answer names, read");
@@ -1192,6 +1206,13 @@ pub async fn run() -> Result<()> {
                 usage_exit("knot grep <pattern> [-i] [--fixed] [--in <path>] [--json]");
             }
             cli_grep(&opts, json)
+        }
+        Some("shell") => {
+            let command = args.skip_while(|a| a == "--").collect::<Vec<_>>().join(" ");
+            if command.trim().is_empty() {
+                usage_exit("knot shell -- <command>");
+            }
+            cli_shell(&command)
         }
         Some("note") => cli_note(args),
         Some("hook") => {
