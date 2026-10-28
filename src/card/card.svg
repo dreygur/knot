@@ -1,0 +1,45 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="675" viewBox="0 0 1200 675">
+  <defs>
+    <radialGradient id="bg" gradientUnits="userSpaceOnUse" cx="1200" cy="0" r="1440" gradientTransform="matrix(1 0 0 0.421875 0 0)">
+      <stop offset="0" stop-color="#0e2a22"/>
+      <stop offset="0.55" stop-color="#0b0f17"/>
+    </radialGradient>
+    <linearGradient id="area" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#34d399" stop-opacity="0.35"/>
+      <stop offset="1" stop-color="#34d399" stop-opacity="0"/>
+    </linearGradient>
+  </defs>
+  <rect width="1200" height="675" fill="#0b0f17"/>
+  <rect width="1200" height="675" fill="url(#bg)"/>
+
+  <image x="56" y="44" width="181.4" height="52" href="data:image/png;base64,{{logo}}"/>
+  <text x="1144" y="78" text-anchor="end" font-family="IBM Plex Mono" font-size="22" fill="#8b97a8">{{top_right}}</text>
+
+  <g font-family="IBM Plex Sans">
+    <text x="56" y="201.5" font-size="84" font-weight="600" fill="#e6edf3">{{tokens_saved}}</text>
+    <text x="56" y="244.6" font-size="24" fill="#8b97a8">tokens saved<tspan dx="12" font-family="IBM Plex Mono" font-size="18" fill-opacity="0.75">≈ estimated</tspan></text>
+    <text x="{{less_x}}" y="201.5" font-size="84" font-weight="600" fill="#34d399">{{less_to_read}}</text>
+    <text x="{{less_x}}" y="244.6" font-size="24" fill="#8b97a8">less for the agent to read</text>
+  </g>
+  {{trend}}
+
+  <g font-family="IBM Plex Mono" font-size="22">
+    <rect x="57" y="292" width="347.3" height="146" rx="16" fill="#34d399" fill-opacity="0.06" stroke="#1f5c48" stroke-width="2"/>
+    <text x="78" y="333.5" fill="#8b97a8">answers from the graph</text>
+    <text x="78" y="382.4" font-size="30" fill="#34d399">{{graph_tokens}}</text>
+    <text x="78" y="413.1" fill="#8b97a8">{{graph_count}}</text>
+
+    <rect x="426.3" y="292" width="347.3" height="146" rx="16" fill="#34d399" fill-opacity="0.06" stroke="#1f5c48" stroke-width="2"/>
+    <text x="447.3" y="333.5" fill="#8b97a8">learnings reused</text>
+    <text x="447.3" y="382.4" font-size="30" fill="#34d399">{{learning_tokens}}</text>
+    <text x="447.3" y="413.1" fill="#8b97a8">{{learning_count}}</text>
+
+    <rect x="795.7" y="292" width="347.3" height="146" rx="16" fill="none" stroke="#1d2632" stroke-width="2"/>
+    <text x="816.7" y="333.5" fill="#8b97a8">grep/sed swaps</text>
+    <text x="816.7" y="382.4" font-size="30" fill="#34d399">{{swap_tokens}}</text>
+    <text x="816.7" y="413.1" fill="#8b97a8">{{swap_count}}</text>
+  </g>
+
+  {{chips}}
+  <text x="1144" y="635" text-anchor="end" font-family="IBM Plex Mono" font-size="22" fill="#8b97a8">github.com/dreygur/knot</text>
+</svg>
