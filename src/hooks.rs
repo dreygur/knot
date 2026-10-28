@@ -131,11 +131,20 @@ pub fn register_repo(repo_root: &Path, bin_path: &Path) -> Result<SwapInstall> {
 
 fn register_repo_in(repo_root: &Path, bin_path: &Path, home: &Path) -> Result<SwapInstall> {
     let local = repo_root.join(LOCAL_SETTINGS);
-    let mut cfg = read_settings(&local);
+    // A hostile clone can commit `.claude` or the settings file as a symlink
+    refuse_symlink(&repo_root.join(".claude"))?;
+    refuse_symlink(&local)?;
+    let mut cfg = read_settings(&local)?;
     let before = cfg.clone();
 
-    let others = [local.clone(), repo_root.join(".claude/settings.json"), home.join(".claude/settings.json")];
-    let rival = others.iter().find_map(|p| other_bash_hook(&read_settings(p)));
+    let mut rival = None;
+    for path in [local.clone(), repo_root.join(".claude/settings.json"), home.join(".claude/settings.json")] {
+        let found = if path == local { other_bash_hook(&cfg) } else { other_bash_hook(&read_settings(&path)?) };
+        if found.is_some() {
+            rival = found;
+            break;
+        }
+    }
     let bin = format!("\"{}\"", bin_path.to_string_lossy());
     let (command, result) = match rival {
         Some(to) => (format!("{bin} hook pre-tool --no-swap"), SwapInstall::Deferred { to }),
@@ -153,19 +162,52 @@ fn register_repo_in(repo_root: &Path, bin_path: &Path, home: &Path) -> Result<Sw
     list.push(json!({"matcher": "Bash", "hooks": [{"type": "command", "command": command}]}));
 
     if cfg != before {
-        if let Some(parent) = local.parent() {
-            std::fs::create_dir_all(parent)?;
+        let dir = repo_root.join(".claude");
+        std::fs::create_dir_all(&dir)?;
+        // Belt and braces: the created or existing folder must really sit inside the repo
+        if !dir.canonicalize()?.starts_with(repo_root.canonicalize()?) {
+            anyhow::bail!("{} resolves outside the repo; Knot does not write there", dir.display());
         }
         let mut content = serde_json::to_string_pretty(&cfg)?;
         content.push('\n');
-        std::fs::write(&local, content)?;
+        write_atomic(&local, &content)?;
     }
     ignore_in_git(repo_root)?;
     Ok(result)
 }
 
-fn read_settings(path: &Path) -> serde_json::Value {
-    std::fs::read_to_string(path).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_else(|| json!({}))
+fn refuse_symlink(path: &Path) -> Result<()> {
+    if std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink()) {
+        anyhow::bail!("{} is a symlink; Knot does not write through it", path.display());
+    }
+    Ok(())
+}
+
+/// Write to a sibling temp file and rename it into place, so a crash leaves the old file.
+fn write_atomic(path: &Path, content: &str) -> Result<()> {
+    refuse_symlink(path)?;
+    let mut name = path.file_name().unwrap_or_default().to_os_string();
+    name.push(".knot-tmp");
+    let tmp = path.with_file_name(name);
+    refuse_symlink(&tmp)?;
+    std::fs::write(&tmp, content)?;
+    std::fs::rename(&tmp, path)?;
+    Ok(())
+}
+
+/// A missing file is `{}`; one that cannot be read or is not a JSON object is an error
+/// naming it, so a hand-edited file is never overwritten from an empty object.
+fn read_settings(path: &Path) -> Result<serde_json::Value> {
+    let text = match std::fs::read_to_string(path) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(json!({})),
+        Err(e) => anyhow::bail!("cannot read {}: {e}", path.display()),
+    };
+    match serde_json::from_str::<serde_json::Value>(&text) {
+        Ok(v) if v.is_object() => Ok(v),
+        Ok(_) => anyhow::bail!("{} is not a JSON object; fix it and run knot init --swaps again", path.display()),
+        Err(e) => anyhow::bail!("{} is not valid JSON ({e}); fix it and run knot init --swaps again", path.display()),
+    }
 }
 
 /// The command of the first `PreToolUse` hook in `cfg` that is not Knot's and runs for Bash.
@@ -191,23 +233,23 @@ fn ignore_in_git(repo_root: &Path) -> Result<()> {
     if repo.status_should_ignore(Path::new(LOCAL_SETTINGS)).unwrap_or(false) {
         return Ok(());
     }
-    let exclude = repo.path().join("info").join("exclude");
+    let info = repo.path().join("info");
+    let exclude = info.join("exclude");
+    refuse_symlink(&info)?;
+    refuse_symlink(&exclude)?;
     let mut content = std::fs::read_to_string(&exclude).unwrap_or_default();
     if !content.is_empty() && !content.ends_with('\n') {
         content.push('\n');
     }
     content.push_str(LOCAL_SETTINGS);
     content.push('\n');
-    if let Some(parent) = exclude.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    std::fs::write(exclude, content)?;
-    Ok(())
+    std::fs::create_dir_all(&info)?;
+    write_atomic(&exclude, &content)
 }
 
 /// What `register_repo` installed here, for `knot status`; `None` when nothing is.
 pub fn repo_swaps(repo_root: &Path) -> Option<SwapInstall> {
-    let cfg = read_settings(&repo_root.join(LOCAL_SETTINGS));
+    let cfg = read_settings(&repo_root.join(LOCAL_SETTINGS)).ok()?;
     let ours = cfg.pointer("/hooks/PreToolUse")?.as_array()?.iter().find(|e| is_knot_entry(e))?;
     let command = ours.pointer("/hooks/0/command")?.as_str()?;
     if !command.ends_with("--no-swap") {
@@ -215,8 +257,8 @@ pub fn repo_swaps(repo_root: &Path) -> Option<SwapInstall> {
     }
     // The rival is whatever the settings files show now; it may have gone since
     let to = other_bash_hook(&cfg)
-        .or_else(|| other_bash_hook(&read_settings(&repo_root.join(".claude/settings.json"))))
-        .or_else(|| home_dir().ok().and_then(|h| other_bash_hook(&read_settings(&h.join(".claude/settings.json")))))
+        .or_else(|| other_bash_hook(&read_settings(&repo_root.join(".claude/settings.json")).ok()?))
+        .or_else(|| home_dir().ok().and_then(|h| other_bash_hook(&read_settings(&h.join(".claude/settings.json")).ok()?)))
         .unwrap_or_default();
     Some(SwapInstall::Deferred { to })
 }
@@ -306,6 +348,91 @@ mod tests {
         register_repo_in(repo.path(), Path::new(BIN), home.path()).unwrap();
         let exclude = std::fs::read_to_string(repo.path().join(".git/info/exclude")).unwrap();
         assert!(exclude.matches(".claude/settings.local.json").count() <= 1, "{exclude}");
+    }
+
+    #[test]
+    fn malformed_local_settings_are_an_error_and_left_alone() {
+        let repo = tempfile::tempdir().unwrap();
+        let home = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(repo.path().join(".claude")).unwrap();
+        let local = repo.path().join(".claude/settings.local.json");
+        let broken = "{\"permissions\": {\"allow\": [\"x\"],},}\n";
+        std::fs::write(&local, broken).unwrap();
+
+        let err = register_repo_in(repo.path(), Path::new(BIN), home.path()).unwrap_err().to_string();
+
+        assert!(err.contains("settings.local.json"), "{err}");
+        assert_eq!(std::fs::read_to_string(&local).unwrap(), broken);
+    }
+
+    #[test]
+    fn a_broken_rival_file_is_an_error_not_no_rival() {
+        let repo = project_with_bash_hook("rtk hook pre-tool");
+        std::fs::write(repo.path().join(".claude/settings.json"), "{ nope").unwrap();
+        let home = tempfile::tempdir().unwrap();
+        let err = register_repo_in(repo.path(), Path::new(BIN), home.path()).unwrap_err().to_string();
+        assert!(err.contains("settings.json"), "{err}");
+        assert!(!repo.path().join(".claude/settings.local.json").exists());
+    }
+
+    #[test]
+    fn a_non_object_top_level_is_an_error_not_a_panic() {
+        let repo = tempfile::tempdir().unwrap();
+        let home = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(repo.path().join(".claude")).unwrap();
+        let local = repo.path().join(".claude/settings.local.json");
+        std::fs::write(&local, "[]").unwrap();
+
+        let err = register_repo_in(repo.path(), Path::new(BIN), home.path()).unwrap_err().to_string();
+
+        assert!(err.contains("not a JSON object"), "{err}");
+        assert_eq!(std::fs::read_to_string(&local).unwrap(), "[]");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlinked_claude_folder_or_settings_file_is_refused() {
+        let outside = tempfile::tempdir().unwrap();
+        let home = tempfile::tempdir().unwrap();
+
+        // `.claude` itself a link to a folder elsewhere
+        let repo = tempfile::tempdir().unwrap();
+        std::os::unix::fs::symlink(outside.path(), repo.path().join(".claude")).unwrap();
+        let err = register_repo_in(repo.path(), Path::new(BIN), home.path()).unwrap_err().to_string();
+        assert!(err.contains("symlink"), "{err}");
+        assert_eq!(std::fs::read_dir(outside.path()).unwrap().count(), 0, "nothing written through the link");
+
+        // the settings file a link to a file elsewhere
+        let repo = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(repo.path().join(".claude")).unwrap();
+        let target = outside.path().join("victim");
+        std::fs::write(&target, "keep me").unwrap();
+        std::os::unix::fs::symlink(&target, repo.path().join(".claude/settings.local.json")).unwrap();
+        let err = register_repo_in(repo.path(), Path::new(BIN), home.path()).unwrap_err().to_string();
+        assert!(err.contains("symlink"), "{err}");
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "keep me");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlinked_git_exclude_is_not_written_through() {
+        let outside = tempfile::tempdir().unwrap();
+        let home = tempfile::tempdir().unwrap();
+        let repo = tempfile::tempdir().unwrap();
+        git2::Repository::init(repo.path()).unwrap();
+        let target = outside.path().join("victim");
+        std::fs::write(&target, "keep me").unwrap();
+        let exclude = repo.path().join(".git/info/exclude");
+        std::fs::create_dir_all(exclude.parent().unwrap()).unwrap();
+        let _ = std::fs::remove_file(&exclude);
+        std::os::unix::fs::symlink(&target, &exclude).unwrap();
+
+        let git = git2::Repository::open(repo.path()).unwrap();
+        // Only meaningful where the global ignore does not already cover the file
+        if !git.status_should_ignore(Path::new(".claude/settings.local.json")).unwrap() {
+            assert!(register_repo_in(repo.path(), Path::new(BIN), home.path()).is_err());
+        }
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "keep me");
     }
 
     #[test]
