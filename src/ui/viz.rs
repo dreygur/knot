@@ -302,6 +302,40 @@ mod tests {
     }
 
     #[test]
+    fn note_hint_is_a_command_that_runs() {
+        let t = TEMPLATE;
+        assert!(t.contains(r#"knot note --title "&lt;the fact&gt;" --touches "${esc(m.f)}""#), "title and a quoted path");
+        assert!(t.contains("No learnings touch this file yet"), "learnings attach by file");
+        assert!(!t.contains("#${esc(m.l"), "no symbol fragment");
+    }
+
+    #[test]
+    fn page_text_stays_inside_the_font_subset() {
+        for curly in ['\u{201c}', '\u{201d}', '\u{2018}', '\u{2019}'] {
+            assert!(!TEMPLATE.contains(curly), "{curly}");
+        }
+    }
+
+    #[test]
+    fn page_survives_a_bad_hash_and_no_webgl() {
+        let t = TEMPLATE;
+        assert!(t.contains("This browser has WebGL turned off, so the map can't draw."));
+        assert!(t.contains("try {\n    want = location.hash.startsWith(\"#select=\") ? decodeURIComponent("), "the decode is guarded");
+    }
+
+    #[test]
+    fn picking_a_symbol_shows_its_folder() {
+        assert!(TEMPLATE.contains("hidden.delete(m.fo)"));
+    }
+
+    #[test]
+    fn phone_header_keeps_the_theme_toggle() {
+        let phone = &TEMPLATE[TEMPLATE.find("@media (max-width: 760px)").unwrap()..];
+        assert!(phone.contains(".search kbd { display: none; }"));
+        assert!(phone.contains(".search { min-width: 0; }"));
+    }
+
+    #[test]
     fn inserted_text_is_not_rescanned_for_slots() {
         let mut graph = CodeGraph::default();
         graph.symbols.insert("a.rs::x".into(), symbol("a.rs::x", "fn x() { \"{{SIGMA}}\" }"));

@@ -151,6 +151,8 @@
 
   @media (max-width: 760px) {
     .mark span { display: none; }
+    .search { min-width: 0; }
+    .search kbd { display: none; }
     .legend { display: none; }
     .inspector { top: auto; left: 8px; right: 8px; bottom: 8px; width: auto; height: 62vh; transform: translateY(calc(100% + 24px)); }
     body.inspecting .zoom { right: 16px; bottom: calc(62vh + 20px); }
@@ -498,13 +500,23 @@ function start(pos) {
     return { ...d, color: palette.edge };
   }
 
-  const renderer = new Sigma(graph, $("stage"), {
-    labelFont: LABEL_FONT, labelWeight: "600", labelSize: 12,
-    labelColor: { attribute: "labelColor" }, labelDensity: 0.35, labelGridCellSize: 140,
-    labelRenderedSizeThreshold: 9, zIndex: true, minCameraRatio: 0.04, maxCameraRatio: 3,
-    defaultEdgeColor: palette.edge, stagePadding: 60,
-    defaultDrawNodeHover: drawHover, nodeReducer, edgeReducer,
-  });
+  // sigma draws with WebGL. Without it the bundle fails to define Sigma or the
+  // constructor throws, and the page would stay blank.
+  let renderer;
+  try {
+    renderer = new Sigma(graph, $("stage"), {
+      labelFont: LABEL_FONT, labelWeight: "600", labelSize: 12,
+      labelColor: { attribute: "labelColor" }, labelDensity: 0.35, labelGridCellSize: 140,
+      labelRenderedSizeThreshold: 9, zIndex: true, minCameraRatio: 0.04, maxCameraRatio: 3,
+      defaultEdgeColor: palette.edge, stagePadding: 60,
+      defaultDrawNodeHover: drawHover, nodeReducer, edgeReducer,
+    });
+  } catch (_) {
+    document.body.classList.add("blank");
+    $("status").hidden = false; $("bar").hidden = true;
+    $("statusText").textContent = "This browser has WebGL turned off, so the map can't draw.";
+    return;
+  }
   const cam = renderer.getCamera();
 
   // Folder names float over the median of their symbols, like a map.
@@ -571,7 +583,7 @@ function start(pos) {
   }
   function learnList(m) {
     if (!m.le.length) {
-      return `<div class="note">No learnings touch this symbol yet. Save one with<code>knot note --touches ${esc(m.f)}#${esc(m.l.split("::").pop())}</code></div>`;
+      return `<div class="note">No learnings touch this file yet. Save one with<code>knot note --title "&lt;the fact&gt;" --touches "${esc(m.f)}"</code></div>`;
     }
     return m.le.map((i) => DATA.learnings[i]).map((L) => `<div class="learn"><div class="t">${esc(L.title)}</div><div class="by">${esc(L.author)} · ${esc(L.date)}</div></div>`).join("");
   }
@@ -591,6 +603,10 @@ function start(pos) {
     }
     selected = id; neighbours = new Set(graph.neighbors(id));
     const m = graph.getNodeAttribute(id, "meta");
+    if (hidden.has(m.fo)) {
+      hidden.delete(m.fo);
+      $("chips").children[m.fo].setAttribute("aria-pressed", "true");
+    }
     $("iKind").innerHTML = `<span class="dot" style="background:${palette.folders[m.fo]}"></span>${esc(m.k)} · ${esc(DATA.folders[m.fo])}`;
     $("iName").textContent = m.l;
     $("iPath").textContent = `${m.f}:${m.ln}`;
@@ -669,7 +685,7 @@ function start(pos) {
     active = 0;
     results.innerHTML = hits.length
       ? hits.map((n, i) => `<button class="res" role="option" aria-selected="${i === 0}" data-id="${esc(n.id)}"><span class="dot" style="background:${palette.folders[n.fo]}"></span><span class="n">${esc(n.l)}</span><span class="p">${esc(n.f)}:${n.ln}</span></button>`).join("")
-      : `<div class="empty">No symbol or file matches “${esc(q.value.trim())}”</div>`;
+      : `<div class="empty">No symbol or file matches "${esc(q.value.trim())}"</div>`;
     results.classList.add("open"); q.parentElement.setAttribute("aria-expanded", "true");
   }
   function pick(id) {
@@ -730,8 +746,12 @@ function start(pos) {
   };
   applyTheme();
 
-  // `#select=<id>` opens on a symbol, so a link can point straight at one.
-  const want = location.hash.startsWith("#select=") ? decodeURIComponent(location.hash.slice(8)) : "";
+  // `#select=<id>` opens on a symbol, so a link can point straight at one. A malformed
+  // escape like `%E0` throws; the map then settles as if there were no hash.
+  let want = "";
+  try {
+    want = location.hash.startsWith("#select=") ? decodeURIComponent(location.hash.slice(8)) : "";
+  } catch (_) {}
   if (want && graph.hasNode(want)) {
     select(want);
     return;
