@@ -58,7 +58,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 tracing-appender = "0.2"
 
 # Cross-platform path helpers
-dirs = "5"
+dirs = "7"
 
 # AST and Code Graph Engine
 tree-sitter = "0.24"
