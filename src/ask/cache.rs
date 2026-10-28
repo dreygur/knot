@@ -11,7 +11,7 @@ use crate::ast::resolve::{list_supported_files, ParsedFile};
 use crate::ast::CodeGraph;
 
 /// Bump when the cached shape or tokenization changes, so old caches are ignored.
-const CACHE_VERSION: u32 = 9;
+const CACHE_VERSION: u32 = 10;
 const CACHE_SUBDIR: &str = "cache";
 const CACHE_FILE: &str = "index.json";
 /// Written into the cache folder so a repo without a `.knot/` rule never commits it.

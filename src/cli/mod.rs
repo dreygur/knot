@@ -292,7 +292,7 @@ async fn commit_current_session() -> Result<()> {
     }
     let root = crate::ask::current_repo_root()?;
     let from_origin = git2::Repository::open(&root).ok().and_then(|repo| {
-        let url = repo.find_remote("origin").ok()?.url()?.to_string();
+        let url = repo.find_remote("origin").ok()?.url().ok()?.to_string();
         let name = url.trim_end_matches('/').rsplit(['/', ':']).next()?.trim_end_matches(".git").to_string();
         (!name.is_empty()).then_some(name)
     });
@@ -385,7 +385,7 @@ fn changed_files(root: &Path) -> Vec<String> {
     let mut files: Vec<String> = statuses
         .iter()
         .filter(|s| !s.status().contains(git2::Status::WT_DELETED) && !s.status().contains(git2::Status::INDEX_DELETED))
-        .filter_map(|s| s.path().map(str::to_string))
+        .filter_map(|s| s.path().ok().map(str::to_string))
         .filter(|p| !p.starts_with(".knot/"))
         .collect();
     files.sort();
