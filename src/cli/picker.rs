@@ -3,8 +3,8 @@ use std::io::{self, Write};
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use crossterm::{cursor, execute, terminal};
 
-const INDIGO: &str = "\x1b[38;2;84;111;255m";
-const MUTED: &str = "\x1b[38;5;244m";
+const LIGHT_GREEN: &str = "\x1b[38;2;191;217;155m";
+const OLIVE: &str = "\x1b[38;2;152;159;95m";
 const AMBER: &str = "\x1b[38;5;179m";
 const RESET: &str = "\x1b[0m";
 const NOT_DETECTED: &str = " (not detected)";
@@ -105,14 +105,14 @@ impl Picker {
             let here = i == self.cursor;
             let pointer = if here { "›" } else { " " };
             let mark = if self.checked[i] { "[✓]" } else { "[ ]" };
-            let name = if here { paint(&row.label, INDIGO, style) } else { row.label.clone() };
-            let tag = if row.detected { String::new() } else { paint(NOT_DETECTED, MUTED, style) };
+            let name = if here { paint(&row.label, LIGHT_GREEN, style) } else { row.label.clone() };
+            let tag = if row.detected { String::new() } else { paint(NOT_DETECTED, OLIVE, style) };
             let gap = " ".repeat(width - label(row).chars().count());
-            let summary = paint(&row.summary, if row.machine_wide { AMBER } else { MUTED }, style);
+            let summary = paint(&row.summary, if row.machine_wide { AMBER } else { OLIVE }, style);
             lines.push(format!("{pointer} {mark} {name}{tag}{gap}   {summary}"));
         }
         lines.push(String::new());
-        lines.push(paint(FOOTER, MUTED, style));
+        lines.push(paint(FOOTER, OLIVE, style));
         lines
     }
 }
@@ -210,6 +210,13 @@ mod tests {
 
     fn picker() -> Picker {
         Picker::new("knot init · pick the agents you use:", vec![row("claude", true), row("codex", false), row("cursor", true)])
+    }
+
+    #[test]
+    fn colours_are_the_owner_palette() {
+        assert_eq!(LIGHT_GREEN, "\x1b[38;2;191;217;155m");
+        assert_eq!(OLIVE, "\x1b[38;2;152;159;95m");
+        assert_eq!(AMBER, "\x1b[38;5;179m");
     }
 
     #[test]
