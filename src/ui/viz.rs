@@ -75,7 +75,10 @@ fn open_browser(path: &Path) -> Result<()> {
 
 pub fn render_and_launch_viz(repo_root: &Path) -> Result<PathBuf> {
     let graph = crate::ask::load_graph(repo_root)?;
-    let learnings = crate::engine::learnings::active_learnings(repo_root).unwrap_or_default();
+    let learnings = crate::engine::learnings::active_learnings(repo_root).unwrap_or_else(|e| {
+        tracing::warn!("knot viz: could not read learnings, showing none: {e}");
+        Vec::new()
+    });
     let out_path = repo_root.join(".knot").join("graph.html");
     if let Some(parent) = out_path.parent() {
         fs::create_dir_all(parent)?;
@@ -89,10 +92,23 @@ pub fn render_and_launch_viz(repo_root: &Path) -> Result<PathBuf> {
 mod tests {
     use super::*;
     use crate::ast::resolve::CodeGraph;
-    use crate::ui::viz_assets::{data_uri_png, LOGO_LIGHT};
 
     fn empty() -> VizData {
         viz_data(&CodeGraph::default(), &[])
+    }
+
+    fn symbol(id: &str, signature: &str) -> crate::ast::types::SymbolNode {
+        crate::ast::types::SymbolNode {
+            id: id.into(),
+            file: id.split("::").next().unwrap_or("").into(),
+            name: id.rsplit("::").next().unwrap_or("").into(),
+            kind: crate::ast::types::SymbolKind::Function,
+            signature: signature.into(),
+            span: (1, 1),
+            crux: String::new(),
+            hash: String::new(),
+            outgoing_calls: vec![],
+        }
     }
 
     #[test]
@@ -126,6 +142,8 @@ mod tests {
         assert!(html.contains("new Worker(") || html.contains("requestAnimationFrame"));
         assert!(html.contains("graphologyLibrary.layoutForceAtlas2"));
         assert!(html.contains("self.DOMParser"), "the library needs DOMParser to load in a worker");
+        assert!(html.contains("job.step(FRAME_STEP)"), "the fallback steps a few iterations at a time");
+        assert!(html.contains("localStorage.getItem(key)"), "a finished layout is reused");
     }
 
     #[test]
@@ -139,9 +157,11 @@ mod tests {
     fn names_are_escaped_in_the_inspector() {
         let t = TEMPLATE;
         assert!(t.contains("const esc = (s) =>"));
-        assert!(t.contains("esc(m.l)"), "names");
-        assert!(t.contains("esc(m.s)"), "signatures");
+        assert!(t.contains("<span class=\"n\">${esc(m.l)}"), "names in caller and callee lists");
         assert!(t.contains("esc(L.title)"), "learning titles");
+        for field in ["iName", "iPath", "iSig"] {
+            assert!(t.contains(&format!("$(\"{field}\").textContent")), "{field} is set as text");
+        }
     }
 
     #[test]
@@ -150,20 +170,6 @@ mod tests {
         graph.symbols.insert("a.rs::x".into(), symbol("a.rs::x", "fn x() { \"{{SIGMA}}\" }"));
         let html = render_page(&viz_data(&graph, &[]));
         assert!(html.contains("{{SIGMA}}"), "a slot name inside data stays as text");
-    }
-
-    fn symbol(id: &str, signature: &str) -> crate::ast::types::SymbolNode {
-        crate::ast::types::SymbolNode {
-            id: id.into(),
-            file: id.split("::").next().unwrap_or("").into(),
-            name: id.rsplit("::").next().unwrap_or("").into(),
-            kind: crate::ast::types::SymbolKind::Function,
-            signature: signature.into(),
-            span: (1, 1),
-            crux: String::new(),
-            hash: String::new(),
-            outgoing_calls: vec![],
-        }
     }
 
     #[test]

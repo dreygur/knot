@@ -221,6 +221,11 @@ const DATA = {{DATA}};
 const LABEL_FONT = '"Knot Sans", system-ui, sans-serif';
 const SETTLE_RATIO = 2.4;
 const SETTLE_MS = 1100;
+const WORKER_STEP = 40;
+const FRAME_STEP = 3;
+const FRAME_BUDGET_MS = 12;
+// Bump the version when the layout changes, so old cached maps are not reused.
+const CACHE_PREFIX = "knot-viz:1:";
 
 const $ = (id) => document.getElementById(id);
 const fmt = new Intl.NumberFormat("en");
@@ -258,7 +263,7 @@ function buildPalette() {
 // settles into its own region and calls between folders read as bridges. It uses no
 // outside names but the two libraries, so a worker can run it from its source text.
 function makeLayout(input) {
-  const ITERATIONS = 1200, CHUNK = 40, SEED = 0x6b6e6f74;
+  const ITERATIONS = 1200, MIN_ITERATIONS = 240, SETTLED = 5.5e-4, SEED = 0x6b6e6f74;
   const fa2 = graphologyLibrary.layoutForceAtlas2;
   let seed = SEED;
   const random = () => {
@@ -289,23 +294,35 @@ function makeLayout(input) {
   }
   const settings = { ...fa2.inferSettings(L), gravity: 0.4, scalingRatio: 3, barnesHutOptimize: true, edgeWeightInfluence: 1, linLogMode: true, outboundAttractionDistribution: true };
 
-  let done = 0;
+  const positions = () => {
+    const p = new Float64Array(n * 2);
+    for (let i = 0; i < n; i++) {
+      const a = L.getNodeAttributes(String(i));
+      p[2 * i] = a.x; p[2 * i + 1] = a.y;
+    }
+    return p;
+  };
+
+  // Motion is the mean distance a symbol moves per iteration, relative to the mean
+  // distance from the centre, so one threshold fits small and large graphs.
+  let done = 0, motion = Infinity;
   return {
     get progress() { return done / ITERATIONS; },
-    step() {
-      const k = Math.min(CHUNK, ITERATIONS - done);
-      fa2.assign(L, { iterations: k, getEdgeWeight: "weight", settings });
-      done += k;
-      return done >= ITERATIONS;
-    },
-    positions() {
-      const p = new Float64Array(n * 2);
-      for (let i = 0; i < n; i++) {
-        const a = L.getNodeAttributes(String(i));
-        p[2 * i] = a.x; p[2 * i + 1] = a.y;
+    get motion() { return motion; },
+    step(k) {
+      const before = positions();
+      fa2.assign(L, { iterations: Math.min(k, ITERATIONS - done), getEdgeWeight: "weight", settings });
+      done = Math.min(ITERATIONS, done + k);
+      const after = positions();
+      let moved = 0, spread = 0;
+      for (let i = 0; i < after.length; i += 2) {
+        moved += Math.hypot(after[i] - before[i], after[i + 1] - before[i + 1]);
+        spread += Math.hypot(after[i], after[i + 1]);
       }
-      return p;
+      motion = moved / k / (spread || 1);
+      return done >= ITERATIONS || (done >= MIN_ITERATIONS && motion < SETTLED);
     },
+    positions,
   };
 }
 
@@ -314,7 +331,7 @@ function makeLayout(input) {
 const WORKER_PRELUDE = "self.DOMParser = self.DOMParser || function () {}; self.Document = self.Document || function () {};";
 
 function workerLayout(input, onProgress, onDone, onFail) {
-  const body = "onmessage = (e) => { const job = makeLayout(e.data); while (!job.step()) { postMessage({ p: job.progress }); } const pos = job.positions(); postMessage({ pos }, [pos.buffer]); };";
+  const body = `onmessage = (e) => { const job = makeLayout(e.data); while (!job.step(${WORKER_STEP})) { postMessage({ p: job.progress }); } const pos = job.positions(); postMessage({ pos }, [pos.buffer]); };`;
   const src = [WORKER_PRELUDE, $("lib-graphology").textContent, $("lib-fa2").textContent, makeLayout.toString(), body].join("\n;\n");
   const url = URL.createObjectURL(new Blob([src], { type: "text/javascript" }));
   const w = new Worker(url);
@@ -331,13 +348,14 @@ function workerLayout(input, onProgress, onDone, onFail) {
   w.postMessage(input);
 }
 
-// Some file:// contexts refuse workers; then the layout runs in short slices per frame.
+// Some file:// contexts refuse workers; then the layout runs a few iterations at a
+// time, as many as fit in a frame, so the page keeps responding.
 function frameLayout(input, onProgress, onDone) {
   const job = makeLayout(input);
   const tick = () => {
     const t0 = performance.now();
     let finished;
-    do { finished = job.step(); } while (!finished && performance.now() - t0 < 12);
+    do { finished = job.step(FRAME_STEP); } while (!finished && performance.now() - t0 < FRAME_BUDGET_MS);
     onProgress(job.progress);
     if (finished) {
       onDone(job.positions());
@@ -348,12 +366,55 @@ function frameLayout(input, onProgress, onDone) {
   requestAnimationFrame(tick);
 }
 
+// FNV-1a over the folders and edges: the same graph gives the same key.
+function layoutKey(input) {
+  let h = 0x811c9dc5;
+  for (const list of [input.fo, input.edges]) {
+    for (const v of list) {
+      h = Math.imul(h ^ v, 0x01000193);
+    }
+    h = Math.imul(h ^ 0xff, 0x01000193);
+  }
+  return `${CACHE_PREFIX}${input.n}:${(h >>> 0).toString(16)}`;
+}
+
+// A finished layout is kept in localStorage, so opening the same graph again skips it.
+// Storage can be missing, full or blocked on file://; any failure just means computing.
+function cachedLayout(key, n) {
+  try {
+    const pos = JSON.parse(localStorage.getItem(key) || "null");
+    return Array.isArray(pos) && pos.length === n * 2 ? Float64Array.from(pos) : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+function keepLayout(key, pos) {
+  const text = JSON.stringify(Array.from(pos, (v) => Math.round(v * 100) / 100));
+  try {
+    localStorage.setItem(key, text);
+    return;
+  } catch (_) {}
+  try {
+    Object.keys(localStorage).filter((k) => k.startsWith(CACHE_PREFIX)).forEach((k) => localStorage.removeItem(k));
+    localStorage.setItem(key, text);
+  } catch (_) {}
+}
+
 function layout(onDone) {
   const input = { n: DATA.nodes.length, nf: DATA.folders.length, fo: Int32Array.from(DATA.nodes, (d) => d.fo), edges: Int32Array.from(DATA.edges.flat()) };
+  const key = layoutKey(input);
+  const hit = cachedLayout(key, input.n);
+  if (hit) {
+    onDone(hit);
+    return;
+  }
+
   const progress = (p) => { $("barFill").style.width = (p * 100).toFixed(1) + "%"; };
-  const fallback = () => frameLayout(input, progress, onDone);
+  const finish = (pos) => { keepLayout(key, pos); onDone(pos); };
+  const fallback = () => frameLayout(input, progress, finish);
   try {
-    workerLayout(input, progress, onDone, fallback);
+    workerLayout(input, progress, finish, fallback);
   } catch (_) {
     fallback();
   }
@@ -368,7 +429,7 @@ function start(pos) {
   document.body.classList.remove("blank");
 
   const graph = new graphology.Graph({ type: "directed" });
-  const maxPr = Math.max(...DATA.nodes.map((n) => n.pr)) || 1;
+  const maxPr = DATA.nodes.reduce((m, n) => Math.max(m, n.pr), 0) || 1;
   const byRank = [...DATA.nodes].sort((a, b) => b.pr - a.pr);
   const rank = new Map(byRank.map((n, i) => [n.id, i + 1]));
   DATA.nodes.forEach((n, i) => graph.addNode(n.id, { x: pos[2 * i], y: -pos[2 * i + 1], size: 2.2 + 15 * Math.sqrt(n.pr / maxPr), label: n.l, fo: n.fo, meta: n }));
@@ -529,9 +590,9 @@ function start(pos) {
     selected = id; neighbours = new Set(graph.neighbors(id));
     const m = graph.getNodeAttribute(id, "meta");
     $("iKind").innerHTML = `<span class="dot" style="background:${palette.folders[m.fo]}"></span>${esc(m.k)} · ${esc(DATA.folders[m.fo])}`;
-    $("iName").innerHTML = esc(m.l);
-    $("iPath").innerHTML = `${esc(m.f)}:${m.ln}`;
-    $("iSig").innerHTML = esc(m.s);
+    $("iName").textContent = m.l;
+    $("iPath").textContent = `${m.f}:${m.ln}`;
+    $("iSig").textContent = m.s;
     $("iRank").textContent = `#${rank.get(id)}`;
     const ins = graph.inNeighbors(id), outs = graph.outNeighbors(id);
     $("iInN").textContent = ins.length; $("iOutN").textContent = outs.length;
