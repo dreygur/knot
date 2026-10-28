@@ -4,8 +4,8 @@ use std::path::{Path, PathBuf};
 
 /// Markers that identify Knot's own entries in `~/.claude/settings.json`: the current
 /// `knot hook` commands and the older shell script hooks they replace.
-/// The pre-tool markers include the quoted binary's name so another tool's own
-/// `<tool> hook pre-tool` is never mistaken for ours.
+/// The pre-tool and session-start markers include the quoted binary's name so another tool's own
+/// `<tool> hook pre-tool` or `hook session-start` is never mistaken for ours.
 const KNOT_HOOK_MARKERS: &[&str] = &[
     " hook post-tool",
     " hook stop",
@@ -13,6 +13,8 @@ const KNOT_HOOK_MARKERS: &[&str] = &[
     "knot-stop",
     "knot\" hook pre-tool",
     "knot.exe\" hook pre-tool",
+    "knot\" hook session-start",
+    "knot.exe\" hook session-start",
 ];
 
 /// Register Claude Code hooks and, when none is set, the status line. Returns `Ok(true)`
@@ -62,6 +64,8 @@ fn wanted_hooks(bin: &str) -> Vec<(&'static str, serde_json::Value)> {
             }),
         ),
         ("Stop", json!({"hooks": [{"type": "command", "command": format!("{bin} hook stop")}]})),
+        // Index counts and where to start, so the agent asks Knot before grepping
+        ("SessionStart", json!({"hooks": [{"type": "command", "command": format!("{bin} hook session-start")}]})),
     ]
 }
 
@@ -75,7 +79,7 @@ fn merge_settings(settings: &Path, bin: &str) -> Result<bool> {
     }
     // Drop every Knot entry (older script hooks included) and add the current ones, so a
     // moved binary or an upgrade leaves exactly one set. Other tools' hooks are untouched.
-    for event in ["PreToolUse", "PostToolUse", "Stop"] {
+    for event in ["PreToolUse", "PostToolUse", "Stop", "SessionStart"] {
         if let Some(list) = cfg["hooks"].get_mut(event).and_then(|v| v.as_array_mut()) {
             list.retain(|e| !is_knot_entry(e));
         }
@@ -86,7 +90,7 @@ fn merge_settings(settings: &Path, bin: &str) -> Result<bool> {
         }
         cfg["hooks"][event].as_array_mut().unwrap().push(entry);
     }
-    for event in ["PreToolUse", "PostToolUse", "Stop"] {
+    for event in ["PreToolUse", "PostToolUse", "Stop", "SessionStart"] {
         if cfg["hooks"].get(event).and_then(|v| v.as_array()).is_some_and(|a| a.is_empty()) {
             cfg["hooks"].as_object_mut().unwrap().remove(event);
         }
@@ -529,6 +533,8 @@ mod tests {
         let cfg = read(&settings);
         assert_eq!(commands(&cfg, "PostToolUse"), vec!["\"/bin/knot\" hook post-tool"]);
         assert_eq!(commands(&cfg, "Stop"), vec!["\"/bin/knot\" hook stop"]);
+        assert_eq!(commands(&cfg, "SessionStart"), vec!["\"/bin/knot\" hook session-start"]);
+        assert!(cfg.pointer("/hooks/SessionStart/0/matcher").is_none(), "every session start, no matcher");
         assert_eq!(cfg.pointer("/hooks/PostToolUse/0/matcher").unwrap(), "Read|Edit|Write|MultiEdit");
         assert_eq!(cfg["statusLine"]["command"], "\"/bin/knot\" statusline");
     }
@@ -562,5 +568,25 @@ mod tests {
         // A moved binary replaces its own entries rather than adding a second set
         merge_settings(&settings, "\"/moved/knot\"").unwrap();
         assert_eq!(commands(&read(&settings), "PostToolUse"), vec!["\"/moved/knot\" hook post-tool"]);
+        assert_eq!(commands(&read(&settings), "SessionStart"), vec!["\"/moved/knot\" hook session-start"]);
+    }
+
+    #[test]
+    fn another_tools_session_start_hook_is_kept() {
+        let dir = tempfile::tempdir().unwrap();
+        let settings = dir.path().join("settings.json");
+        std::fs::write(
+            &settings,
+            json!({ "hooks": { "SessionStart": [{"hooks": [{"type": "command", "command": "rtk hook session-start"}]}] } }).to_string(),
+        )
+        .unwrap();
+
+        assert!(merge_settings(&settings, "\"/bin/knot\"").unwrap());
+        merge_settings(&settings, "\"/bin/knot\"").unwrap();
+        assert_eq!(
+            commands(&read(&settings), "SessionStart"),
+            vec!["rtk hook session-start", "\"/bin/knot\" hook session-start"]
+        );
+        assert!(is_knot_entry(&json!({"hooks": [{"command": "\"C:\\knot.exe\" hook session-start"}]})));
     }
 }
