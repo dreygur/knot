@@ -313,23 +313,35 @@ fn log_event(root: &Path, session_id: &str, kind: EventKind, command: &str) {
     );
 }
 
+/// Whether `root` is the repo Claude Code was opened in (`project_dir`, from
+/// `CLAUDE_PROJECT_DIR`). The pre-tool hook is installed in one repo's local settings,
+/// so a command run in another (an `--add-dir` folder, a nested repo) is not its business.
+fn in_project(root: &Path, project_dir: Option<&Path>) -> bool {
+    project_dir.is_some_and(|p| !p.as_os_str().is_empty() && crate::ask::repo_root(p) == root)
+}
+
 /// The PreToolUse hook: swap grep/sed over code for `knot shell`, block python code edits once.
-/// Any failure prints nothing, so the command runs as it would without Knot.
-fn pre_tool(json: &serde_json::Value, root: &Path, cwd: &Path, session_id: &str, swap: bool) {
-    if json.pointer("/tool_name").and_then(|v| v.as_str()) != Some("Bash") {
-        return;
+/// `None` (also on any failure) lets the command run as it would without Knot.
+fn pre_tool(
+    json: &serde_json::Value,
+    root: &Path,
+    cwd: &Path,
+    project_dir: Option<&Path>,
+    session_id: &str,
+    swap: bool,
+) -> Option<serde_json::Value> {
+    if !in_project(root, project_dir) || json.pointer("/tool_name").and_then(|v| v.as_str()) != Some("Bash") {
+        return None;
     }
-    let Some(command) = json.pointer("/tool_input/command").and_then(|v| v.as_str()) else { return };
-    let Ok(bin) = std::env::current_exe() else { return };
+    let command = json.pointer("/tool_input/command").and_then(|v| v.as_str())?;
+    let bin = std::env::current_exe().ok()?;
     let plan = classify(command, root, cwd);
     let first_python = matches!(plan, Plan::PythonWrite { .. }) && session::deny_once(root, session_id, command);
     let already_denied = matches!(plan, Plan::PythonWrite { .. }) && !first_python;
-    if let Some(out) = pre_tool_output(&plan, command, &bin, swap, already_denied) {
-        println!("{out}");
-    }
     if matches!(plan, Plan::PythonWrite { .. }) {
         log_event(root, session_id, if first_python { EventKind::EditBlocked } else { EventKind::Override }, command);
     }
+    pre_tool_output(&plan, command, &bin, swap, already_denied)
 }
 
 pub(super) async fn run(event: &str, flags: &[String]) -> Result<()> {
@@ -343,6 +355,10 @@ pub(super) async fn run(event: &str, flags: &[String]) -> Result<()> {
     let cwd = PathBuf::from(text("/cwd"));
     let root = crate::ask::repo_root(if cwd.as_os_str().is_empty() { Path::new(".") } else { &cwd });
     let session_id = text("/session_id");
+    let project_dir = std::env::var_os("CLAUDE_PROJECT_DIR").map(PathBuf::from);
+    if event == "pre-tool" && !in_project(&root, project_dir.as_deref()) {
+        return Ok(()); // another repo's hook writes nothing here
+    }
 
     if !session_id.is_empty() {
         session::remember(
@@ -379,7 +395,10 @@ pub(super) async fn run(event: &str, flags: &[String]) -> Result<()> {
         }
         "pre-tool" => {
             let cwd = if cwd.as_os_str().is_empty() { PathBuf::from(".") } else { cwd };
-            pre_tool(&json, &root, &cwd, &session_id, !flags.iter().any(|f| f == "--no-swap"));
+            let swap = !flags.iter().any(|f| f == "--no-swap");
+            if let Some(out) = pre_tool(&json, &root, &cwd, project_dir.as_deref(), &session_id, swap) {
+                println!("{out}");
+            }
         }
         "stop" => {
             // Promoting memories must never block the nudge or the agent's stop
@@ -529,6 +548,48 @@ mod pre_tool_tests {
         let cmd = "KNOT_RAW=1 grep -rn foo src";
         let plan = classify(cmd, dir.path(), dir.path());
         assert!(pre_tool_output(&plan, cmd, Path::new("/bin/knot"), true, false).is_none());
+    }
+
+    fn bash(command: &str) -> serde_json::Value {
+        serde_json::json!({ "tool_name": "Bash", "tool_input": { "command": command } })
+    }
+
+    fn decision(out: &serde_json::Value) -> &str {
+        out.pointer("/hookSpecificOutput/permissionDecision").and_then(|v| v.as_str()).unwrap()
+    }
+
+    #[test]
+    fn hook_acts_only_in_the_repo_claude_code_opened() {
+        let outer = repo();
+        git2::Repository::init(outer.path()).unwrap();
+        let inner_dir = outer.path().join("inner");
+        std::fs::create_dir_all(inner_dir.join("src")).unwrap();
+        std::fs::write(inner_dir.join("src/b.rs"), "fn foo() {}\n").unwrap();
+        git2::Repository::init(&inner_dir).unwrap();
+        let inner = crate::ask::repo_root(&inner_dir);
+        let python = "python3 -c \"open('src/b.rs','w').write('x')\"";
+
+        for project in [None, Some(outer.path())] {
+            assert!(pre_tool(&bash("grep -rn foo src"), &inner, &inner, project, "s1", true).is_none(), "{project:?}");
+            assert!(pre_tool(&bash(python), &inner, &inner, project, "s1", true).is_none(), "{project:?}");
+        }
+        assert!(!crate::ask::state_dir(&inner).exists(), "nothing written for another repo's hook");
+
+        let here = pre_tool(&bash("grep -rn foo src"), &inner, &inner, Some(&inner_dir), "s1", true).unwrap();
+        assert_eq!(decision(&here), "allow");
+    }
+
+    #[test]
+    fn a_deferred_hook_never_swaps_but_still_blocks_python_writes() {
+        let dir = repo();
+        let root = crate::ask::repo_root(dir.path());
+        let project = Some(dir.path());
+        for cmd in ["grep -rn foo src", "sed -n '1,1p' src/a.rs"] {
+            assert!(pre_tool(&bash(cmd), &root, &root, project, "s1", false).is_none(), "{cmd}");
+        }
+        let python = "python3 -c \"open('src/a.rs','w').write('x')\"";
+        let out = pre_tool(&bash(python), &root, &root, project, "s1", false).unwrap();
+        assert_eq!(decision(&out), "deny");
     }
 
     #[test]
