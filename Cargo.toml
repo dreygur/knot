@@ -20,8 +20,8 @@ path = "src/lib.rs"
 shell-words = "1.1"
 
 # MCP transport
-rmcp = { version = "0.1", features = ["server", "transport-io"] }
-schemars = "0.8"
+rmcp = { version = "3.8", features = ["server", "transport-io"] }
+schemars = "1.2"
 
 # Graph/metadata store (also hosts vectors as JSON blobs in Phase 1)
 # Phase 2: replace with lancedb + candle once protoc is available
