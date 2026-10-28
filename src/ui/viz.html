@@ -234,6 +234,8 @@ const CACHE_PREFIX = "knot-viz:1:";
 const $ = (id) => document.getElementById(id);
 const fmt = new Intl.NumberFormat("en");
 const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+// POSIX single quotes: nothing inside expands, so a pasted file name stays a name.
+const shq = (s) => "'" + String(s).replace(/'/g, "'\\''") + "'";
 const ease = (t) => 1 - Math.pow(2, -10 * t);
 const css = (v) => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
 
@@ -583,7 +585,7 @@ function start(pos) {
   }
   function learnList(m) {
     if (!m.le.length) {
-      return `<div class="note">No learnings touch this file yet. Save one with<code>knot note --title "&lt;the fact&gt;" --touches "${esc(m.f)}"</code></div>`;
+      return `<div class="note">No learnings touch this file yet. Save one with<code>knot note --title '&lt;the fact&gt;' --touches ${esc(shq(m.f))}</code></div>`;
     }
     return m.le.map((i) => DATA.learnings[i]).map((L) => `<div class="learn"><div class="t">${esc(L.title)}</div><div class="by">${esc(L.author)} · ${esc(L.date)}</div></div>`).join("");
   }

@@ -304,7 +304,9 @@ mod tests {
     #[test]
     fn note_hint_is_a_command_that_runs() {
         let t = TEMPLATE;
-        assert!(t.contains(r#"knot note --title "&lt;the fact&gt;" --touches "${esc(m.f)}""#), "title and a quoted path");
+        // Double quotes still expand `$(...)`, so a file name could run a command when pasted.
+        assert!(t.contains(r#"const shq = (s) => "'" + String(s).replace(/'/g, "'\\''") + "'";"#));
+        assert!(t.contains("knot note --title '&lt;the fact&gt;' --touches ${esc(shq(m.f))}"), "title and a quoted path");
         assert!(t.contains("No learnings touch this file yet"), "learnings attach by file");
         assert!(!t.contains("#${esc(m.l"), "no symbol fragment");
     }
