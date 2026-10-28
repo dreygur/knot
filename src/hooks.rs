@@ -189,13 +189,26 @@ pub(crate) fn refuse_symlink(path: &Path) -> Result<()> {
 }
 
 /// Write to a sibling temp file and rename it into place, so a crash leaves the old file.
+/// The temp file is created fresh, never opened through a planted link, and takes the
+/// old file's mode, so a private config holding a token stays private.
 pub(crate) fn write_atomic(path: &Path, content: &str) -> Result<()> {
+    use std::io::Write;
     refuse_symlink(path)?;
     let mut name = path.file_name().unwrap_or_default().to_os_string();
     name.push(".knot-tmp");
     let tmp = path.with_file_name(name);
-    refuse_symlink(&tmp)?;
-    std::fs::write(&tmp, content)?;
+    // A crash can leave one behind; removing a link removes the link, not its target
+    match std::fs::remove_file(&tmp) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => anyhow::bail!("cannot replace {}: {e}", tmp.display()),
+        _ => {}
+    }
+
+    let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(&tmp)?;
+    if let Ok(old) = std::fs::metadata(path) {
+        file.set_permissions(old.permissions())?;
+    }
+    file.write_all(content.as_bytes())?;
+    drop(file);
     std::fs::rename(&tmp, path)?;
     Ok(())
 }
@@ -507,6 +520,23 @@ mod tests {
             assert!(register_repo_in(repo.path(), Path::new(BIN), home.path()).is_err());
         }
         assert_eq!(std::fs::read_to_string(&target).unwrap(), "keep me");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_atomic_keeps_the_mode_and_clears_a_stale_temp_file() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("exclude");
+        std::fs::write(&file, "old").unwrap();
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o640)).unwrap();
+        std::fs::write(dir.path().join("exclude.knot-tmp"), "left by a crash").unwrap();
+
+        write_atomic(&file, "new").unwrap();
+
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "new");
+        assert_eq!(std::fs::metadata(&file).unwrap().permissions().mode() & 0o777, 0o640);
+        assert!(!dir.path().join("exclude.knot-tmp").exists());
     }
 
     #[test]

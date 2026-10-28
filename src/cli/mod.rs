@@ -15,6 +15,7 @@ use crate::tools::KnotServer;
 
 const BLOCK_START: &str = "# >>> knot initialize >>>";
 const BLOCK_END: &str = "# <<< knot initialize <<<";
+const NO_RECORDS: &str = "No home folder to keep the handoff record in; set KNOT_DATA_DIR to an absolute path.";
 
 fn resolve_data_dir() -> String {
     dirs::home_dir()
@@ -22,11 +23,18 @@ fn resolve_data_dir() -> String {
         .unwrap_or_else(|| ".knot".into())
 }
 
-/// The user-private file that proves which handoff notes `knot handoff save` wrote, in
-/// the vault's folder so the repo can never supply it.
-fn handoff_records() -> PathBuf {
-    let data_dir = std::env::var("KNOT_DATA_DIR").unwrap_or_else(|_| resolve_data_dir());
-    PathBuf::from(data_dir).join(crate::ask::handoff::RECORDS_FILE)
+/// The records file in `data_dir`. A relative folder (no home, or a relative
+/// `KNOT_DATA_DIR`) resolves inside wherever knot runs, which a clone controls, so it
+/// holds no records and no note is ever proven from it.
+fn records_in(data_dir: &str) -> Option<PathBuf> {
+    let dir = PathBuf::from(data_dir);
+    dir.is_absolute().then(|| dir.join(crate::ask::handoff::RECORDS_FILE))
+}
+
+/// The private file that proves which handoff notes `knot handoff save` wrote, in the
+/// vault's folder so the repo can never supply it.
+fn handoff_records() -> Option<PathBuf> {
+    records_in(&std::env::var("KNOT_DATA_DIR").unwrap_or_else(|_| resolve_data_dir()))
 }
 
 fn log_path_for(data_dir: &str) -> PathBuf {
@@ -568,10 +576,13 @@ fn cli_handoff(action: &str) -> Result<()> {
                      open questions and the files in progress."
                 );
             }
+            let Some(records) = records else {
+                anyhow::bail!(NO_RECORDS);
+            };
             let path = crate::ask::handoff::save(&root, &body, &records)?;
             println!("[KNOT] ✓ Saved the handoff · {}", path.strip_prefix(&root).unwrap_or(&path).display());
         }
-        "show" => match crate::ask::handoff::load(&root, &records) {
+        "show" => match records.and_then(|records| crate::ask::handoff::load(&root, &records)) {
             Some(note) => {
                 let age = crate::ask::handoff::age(note.saved, std::time::SystemTime::now());
                 println!("[KNOT] Your own notes from an earlier session in this repo, saved {age}. {SHOW_CAVEAT}\n");
@@ -580,6 +591,9 @@ fn cli_handoff(action: &str) -> Result<()> {
             None => println!("[KNOT] No handoff waiting in this repo."),
         },
         "clear" => {
+            let Some(records) = records else {
+                anyhow::bail!(NO_RECORDS);
+            };
             if crate::ask::handoff::clear(&root, &records)? {
                 println!("[KNOT] ✓ Cleared the handoff.");
             } else {
@@ -1374,6 +1388,15 @@ mod tests {
 
     fn args(list: &[&str]) -> impl Iterator<Item = String> {
         list.iter().map(|s| s.to_string()).collect::<Vec<_>>().into_iter()
+    }
+
+    #[test]
+    fn handoff_records_live_only_in_an_absolute_data_folder() {
+        assert_eq!(records_in(".knot"), None, "no home: never the folder knot runs in");
+        assert_eq!(records_in("data"), None);
+        let home = tempfile::tempdir().unwrap();
+        let data = home.path().join(".knot");
+        assert_eq!(records_in(&data.to_string_lossy()), Some(data.join(crate::ask::handoff::RECORDS_FILE)));
     }
 
     #[test]

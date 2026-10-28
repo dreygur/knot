@@ -280,6 +280,22 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&target).unwrap(), "{}");
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn a_rewrite_keeps_a_private_config_private() {
+        use std::os::unix::fs::PermissionsExt;
+        let home = tempfile::tempdir().unwrap();
+        let file = home.path().join(".cursor/mcp.json");
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, r#"{"mcpServers":{"api":{"command":"x","env":{"TOKEN":"s3cret"}}}}"#).unwrap();
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600)).unwrap();
+
+        assert_eq!(register(Agent::Cursor, home.path(), Path::new(BIN), &no_cli), Registered::Added);
+
+        assert_eq!(std::fs::metadata(&file).unwrap().permissions().mode() & 0o777, 0o600);
+        assert_eq!(read(&file)["mcpServers"]["api"]["env"]["TOKEN"], "s3cret");
+    }
+
     #[test]
     fn claude_and_codex_go_through_their_own_cli() {
         let home = tempfile::tempdir().unwrap();

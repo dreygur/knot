@@ -101,3 +101,31 @@ fn a_symlinked_cache_is_refused() {
     assert!(!out.status.success());
     assert_eq!(std::fs::read_dir(elsewhere.path()).unwrap().count(), 0, "nothing lands where the link points");
 }
+
+/// A relative data folder resolves inside whatever folder knot runs in, which a clone
+/// controls, so it can hold no records and no note is ever proven from it.
+#[test]
+fn a_relative_data_folder_holds_no_records() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path();
+    let run = |args: &[&str], stdin: &str| {
+        let mut child = Command::new(env!("CARGO_BIN_EXE_knot"))
+            .args(args)
+            .current_dir(repo)
+            .env("HOME", repo.join("home"))
+            .env("KNOT_DATA_DIR", "data")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("spawn knot");
+        child.stdin.take().unwrap().write_all(stdin.as_bytes()).unwrap();
+        child.wait_with_output().unwrap()
+    };
+
+    let saved = run(&["handoff", "save"], NOTE);
+
+    assert!(!saved.status.success(), "{}", stdout(&saved));
+    assert!(!repo.join("data").exists(), "no records inside the repo");
+    assert!(stdout(&run(&["handoff", "show"], "")).contains("No handoff"));
+}

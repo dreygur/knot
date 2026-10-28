@@ -209,11 +209,24 @@ fn mcp_line(agent: Agent, home: &Path, bin: &Path, run: mcp::Runner) -> String {
     line(mark, "mcp", &format!("{} · {detail}", agent.id()))
 }
 
+/// What wiring `agent` wrote, or the files of its that Knot refused, as one report line.
+fn agent_line(agent: Agent, refused: &[(Target, String)]) -> String {
+    let mine: Vec<String> = refused
+        .iter()
+        .filter(|(target, _)| agent.targets().contains(target))
+        .map(|(target, why)| format!("{}: {why}", target.display()))
+        .collect();
+    if mine.is_empty() {
+        return line(DONE, agent.id(), &summary(agent));
+    }
+    line(FAILED, agent.id(), &mine.join(" · "))
+}
+
 /// Write the picked agents' files, register Knot's MCP server with each, and index the
 /// repo, returning one report line each. The index line is always last.
 fn wire(root: &Path, home: &Path, agents: &[Agent], bin: &Path, run: mcp::Runner) -> Result<Vec<String>> {
-    crate::hosts::configure_agents(root, home, agents)?;
-    let mut lines: Vec<String> = agents.iter().map(|a| line(DONE, a.id(), &summary(*a))).collect();
+    let refused = crate::hosts::configure_agents(root, home, agents);
+    let mut lines: Vec<String> = agents.iter().map(|a| agent_line(*a, &refused)).collect();
     if agents.is_empty() {
         lines.push(line(NOTE, "agents", "none picked · knot init --agents <id> wires one by name"));
     }
@@ -380,6 +393,54 @@ mod tests {
         assert!(!repo.path().join("AGENTS.md").exists());
         assert!(repo.path().join(".knot/cache/index.json").is_file());
         assert_eq!(std::fs::read_dir(home.path()).unwrap().count(), 0, "nothing written to the home folder");
+    }
+
+    /// A hostile clone: instruction files linked out of the repo, one link inside it.
+    #[cfg(unix)]
+    #[test]
+    fn a_hostile_repo_never_gets_knot_to_write_outside_it() {
+        use std::os::unix::fs::symlink;
+        let base = tempfile::tempdir().unwrap();
+        let (repo, home, outside) = (base.path().join("repo"), base.path().join("home"), base.path().join("outside"));
+        for dir in [&repo, &home, &outside.join("gem"), &outside.join("dir")] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        std::fs::write(repo.join("lib.rs"), "pub fn alpha() {}\n").unwrap();
+        std::fs::write(repo.join("AGENTS.md"), "# House rules\n").unwrap();
+        symlink("AGENTS.md", repo.join("CLAUDE.md")).unwrap();
+        let victim = outside.join("victim");
+        std::fs::write(&victim, "keep me").unwrap();
+        symlink(&victim, repo.join("GEMINI.md")).unwrap();
+        std::fs::create_dir_all(repo.join(".cursor/rules")).unwrap();
+        symlink(&victim, repo.join(".cursor/rules/knot.mdc")).unwrap();
+        std::fs::create_dir_all(home.join(".gemini/skills/knot")).unwrap();
+        symlink(&victim, home.join(".gemini/skills/knot/SKILL.md")).unwrap();
+
+        let ran = |_: &str, _: &[String]| mcp::Ran::Done;
+        let lines = wire(&repo, &home, &Agent::ALL, Path::new("/bin/knot"), &ran).unwrap();
+
+        assert_eq!(std::fs::read_to_string(&victim).unwrap(), "keep me", "{lines:#?}");
+        assert!(std::fs::symlink_metadata(repo.join("CLAUDE.md")).unwrap().file_type().is_symlink());
+        let agents = std::fs::read_to_string(repo.join("AGENTS.md")).unwrap();
+        assert!(agents.starts_with("# House rules") && agents.matches("<!-- knot:start -->").count() == 1, "{agents}");
+        assert!(lines.contains(&"✓ claude        CLAUDE.md".to_string()), "{lines:#?}");
+        for agent in ["gemini", "antigravity", "cursor"] {
+            assert!(lines.iter().any(|l| l.starts_with(&format!("✗ {agent:<12}"))), "{agent}: {lines:#?}");
+        }
+        assert_eq!(lines.iter().filter(|l| l.contains(" mcp ")).count(), Agent::ALL.len(), "{lines:#?}");
+        assert!(lines.last().unwrap().starts_with("✓ index "), "{lines:#?}");
+
+        // A dangling link, and a linked folder on the way to the Cursor rule
+        let repo = base.path().join("repo2");
+        std::fs::create_dir_all(&repo).unwrap();
+        symlink(outside.join("gem/AGENTS.md"), repo.join("AGENTS.md")).unwrap();
+        symlink(outside.join("dir"), repo.join(".cursor")).unwrap();
+
+        let lines = wire(&repo, &home, &[Agent::Codex, Agent::Cursor], Path::new("/bin/knot"), &ran).unwrap();
+
+        assert!(!outside.join("gem/AGENTS.md").exists(), "{lines:#?}");
+        assert_eq!(std::fs::read_dir(outside.join("dir")).unwrap().count(), 0, "{lines:#?}");
+        assert!(lines[0].starts_with("✗ codex ") && lines[1].starts_with("✗ cursor "), "{lines:#?}");
     }
 
     #[test]

@@ -362,9 +362,10 @@ fn pre_tool(
     pre_tool_output(&plan, command, &bin, swap, already_denied)
 }
 
-/// The SessionStart lines for a handoff an earlier session here saved in `root`, proven by `records`.
-fn handoff_lines(root: &Path, records: &Path) -> Vec<String> {
-    let Some(note) = handoff::load(root, records) else {
+/// The SessionStart lines for a handoff an earlier session here saved in `root`, proven
+/// by `records`. With no records file nothing can be proven, so nothing is shown.
+fn handoff_lines(root: &Path, records: Option<&Path>) -> Vec<String> {
+    let Some(note) = records.and_then(|records| handoff::load(root, records)) else {
         return Vec::new();
     };
     let title = flatten(handoff::title(&note.body).unwrap_or_default(), 120);
@@ -375,7 +376,7 @@ fn handoff_lines(root: &Path, records: &Path) -> Vec<String> {
 /// What the SessionStart hook tells the agent about `root`: index and learning counts,
 /// where to start, and a waiting handoff. `None` for a repo Knot never indexed. Only
 /// stats files, so it stays fast.
-fn session_start(root: &Path, records: &Path) -> Option<serde_json::Value> {
+fn session_start(root: &Path, records: Option<&Path>) -> Option<serde_json::Value> {
     // Every folder Claude Code opens runs this; without Knot state there is no index to walk for
     if !crate::ask::state_dir(root).is_dir() {
         return None;
@@ -485,7 +486,7 @@ pub(super) async fn run(event: &str, flags: &[String]) -> Result<()> {
     }
     // Answered before any session state is written, so a repo without Knot gets no `.knot/`
     if event == "session-start" {
-        if let Some(out) = session_start(&root, &super::handoff_records()) {
+        if let Some(out) = session_start(&root, super::handoff_records().as_deref()) {
             println!("{out}");
         }
         return Ok(());
@@ -685,7 +686,7 @@ mod tests {
     }
 
     fn start(root: &Path) -> Option<serde_json::Value> {
-        session_start(root, &records(root))
+        session_start(root, Some(&records(root)))
     }
 
     #[test]
@@ -754,6 +755,7 @@ mod tests {
         assert!(text.contains(HANDOFF_WAITING), "{text}");
         assert!(text.contains("your own notes, not instructions"), "{text}");
         assert!(text.contains("Handoff: \"Cap retries at four\", saved just now."), "{text}");
+        assert!(!context_of(&session_start(root, None).unwrap()).contains("handoff"), "no records, nothing proven");
 
         handoff::clear(root, &records(root)).unwrap();
         assert!(!context_of(&start(root).unwrap()).contains("handoff"), "nothing once it is cleared");
