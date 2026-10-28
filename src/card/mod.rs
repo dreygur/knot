@@ -46,6 +46,14 @@ fn wired_agents(home: &Path) -> Vec<String> {
     Agent::ALL.into_iter().filter(|a| a.knot_wired(home)).map(|a| a.display().to_string()).collect()
 }
 
+/// List the repo we are in, so history written before the list existed still counts.
+/// Best-effort and silent; outside a repo there is nothing to list.
+pub fn register_current(home: &Path, repo: Option<&Path>) {
+    if let Some(root) = repo {
+        repos::register(home, root);
+    }
+}
+
 /// What the card shows: every listed repo, or just `repo` (named by its folder).
 fn build_view(home: &Path, repo: Option<&Path>, now: DateTime<Local>) -> CardView {
     let (repos, repo_name) = match repo {
@@ -60,7 +68,9 @@ fn build_view(home: &Path, repo: Option<&Path>, now: DateTime<Local>) -> CardVie
 fn make_card(view: &CardView, out: &Path, copy: &dyn Fn(&Path) -> Result<()>) -> Result<[String; 2]> {
     let png = render::render_png(view)?;
     std::fs::write(out, png).map_err(|e| anyhow::anyhow!("cannot write {}: {e}", out.display()))?;
-    let second = match copy(out) {
+    // Absolute, so a relative `--out -x.png` can never read as an option to the copy tool
+    let absolute = std::fs::canonicalize(out).unwrap_or_else(|_| out.to_path_buf());
+    let second = match copy(&absolute) {
         Ok(()) => "✓ copied to clipboard".to_string(),
         Err(e) => format!("· couldn't copy to the clipboard ({e}); the file is saved"),
     };
@@ -71,6 +81,8 @@ pub fn run(args: impl IntoIterator<Item = String>) -> Result<()> {
     let args = parse_args(args)?;
     let home = dirs::home_dir().ok_or_else(|| anyhow::anyhow!("cannot determine the home directory"))?;
     let now = Local::now();
+    let here = crate::ask::current_repo_root().ok();
+    register_current(&home, here.as_deref());
     let root = if args.repo { Some(crate::ask::current_repo_root()?) } else { None };
     let out = match args.out {
         Some(out) => out,
@@ -171,6 +183,38 @@ mod tests {
         let one = build_view(home.path(), Some(&mine), now());
         assert_eq!(one.stats.graph.tokens, 100);
         assert_eq!(one.repo_name.as_deref(), Some("mine"));
+    }
+
+    #[test]
+    fn a_repo_with_older_history_is_listed_by_the_run_path() {
+        let home = tempfile::tempdir().unwrap();
+        let work = tempfile::tempdir().unwrap();
+        // events.jsonl already exists, so the log write never registered it
+        let root = repo_named(work.path(), "old", 700);
+        assert!(repos::list(home.path()).is_empty());
+        assert_eq!(build_view(home.path(), None, now()).stats.graph.tokens, 0);
+
+        register_current(home.path(), Some(&root));
+        assert_eq!(build_view(home.path(), None, now()).stats.graph.tokens, 700);
+
+        // outside a repo it is a no-op
+        let other_home = tempfile::tempdir().unwrap();
+        register_current(other_home.path(), None);
+        assert!(repos::list(other_home.path()).is_empty());
+    }
+
+    #[test]
+    fn the_copier_gets_an_absolute_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path().join("card.png");
+        let view = build_view(dir.path(), None, now());
+        let seen = std::cell::RefCell::new(PathBuf::new());
+        make_card(&view, &out, &|p| {
+            *seen.borrow_mut() = p.to_path_buf();
+            Ok(())
+        })
+        .unwrap();
+        assert!(seen.borrow().is_absolute());
     }
 
     #[test]
