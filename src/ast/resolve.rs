@@ -17,6 +17,12 @@ pub(crate) const ALWAYS_SKIPPED_DIRS: &[&str] = &[
 /// names that would crowd out the repo's own code.
 const ALWAYS_SKIPPED_SUFFIXES: &[&str] = &[".min.js"];
 
+/// Whether the index leaves out a file by its name alone, wherever it sits. The shell
+/// swap asks too, so it never answers a grep that would have matched in such a file.
+pub(crate) fn is_skipped_file(name: &str) -> bool {
+    ALWAYS_SKIPPED_SUFFIXES.iter().any(|s| name.ends_with(s))
+}
+
 /// List supported source files under `root`, honoring `.gitignore`, `.ignore` and git
 /// exclude files. Ignore files above `root` are not consulted, so indexing an ignored
 /// directory directly (e.g. a vendored reference checkout) still works.
@@ -36,9 +42,8 @@ pub fn list_supported_files(root: &Path) -> Result<Vec<PathBuf>> {
         // `._name` files are macOS metadata written on non-Apple volumes, not source
         let name = entry.file_name().to_string_lossy();
         let apple_double = name.starts_with("._");
-        let skipped = ALWAYS_SKIPPED_SUFFIXES.iter().any(|s| name.ends_with(s));
         if !apple_double
-            && !skipped
+            && !is_skipped_file(&name)
             && entry.file_type().is_some_and(|t| t.is_file())
             && SupportedLang::from_path(entry.path()).is_some()
         {

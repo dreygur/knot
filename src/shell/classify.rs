@@ -4,7 +4,7 @@
 //! the swapped commands, so a wrong guess would run something nobody approved.
 
 use crate::ask::grep::GrepOptions;
-use crate::ast::resolve::ALWAYS_SKIPPED_DIRS;
+use crate::ast::resolve::{is_skipped_file, ALWAYS_SKIPPED_DIRS};
 use crate::ast::SupportedLang;
 use std::path::{Path, PathBuf};
 
@@ -90,7 +90,8 @@ fn source_file(path: &str, root: &Path, cwd: &Path) -> Option<String> {
 }
 
 /// Whether Knot's index leaves out the repo-relative `rel`: it sits in a hidden or
-/// always-skipped folder, or git ignores it. Knot would find nothing there that grep does.
+/// always-skipped folder, is a file the index skips by name, or git ignores it.
+/// Knot would find nothing there that grep does.
 fn unindexed(root: &Path, rel: &str) -> bool {
     if rel.is_empty() {
         return false;
@@ -98,21 +99,35 @@ fn unindexed(root: &Path, rel: &str) -> bool {
     if rel.split('/').any(|c| c.starts_with('.') || ALWAYS_SKIPPED_DIRS.contains(&c)) {
         return true;
     }
+    if rel.rsplit('/').next().is_some_and(is_skipped_file) {
+        return true;
+    }
     git2::Repository::open(root).is_ok_and(|repo| repo.is_path_ignored(rel).unwrap_or(true))
 }
 
-/// Whether any file under `dir` is a source file Knot indexes. Walks with the index's
-/// own rules, so an ignored `target/` is neither counted nor walked.
-fn holds_source(dir: &Path) -> bool {
-    ignore::WalkBuilder::new(dir)
+/// Whether Knot's index answers for every file a recursive grep reads under `dir`:
+/// some source file is indexed and none is skipped by name, like a bundled `*.min.js`.
+/// Walks with the index's own rules, so an ignored `target/` is neither counted nor walked.
+fn index_covers(dir: &Path) -> bool {
+    let walker = ignore::WalkBuilder::new(dir)
         .follow_links(false)
         .filter_entry(|e| {
             let is_dir = e.file_type().is_some_and(|t| t.is_dir());
             !(is_dir && e.depth() > 0 && ALWAYS_SKIPPED_DIRS.contains(&e.file_name().to_string_lossy().as_ref()))
         })
-        .build()
-        .flatten()
-        .any(|e| e.file_type().is_some_and(|t| t.is_file()) && SupportedLang::from_path(e.path()).is_some())
+        .build();
+
+    let mut source = false;
+    for e in walker.flatten() {
+        if !e.file_type().is_some_and(|t| t.is_file()) {
+            continue;
+        }
+        if is_skipped_file(&e.file_name().to_string_lossy()) {
+            return false;
+        }
+        source |= SupportedLang::from_path(e.path()).is_some();
+    }
+    source
 }
 
 fn classify_grep(prog: &str, args: &[&str], root: &Path, cwd: &Path) -> Option<Plan> {
@@ -165,7 +180,7 @@ fn classify_grep(prog: &str, args: &[&str], root: &Path, cwd: &Path) -> Option<P
     }
     if full.is_dir() {
         // Plain grep refuses directories; and a tree with no source has nothing for Knot to search.
-        if (!is_rg && !recursive) || !holds_source(&full) {
+        if (!is_rg && !recursive) || !index_covers(&full) {
             return None;
         }
     } else if SupportedLang::from_path(&full).is_none() {
@@ -425,6 +440,19 @@ mod tests {
         std::fs::write(dir.path().join("pkg/gen/x.rs"), "fn needle() {}\n").unwrap();
         std::fs::write(dir.path().join("pkg/target/y.rs"), "fn needle() {}\n").unwrap();
         assert_eq!(plan(&dir, "grep -rn needle pkg"), Plan::PassThrough);
+    }
+
+    #[test]
+    fn trees_with_minified_scripts_pass_through() {
+        // The index skips `*.min.js`, so Knot's grep would miss a match there that grep finds.
+        let dir = repo();
+        std::fs::create_dir_all(dir.path().join("web/vendor")).unwrap();
+        std::fs::write(dir.path().join("web/app.js"), "function app() {}\n").unwrap();
+        std::fs::write(dir.path().join("web/vendor/sigma.min.js"), "function needle(){}\n").unwrap();
+        for cmd in ["grep -rn needle web", "rg needle", "grep -n needle web/vendor/sigma.min.js", "sed -n '1,1p' web/vendor/sigma.min.js"] {
+            assert_eq!(plan(&dir, cmd), Plan::PassThrough, "{cmd}");
+        }
+        assert_eq!(plan(&dir, "grep -rn needle src"), grep("needle", Some("src"), false, false));
     }
 
     #[test]
