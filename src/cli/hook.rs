@@ -5,7 +5,7 @@
 use anyhow::Result;
 use std::path::{Path, PathBuf};
 
-use crate::ask::events::{self, Event, EventKind};
+use crate::ask::events;
 use crate::ask::{flatten, handoff, session, usage};
 use crate::utils::count;
 use crate::engine::learnings::{active_learnings, RepoLearning};
@@ -56,7 +56,7 @@ fn first_name(author: &str) -> String {
 }
 
 /// "took 12 min, ~27k tokens to work out", or nothing when the cost was not recorded.
-pub(super) fn cost_text(l: &RepoLearning) -> Option<String> {
+fn cost_text(l: &RepoLearning) -> Option<String> {
     let fm = &l.frontmatter;
     match (fm.cost_minutes, fm.cost_tokens) {
         (Some(m), Some(t)) => Some(format!("took {m} min, ~{} tokens to work out", crate::utils::short(t))),
@@ -287,7 +287,7 @@ fn pre_tool_json(fields: serde_json::Value) -> serde_json::Value {
 
 /// What the PreToolUse hook answers for a classified Bash command; `None` lets it run
 /// untouched. `already_denied` is true when this python edit was blocked before in the session; it then runs.
-pub(super) fn pre_tool_output(plan: &Plan, command: &str, bin: &Path, swap: bool, already_denied: bool) -> Option<serde_json::Value> {
+fn pre_tool_output(plan: &Plan, command: &str, bin: &Path, swap: bool, already_denied: bool) -> Option<serde_json::Value> {
     match plan {
         // "allow" is safe because classify admits only read-only searches of repo source.
         Plan::Grep { .. } | Plan::SedRange { .. } if swap => {
@@ -306,25 +306,6 @@ pub(super) fn pre_tool_output(plan: &Plan, command: &str, bin: &Path, swap: bool
         }))),
         _ => None,
     }
-}
-
-fn log_event(root: &Path, session_id: &str, kind: EventKind, command: &str) {
-    events::append(
-        root,
-        &Event {
-            ts_ms: chrono::Utc::now().timestamp_millis(),
-            session: session_id.to_string(),
-            kind,
-            tool: "Bash".into(),
-            command: Some(flatten(command, 200)),
-            bytes_before: 0,
-            bytes_after: 0,
-            saved_tokens: 0,
-            learning: None,
-            cost_minutes: None,
-            cost_tokens: None,
-        },
-    );
 }
 
 /// Whether `root` is the repo Claude Code was opened in (`project_dir`, from
@@ -352,9 +333,6 @@ fn pre_tool(
     let plan = classify(command, root, cwd);
     let first_python = matches!(plan, Plan::PythonWrite { .. }) && session::deny_once(root, session_id, command);
     let already_denied = matches!(plan, Plan::PythonWrite { .. }) && !first_python;
-    if matches!(plan, Plan::PythonWrite { .. }) {
-        log_event(root, session_id, if first_python { EventKind::EditBlocked } else { EventKind::Override }, command);
-    }
     pre_tool_output(&plan, command, &bin, swap, already_denied)
 }
 
@@ -618,7 +596,7 @@ mod tests {
 
         let logged = events::all(root);
         assert_eq!(logged.len(), 1);
-        assert_eq!(logged[0].kind, EventKind::Learning);
+        assert_eq!(logged[0].kind, events::EventKind::Learning);
         assert_eq!(logged[0].learning.as_deref(), Some("2026-10-09_keep"));
         assert_eq!(logged[0].cost_tokens, Some(27_000));
         assert_eq!(logged[0].session, "sess");

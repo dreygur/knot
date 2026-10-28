@@ -57,7 +57,7 @@ pub fn render_png(view: &CardView) -> anyhow::Result<Vec<u8>> {
 }
 
 /// The filled-in SVG template.
-pub(crate) fn svg(view: &CardView) -> String {
+fn svg(view: &CardView) -> String {
     let s = &view.stats;
     let tokens_saved = short(s.tokens_saved);
     let less_to_read = match s.less_to_read {

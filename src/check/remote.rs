@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-const DEFAULT_POLL_INTERVAL_SECS: u64 = 180;
+const POLL_INTERVAL: Duration = Duration::from_secs(180);
 const FETCH_TIMEOUT: Duration = Duration::from_secs(30);
 const REMOTE_HEAD_SUFFIX: &str = "/HEAD";
 
@@ -341,16 +341,12 @@ async fn fetch_remotes(repo_root: &Path) -> Result<()> {
 }
 
 /// Spawn a background task to periodically check for collisions with remote branches.
-pub fn start_branch_monitor(
-    repo_root: PathBuf,
-    interval_secs: Option<u64>,
-) -> BranchMonitorHandle {
-    let interval = Duration::from_secs(interval_secs.unwrap_or(DEFAULT_POLL_INTERVAL_SECS));
+pub fn start_branch_monitor(repo_root: PathBuf) -> BranchMonitorHandle {
     let latest_collisions = Arc::new(Mutex::new(Vec::new()));
     let shared_state = Arc::clone(&latest_collisions);
 
     tokio::spawn(async move {
-        let mut ticker = tokio::time::interval(interval);
+        let mut ticker = tokio::time::interval(POLL_INTERVAL);
         loop {
             ticker.tick().await;
             if let Err(e) = fetch_remotes(&repo_root).await {

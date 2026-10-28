@@ -4,7 +4,7 @@ pub mod mcp;
 
 pub use agent::{Agent, Target};
 
-use agent::{ANTIGRAVITY_SKILL, CURSOR_RULE};
+use agent::CURSOR_RULE;
 use crate::utils::{is_symlink, refuse_symlink, write_atomic};
 use anyhow::Result;
 use std::fs;
@@ -67,7 +67,7 @@ fn upsert_block_into_file(repo_root: &Path, path: &Path, block: &str) -> Result<
     write_atomic(&path, updated.trim_start())
 }
 
-pub fn install_cursor_rule(repo_root: &Path) -> Result<PathBuf> {
+pub fn install_cursor_rule(repo_root: &Path) -> Result<()> {
     let rules = repo_root.join(".cursor").join("rules");
     let target = rules.join("knot.mdc");
     // A linked folder on the way would carry the rule out of the repo
@@ -76,11 +76,10 @@ pub fn install_cursor_rule(repo_root: &Path) -> Result<PathBuf> {
     refuse_symlink(&target)?;
     fs::create_dir_all(&rules)?;
     // The rule is Knot's own file, so it is rewritten whole: one frontmatter, one block
-    write_atomic(&target, &format!("{CURSOR_FRONTMATTER}\n\n{}\n", protocol_block()))?;
-    Ok(target)
+    write_atomic(&target, &format!("{CURSOR_FRONTMATTER}\n\n{}\n", protocol_block()))
 }
 
-pub fn install_antigravity_skill(home_dir: &Path) -> Result<PathBuf> {
+pub fn install_antigravity_skill(home_dir: &Path) -> Result<()> {
     let target = home_dir
         .join(".gemini")
         .join("skills")
@@ -90,16 +89,15 @@ pub fn install_antigravity_skill(home_dir: &Path) -> Result<PathBuf> {
     if let Some(parent) = target.parent() {
         fs::create_dir_all(parent)?;
     }
-    write_atomic(&target, SKILL_MD)?;
-    Ok(target)
+    write_atomic(&target, SKILL_MD)
 }
 
 fn write_target(target: Target, repo_root: &Path, home: &Path) -> Result<()> {
     match target {
-        CURSOR_RULE => install_cursor_rule(repo_root).map(drop),
-        ANTIGRAVITY_SKILL => install_antigravity_skill(home).map(drop),
+        CURSOR_RULE => install_cursor_rule(repo_root),
         Target::Repo(path) => upsert_block_into_file(repo_root, &repo_root.join(path), &protocol_block()),
-        Target::Home(path) => anyhow::bail!("no writer for ~/{path}"),
+        // The Antigravity skill is the one file Knot writes in the home folder
+        Target::Home(_) => install_antigravity_skill(home),
     }
 }
 

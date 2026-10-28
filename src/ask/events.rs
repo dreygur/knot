@@ -14,8 +14,6 @@ const EVENTS_TAIL_BYTES: u64 = 2 * 1024 * 1024;
 pub enum EventKind {
     Answer,
     Swap,
-    EditBlocked,
-    Override,
     Learning,
 }
 

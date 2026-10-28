@@ -31,7 +31,7 @@ pub const USAGE_WARNINGS_OFF: &str = "usage warnings off: another status line is
 
 /// Register Claude Code hooks and, when none is set, the status line. Returns `Ok(true)`
 /// when settings changed, `Ok(false)` when already in place (safe on every server start).
-pub fn register(_data_dir: &str, bin_path: &Path) -> Result<bool> {
+pub fn register(bin_path: &Path) -> Result<bool> {
     let bin = format!("\"{}\"", bin_path.to_string_lossy());
     let settings = claude_settings_path()?;
     merge_settings(&settings, &bin)

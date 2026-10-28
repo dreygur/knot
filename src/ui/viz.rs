@@ -17,7 +17,7 @@ const OPEN_POLL: Duration = Duration::from_millis(50);
 
 /// The whole `knot viz` page: one offline file with the scripts, fonts, images and
 /// data inlined.
-pub(crate) fn render_page(data: &VizData) -> String {
+fn render_page(data: &VizData) -> String {
     // Symbol text comes from the indexed repo; escaping <, > and & keeps a signature
     // containing `</script>` from ending the inline script. JSON reads the escapes back.
     let json = serde_json::to_string(data)

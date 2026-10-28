@@ -51,7 +51,6 @@ pub fn collect(repos: &[PathBuf], now: DateTime<Local>) -> CardStats {
     let mut all: Vec<Event> = repos
         .iter()
         .flat_map(|root| events::all(root))
-        .filter(|e| matches!(e.kind, EventKind::Answer | EventKind::Swap | EventKind::Learning))
         // A timestamp that is not a real local time, or lies in the future, is corrupt: skip it
         .filter(|e| e.ts_ms <= now.timestamp_millis() && Local.timestamp_millis_opt(e.ts_ms).earliest().is_some())
         .collect();
@@ -228,17 +227,6 @@ mod tests {
         noisy.bytes_before = 9_999;
         let repo = repo_with(&[answer, noisy]);
         assert_eq!(collect(&[repo.path().to_path_buf()], now()).less_to_read, Some(0.75));
-    }
-
-    #[test]
-    fn python_blocks_are_ignored() {
-        let repo = repo_with(&[event(EventKind::Answer, 2, 100)]);
-        let before = collect(&[repo.path().to_path_buf()], now());
-        let mut blocked = event(EventKind::EditBlocked, 9, 500);
-        blocked.bytes_before = 100;
-        events::append(repo.path(), &blocked);
-        events::append(repo.path(), &event(EventKind::Override, 9, 500));
-        assert_eq!(collect(&[repo.path().to_path_buf()], now()), before);
     }
 
     #[test]

@@ -376,7 +376,7 @@ async fn cli_logs(follow: bool) -> Result<()> {
     }
 }
 
-async fn cli_viz() -> Result<()> {
+fn cli_viz() -> Result<()> {
     let cwd = crate::ask::current_repo_root()?;
     let out_path = crate::ui::viz::write_page(&cwd)?;
     println!("[KNOT] Code graph map: {}", out_path.display());
@@ -605,21 +605,21 @@ fn answer(root: &Path, tool: &str, answer: render::Answer) {
     crate::ask::savings::record(root, tool, &answer.files, &answer.text);
 }
 
-async fn cli_callers(symbol: &str) -> Result<()> {
+fn cli_callers(symbol: &str) -> Result<()> {
     let cwd = crate::ask::current_repo_root()?;
     let graph = crate::ask::load_graph(&cwd)?;
     answer(&cwd, "callers", render::callers(&graph, symbol));
     Ok(())
 }
 
-async fn cli_callees(symbol: &str) -> Result<()> {
+fn cli_callees(symbol: &str) -> Result<()> {
     let cwd = crate::ask::current_repo_root()?;
     let graph = crate::ask::load_graph(&cwd)?;
     answer(&cwd, "callees", render::callees(&graph, symbol));
     Ok(())
 }
 
-async fn cli_blast(symbol: &str, depth: usize) -> Result<()> {
+fn cli_blast(symbol: &str, depth: usize) -> Result<()> {
     let cwd = crate::ask::current_repo_root()?;
     let graph = crate::ask::load_graph(&cwd)?;
     answer(&cwd, "blast", render::blast(&graph, symbol, depth));
@@ -662,7 +662,7 @@ fn parse_ask_args(args: impl Iterator<Item = String>) -> AskArgs {
     parsed
 }
 
-async fn cli_ask(args: AskArgs) -> Result<()> {
+fn cli_ask(args: AskArgs) -> Result<()> {
     let cwd = crate::ask::current_repo_root()?;
     let cache_root = crate::ask::index_root(&cwd);
     let hits = crate::ask::ask(&cwd, Some(&cache_root), &args.query, args.limit, args.ranking)?;
@@ -798,27 +798,17 @@ fn cli_index(quiet: bool) -> Result<()> {
 }
 
 /// The directory Claude Code reports in the JSON it pipes to a status line command.
-fn statusline_dir(input: &str) -> Option<PathBuf> {
-    let json: serde_json::Value = serde_json::from_str(input).ok()?;
+fn statusline_dir(json: &serde_json::Value) -> Option<PathBuf> {
     ["/workspace/project_dir", "/workspace/current_dir", "/cwd"]
         .iter()
         .find_map(|ptr| json.pointer(ptr).and_then(|v| v.as_str()))
         .map(PathBuf::from)
 }
 
-/// Learnings still in force; replaced ones are not counted.
-fn count_repo_learnings(dir: &Path) -> usize {
-    let Some(root) = git2::Repository::discover(dir).ok().and_then(|r| r.workdir().map(Path::to_path_buf)) else {
-        return 0;
-    };
-    crate::engine::learnings::active_learnings(&root).map_or(0, |l| l.len())
-}
-
 /// Tokens Knot saved since the last prompt and since the session began, from the
 /// transcript Claude Code names in its status line JSON. Without a session id there is
 /// nothing to attribute events to, so nothing is shown.
-fn statusline_savings(input: &str, root: &Path) -> Option<(usize, usize)> {
-    let json: serde_json::Value = serde_json::from_str(input).ok()?;
+fn statusline_savings(json: &serde_json::Value, root: &Path) -> Option<(usize, usize)> {
     let session_id = json.get("session_id")?.as_str().filter(|s| !s.is_empty())?;
     let transcript = json.get("transcript_path")?.as_str()?;
     let (session_start, last_prompt) = crate::ask::savings::transcript_window(Path::new(transcript))?;
@@ -904,7 +894,8 @@ fn cli_statusline() -> Result<()> {
     if !std::io::stdin().is_terminal() {
         let _ = std::io::stdin().read_to_string(&mut input);
     }
-    let dir = crate::ask::repo_root(&match statusline_dir(&input) {
+    let json: serde_json::Value = serde_json::from_str(&input).unwrap_or_default();
+    let dir = crate::ask::repo_root(&match statusline_dir(&json) {
         Some(dir) => dir,
         None => std::env::current_dir()?,
     });
@@ -927,13 +918,13 @@ fn cli_statusline() -> Result<()> {
         }
     }
 
-    let json: serde_json::Value = serde_json::from_str(&input).unwrap_or_default();
     // Hooks never see these numbers; the PostToolUse hook reads them back from here
     crate::ask::usage::record_statusline(&dir, &json, chrono::Utc::now().timestamp_millis());
     let line = StatusLine {
         index: status,
-        learnings: count_repo_learnings(&dir),
-        saved: statusline_savings(&input, &dir),
+        // Learnings still in force; replaced ones are not counted
+        learnings: crate::engine::learnings::active_learnings(&dir).map_or(0, |l| l.len()),
+        saved: statusline_savings(&json, &dir),
         ctx_pct: json.pointer("/context_window/used_percentage").and_then(|v| v.as_f64()).map(|p| p.round() as u64),
         last_edit: crate::ask::session::last_edit(&dir),
         color: std::env::var_os("NO_COLOR").is_none(),
@@ -953,7 +944,7 @@ fn repo_relative(cwd: &Path, root: &Path, file: &str) -> Result<String> {
     Ok(rel.to_string_lossy().replace('\\', "/"))
 }
 
-async fn cli_skeleton(file: &str) -> Result<()> {
+fn cli_skeleton(file: &str) -> Result<()> {
     let cwd = std::env::current_dir()?;
     let root = crate::ask::repo_root(&cwd);
     let rel = repo_relative(&cwd, &root, file)?;
@@ -968,7 +959,7 @@ async fn cli_skeleton(file: &str) -> Result<()> {
     Ok(())
 }
 
-async fn cli_check(base_ref: Option<&str>, check_remote: bool) -> Result<()> {
+fn cli_check(base_ref: Option<&str>, check_remote: bool) -> Result<()> {
     let cwd = std::env::current_dir()?;
     if git2::Repository::discover(&cwd).is_err() {
         anyhow::bail!(
@@ -1028,7 +1019,7 @@ async fn cli_check(base_ref: Option<&str>, check_remote: bool) -> Result<()> {
     }
 }
 
-async fn cli_explore(query: Option<&str>) -> Result<()> {
+fn cli_explore(query: Option<&str>) -> Result<()> {
     let cwd = crate::ask::current_repo_root()?;
     crate::ui::run_explorer(&cwd, query)
 }
@@ -1056,7 +1047,7 @@ pub async fn run_mcp_server() -> Result<()> {
     let _ = std::fs::write(format!("{data_dir}/.current_session"), &session_id);
 
     if let Ok(bin_path) = std::env::current_exe() {
-        match hooks::register(&data_dir, &bin_path) {
+        match hooks::register(&bin_path) {
             Ok(true) => eprintln!("[KNOT] INFO:  Hooks registered in ~/.claude/settings.json"),
             Ok(false) => {}
             Err(e) => eprintln!("[KNOT] WARN:  Hook registration skipped: {e}"),
@@ -1085,7 +1076,7 @@ pub async fn run_mcp_server() -> Result<()> {
 
     let mut server = KnotServer::new(engine, session_id);
     if let Ok(cwd) = std::env::current_dir() {
-        server = server.with_branch_monitor(crate::check::start_branch_monitor(cwd, None));
+        server = server.with_branch_monitor(crate::check::start_branch_monitor(cwd));
     }
     let running = server.serve(stdio()).await?;
     running.waiting().await?;
@@ -1159,14 +1150,14 @@ pub async fn run() -> Result<()> {
             if symbol.is_empty() {
                 usage_exit("knot callers <symbol>");
             }
-            cli_callers(&symbol).await
+            cli_callers(&symbol)
         }
         Some("callees") => {
             let symbol = args.next().unwrap_or_default();
             if symbol.is_empty() {
                 usage_exit("knot callees <symbol>");
             }
-            cli_callees(&symbol).await
+            cli_callees(&symbol)
         }
         Some("blast") => {
             let symbol = args.next().unwrap_or_default();
@@ -1174,21 +1165,21 @@ pub async fn run() -> Result<()> {
                 usage_exit("knot blast <symbol> [--depth N]");
             }
             let depth = parse_limit_args(args)?;
-            cli_blast(&symbol, depth).await
+            cli_blast(&symbol, depth)
         }
         Some("ask") => {
             let ask_args = parse_ask_args(args);
             if ask_args.query.trim().is_empty() {
                 usage_exit("knot ask <question> [--json] [--source] [-n N] [--no-graph]");
             }
-            cli_ask(ask_args).await
+            cli_ask(ask_args)
         }
         Some("skeleton") => {
             let file = args.next().unwrap_or_default();
             if file.is_empty() {
                 usage_exit("knot skeleton <file>");
             }
-            cli_skeleton(&file).await
+            cli_skeleton(&file)
         }
         Some("grep") => {
             let (opts, json) = parse_grep_args(args)?;
@@ -1242,13 +1233,13 @@ pub async fn run() -> Result<()> {
                     check_remote = true;
                 }
             }
-            cli_check(base_ref.as_deref(), check_remote).await
+            cli_check(base_ref.as_deref(), check_remote)
         }
         Some("explore") => {
             let query = args.next();
-            cli_explore(query.as_deref()).await
+            cli_explore(query.as_deref())
         }
-        Some("viz") => cli_viz().await,
+        Some("viz") => cli_viz(),
         Some("--help") | Some("-h") | Some("help") => {
             print_help();
             Ok(())
@@ -1355,9 +1346,10 @@ mod tests {
     #[test]
     fn statusline_reads_project_dir_before_cwd() {
         let json = r#"{"cwd":"/a/sub","workspace":{"current_dir":"/a/sub","project_dir":"/a"}}"#;
-        assert_eq!(statusline_dir(json), Some(PathBuf::from("/a")));
-        assert_eq!(statusline_dir(r#"{"cwd":"/b"}"#), Some(PathBuf::from("/b")));
-        assert_eq!(statusline_dir("not json"), None);
+        let read = |text: &str| statusline_dir(&serde_json::from_str(text).unwrap_or_default());
+        assert_eq!(read(json), Some(PathBuf::from("/a")));
+        assert_eq!(read(r#"{"cwd":"/b"}"#), Some(PathBuf::from("/b")));
+        assert_eq!(read("not json"), None);
     }
 
     #[test]
