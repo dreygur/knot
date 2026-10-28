@@ -661,6 +661,9 @@ async fn cli_ask(args: AskArgs) -> Result<()> {
     let cache_root = crate::ask::index_root(&cwd);
     let hits = crate::ask::ask(&cwd, Some(&cache_root), &args.query, args.limit, args.ranking)?;
     let learnings = crate::ask::related_learnings(&cwd, &args.query, &hits);
+    for l in &learnings {
+        crate::ask::events::learning_shown(&cwd, &l.id(), l.cost_minutes, l.cost_tokens);
+    }
 
     if args.json {
         let json_hits: Vec<serde_json::Value> = hits

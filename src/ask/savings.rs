@@ -61,6 +61,9 @@ pub fn record(root: &Path, tool: &str, files: &[String], output: &str) {
             bytes_before,
             bytes_after: output.len() as u64,
             saved_tokens: saved,
+            learning: None,
+            cost_minutes: None,
+            cost_tokens: None,
         },
     );
 }

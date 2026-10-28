@@ -126,6 +126,10 @@ fn learnings_for_file(root: &Path, file: &Path, session_id: &str) -> Option<Stri
         .and_then(|r| r.config().ok())
         .and_then(|c| c.get_string("user.name").ok())
         .unwrap_or_default();
+    for l in &shown {
+        let id = l.file_path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+        events::learning_shown(root, &id, l.frontmatter.cost_minutes, l.frontmatter.cost_tokens);
+    }
     (!shown.is_empty()).then(|| learnings_block(&rel, &shown, root, &me))
 }
 
@@ -309,6 +313,9 @@ fn log_event(root: &Path, session_id: &str, kind: EventKind, command: &str) {
             bytes_before: 0,
             bytes_after: 0,
             saved_tokens: 0,
+            learning: None,
+            cost_minutes: None,
+            cost_tokens: None,
         },
     );
 }
@@ -457,6 +464,31 @@ mod tests {
         assert!(own.contains("(your own notes"), "{own}");
         assert!(own.contains("· you · Oct 9"), "{own}");
         assert!(!own.contains("📝"), "no credit line for your own learning: {own}");
+    }
+
+    #[test]
+    fn shown_learnings_are_logged() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let learnings = root.join(".knot/learnings");
+        std::fs::create_dir_all(&learnings).unwrap();
+        std::fs::write(
+            learnings.join("2026-10-09_keep.md"),
+            "---\nid: 6f1c1d0e-2b1a-4c55-9a53-0a1b2c3d4e5f\ntitle: Keep it\nauthor: Maya\ndate: 2026-10-09\n\
+             touches:\n  - src/a.rs\ncost_minutes: 12\ncost_tokens: 27000\n---\n\n## Decided\nKeep it.\n",
+        )
+        .unwrap();
+
+        let text = learnings_for_file(root, &root.join("src/a.rs"), "sess");
+        assert!(text.is_some());
+        // A second look in the same session shows nothing new, so logs nothing new
+        assert!(learnings_for_file(root, &root.join("src/a.rs"), "sess").is_none());
+
+        let logged = events::all(root);
+        assert_eq!(logged.len(), 1);
+        assert_eq!(logged[0].kind, EventKind::Learning);
+        assert_eq!(logged[0].learning.as_deref(), Some("2026-10-09_keep"));
+        assert_eq!(logged[0].cost_tokens, Some(27_000));
     }
 
     #[test]

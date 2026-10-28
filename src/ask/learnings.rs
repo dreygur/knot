@@ -38,6 +38,11 @@ pub struct LearningHit {
 }
 
 impl LearningHit {
+    /// The learning file's stem, which names it in the events log.
+    pub fn id(&self) -> String {
+        std::path::Path::new(&self.file).file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default()
+    }
+
     /// `"Keep … at 4" · Maya · Oct 9 · took 12 min, ~27k tokens to work out`
     pub fn headline(&self) -> String {
         let date = chrono::NaiveDate::parse_from_str(&self.date, "%Y-%m-%d")

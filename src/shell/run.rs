@@ -44,6 +44,9 @@ pub fn run(command: &str, root: &Path, cwd: &Path) -> Result<String> {
             bytes_before,
             bytes_after,
             saved_tokens: savings::estimate_tokens(bytes_before).saturating_sub(savings::estimate_tokens(bytes_after)),
+            learning: None,
+            cost_minutes: None,
+            cost_tokens: None,
         },
     );
     Ok(out)

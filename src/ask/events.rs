@@ -16,6 +16,7 @@ pub enum EventKind {
     Swap,
     EditBlocked,
     Override,
+    Learning,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -32,6 +33,13 @@ pub struct Event {
     pub bytes_after: u64,
     #[serde(default)]
     pub saved_tokens: usize,
+    /// For `Learning` events: the learning file's stem, and what it took to work out.
+    #[serde(default)]
+    pub learning: Option<String>,
+    #[serde(default)]
+    pub cost_minutes: Option<u64>,
+    #[serde(default)]
+    pub cost_tokens: Option<u64>,
 }
 
 /// Append one event. Failures are ignored: the log is a report, never a reason for a
@@ -42,6 +50,34 @@ pub fn append(root: &Path, event: &Event) {
     if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
         let _ = writeln!(file, "{line}");
     }
+}
+
+/// Log that a repo learning was shown to the agent in the current session, with what it
+/// took to work out when that was recorded.
+pub fn learning_shown(root: &Path, id: &str, cost_minutes: Option<u64>, cost_tokens: Option<u64>) {
+    append(
+        root,
+        &Event {
+            ts_ms: chrono::Utc::now().timestamp_millis(),
+            session: current_session(root),
+            kind: EventKind::Learning,
+            tool: "learning".to_string(),
+            command: None,
+            bytes_before: 0,
+            bytes_after: 0,
+            saved_tokens: 0,
+            learning: Some(id.to_string()),
+            cost_minutes,
+            cost_tokens,
+        },
+    );
+}
+
+/// Every event in the log, oldest first; lines that do not parse are skipped.
+pub fn all(root: &Path) -> Vec<Event> {
+    let path = super::state_dir(root).join(EVENTS_FILE);
+    let Ok(text) = std::fs::read_to_string(path) else { return Vec::new() };
+    text.lines().filter_map(|l| serde_json::from_str(l).ok()).collect()
 }
 
 /// The events in the last 2 MiB of the log, oldest first.
@@ -95,6 +131,9 @@ mod tests {
             bytes_before: 0,
             bytes_after: 0,
             saved_tokens,
+            learning: None,
+            cost_minutes: None,
+            cost_tokens: None,
         }
     }
 
@@ -122,6 +161,34 @@ mod tests {
 
         assert_eq!(saved_since(dir.path(), "a", &[0]), vec![100]);
         assert_eq!(saved_since(dir.path(), "b", &[0, 11]), vec![40, 0]);
+    }
+
+    #[test]
+    fn learning_event_round_trips() {
+        let dir = tempfile::tempdir().unwrap();
+        learning_shown(dir.path(), "2026-10-27-x", Some(12), Some(27_000));
+
+        let events = all(dir.path());
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].kind, EventKind::Learning);
+        assert_eq!(events[0].learning.as_deref(), Some("2026-10-27-x"));
+        assert_eq!(events[0].cost_minutes, Some(12));
+        assert_eq!(events[0].cost_tokens, Some(27_000));
+        assert_eq!(events[0].saved_tokens, 0);
+    }
+
+    #[test]
+    fn old_lines_without_new_fields_still_parse() {
+        let dir = tempfile::tempdir().unwrap();
+        let line = r#"{"ts_ms":5,"session":"s","kind":"answer","tool":"knot_ask","bytes_before":40,"bytes_after":4,"saved_tokens":9}"#;
+        let path = crate::ask::state_file(&crate::ask::state_dir(dir.path()), EVENTS_FILE).unwrap();
+        std::fs::write(path, format!("{line}\nnot json\n")).unwrap();
+
+        let events = all(dir.path());
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].learning, None);
+        assert_eq!(events[0].cost_tokens, None);
+        assert_eq!(events[0].saved_tokens, 9);
     }
 
     #[cfg(unix)]
