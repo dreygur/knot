@@ -1,4 +1,5 @@
 mod agent;
+mod jsonc;
 pub mod mcp;
 
 pub use agent::{Agent, Target};

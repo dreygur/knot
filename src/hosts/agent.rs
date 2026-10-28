@@ -1,5 +1,7 @@
-use std::ffi::OsStr;
-use std::path::Path;
+use std::ffi::{OsStr, OsString};
+use std::path::{Path, PathBuf};
+
+use super::jsonc;
 
 /// A coding agent `knot init` can wire, named by the id `--agents` takes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -49,6 +51,40 @@ fn toml_has_knot(path: &Path) -> bool {
         let Some(rest) = line.trim().strip_prefix("[mcp_servers.knot") else { return false };
         rest.starts_with(']') || rest.starts_with('.')
     })
+}
+
+/// A TOML basic or literal string, as `command = "..."` gives it.
+fn toml_string(value: &str) -> Option<String> {
+    if let Some(literal) = value.strip_prefix('\'') {
+        return literal.split_once('\'').map(|(s, _)| s.to_string());
+    }
+    let mut chars = value.strip_prefix('"')?.chars();
+    let mut out = String::new();
+    while let Some(c) = chars.next() {
+        match c {
+            '"' => return Some(out),
+            '\\' => out.push(chars.next()?),
+            _ => out.push(c),
+        }
+    }
+    None
+}
+
+/// The `command` of the `[mcp_servers.knot]` table in a Codex `config.toml`.
+fn toml_knot_command(path: &Path) -> Option<String> {
+    let text = std::fs::read_to_string(path).ok()?;
+    let mut in_knot = false;
+    for line in text.lines().map(str::trim) {
+        if line.starts_with('[') {
+            in_knot = line == "[mcp_servers.knot]";
+            continue;
+        }
+        let Some((name, value)) = line.split_once('=') else { continue };
+        if in_knot && name.trim() == "command" {
+            return toml_string(value.trim());
+        }
+    }
+    None
 }
 
 impl Agent {
@@ -126,7 +162,7 @@ impl Agent {
     /// The user config under `~` that lists this agent's MCP servers, and the key that
     /// holds them. OpenCode's is the user one, not the repo's `opencode.json`, because
     /// the entry carries this machine's binary path.
-    pub fn mcp_config(self) -> (&'static str, &'static str) {
+    fn mcp_file(self) -> (&'static str, &'static str) {
         match self {
             Agent::Claude => (".claude.json", "mcpServers"),
             Agent::Codex => (".codex/config.toml", "mcp_servers"),
@@ -137,15 +173,55 @@ impl Agent {
         }
     }
 
+    /// The variable that moves this agent's config folder, which its own CLI follows.
+    fn config_dir_var(self) -> Option<&'static str> {
+        match self {
+            Agent::Claude => Some("CLAUDE_CONFIG_DIR"),
+            Agent::Codex => Some("CODEX_HOME"),
+            _ => None,
+        }
+    }
+
+    /// [`Agent::mcp_config`] with the environment read through `env`.
+    pub(super) fn mcp_config_with(self, home: &Path, env: impl Fn(&str) -> Option<OsString>) -> (PathBuf, &'static str) {
+        let (file, key) = self.mcp_file();
+        let moved = self.config_dir_var().and_then(env).filter(|dir| !dir.is_empty());
+        match (moved, Path::new(file).file_name()) {
+            (Some(dir), Some(name)) => (PathBuf::from(dir).join(name), key),
+            _ => (home.join(file), key),
+        }
+    }
+
+    /// The config file that lists this agent's MCP servers, and the key that holds them.
+    pub fn mcp_config(self, home: &Path) -> (PathBuf, &'static str) {
+        self.mcp_config_with(home, |var| std::env::var_os(var))
+    }
+
+    /// This agent's `knot` MCP entry, from a JSON config that may carry comments.
+    fn knot_entry(self, home: &Path) -> Option<serde_json::Value> {
+        let (path, key) = self.mcp_config(home);
+        let json = jsonc::parse(&std::fs::read_to_string(path).ok()?)?;
+        json.get(key)?.get("knot").cloned()
+    }
+
     /// Whether this agent's user config under `home` has a `knot` MCP entry. A missing or
     /// unreadable file counts as not wired.
     pub fn knot_wired(self, home: &Path) -> bool {
-        let (file, key) = self.mcp_config();
         if self == Agent::Codex {
-            return toml_has_knot(&home.join(file));
+            return toml_has_knot(&self.mcp_config(home).0);
         }
-        let Ok(text) = std::fs::read_to_string(home.join(file)) else { return false };
-        serde_json::from_str::<serde_json::Value>(&text).is_ok_and(|json| json.get(key).and_then(|s| s.get("knot")).is_some())
+        self.knot_entry(home).is_some()
+    }
+
+    /// The binary the `knot` MCP entry runs: a string, or the first item of OpenCode's
+    /// command list. `None` when there is no entry or no readable command.
+    pub fn knot_command(self, home: &Path) -> Option<String> {
+        if self == Agent::Codex {
+            return toml_knot_command(&self.mcp_config(home).0);
+        }
+        let command = self.knot_entry(home)?.get("command")?.clone();
+        let first = command.as_array().and_then(|list| list.first()).cloned().unwrap_or(command);
+        first.as_str().map(String::from)
     }
 
     /// Whether this agent looks installed: its folder under `home`, or its command on
@@ -222,6 +298,37 @@ mod tests {
         put(home.path(), ".config/opencode/opencode.json", r#"{"mcp":{"knot-ish":{}}}"#);
         put(home.path(), ".codex/config.toml", "[mcp_servers.knotty]\n# [mcp_servers.knot]\n");
         assert!(wired(home.path()).is_empty());
+    }
+
+    #[test]
+    fn moved_config_folders_are_followed() {
+        let home = Path::new("/home/maya");
+        let env = |var: &str| match var {
+            "CODEX_HOME" => Some("/work/codex".into()),
+            "CLAUDE_CONFIG_DIR" => Some("/work/claude".into()),
+            _ => Some("/never".into()),
+        };
+
+        assert_eq!(Agent::Codex.mcp_config_with(home, env), (PathBuf::from("/work/codex/config.toml"), "mcp_servers"));
+        assert_eq!(Agent::Claude.mcp_config_with(home, env), (PathBuf::from("/work/claude/.claude.json"), "mcpServers"));
+        assert_eq!(Agent::Cursor.mcp_config_with(home, env).0, PathBuf::from("/home/maya/.cursor/mcp.json"));
+        let unset = |_: &str| Some(std::ffi::OsString::new());
+        assert_eq!(Agent::Codex.mcp_config_with(home, unset).0, PathBuf::from("/home/maya/.codex/config.toml"), "empty is unset");
+    }
+
+    #[test]
+    fn knot_command_reads_the_entry_each_agent_keeps() {
+        let home = tempfile::tempdir().unwrap();
+        assert_eq!(Agent::Cursor.knot_command(home.path()), None);
+
+        put(home.path(), ".cursor/mcp.json", "{\n  // mine\n  \"mcpServers\": {\"knot\": {\"command\": \"/a/knot\"}}\n}");
+        put(home.path(), ".config/opencode/opencode.json", r#"{"mcp":{"knot":{"type":"local","command":["/b/knot"]}}}"#);
+        put(home.path(), ".codex/config.toml", "[other]\ncommand = \"x\"\n\n[mcp_servers.knot]\nargs = []\ncommand = \"C:\\\\knot.exe\"\n");
+
+        assert_eq!(Agent::Cursor.knot_command(home.path()).as_deref(), Some("/a/knot"));
+        assert!(Agent::Cursor.knot_wired(home.path()), "comments allowed");
+        assert_eq!(Agent::OpenCode.knot_command(home.path()).as_deref(), Some("/b/knot"));
+        assert_eq!(Agent::Codex.knot_command(home.path()).as_deref(), Some("C:\\knot.exe"));
     }
 
     #[test]

@@ -7,6 +7,7 @@ use super::picker::{self, Picker, Row};
 use super::{count, register_path, PathChange, SUPPORTED_LANGUAGES};
 use crate::hosts::mcp::{self, Registered};
 use crate::hosts::{Agent, Target};
+use crate::utils::tilde;
 
 const USAGE: &str = "knot init [--agents <id,id...>] [--no-swaps] [-y|--yes]";
 const PICKER_TITLE: &str = "knot init · pick the agents you use:";
@@ -108,18 +109,18 @@ fn summary(agent: Agent) -> String {
 }
 
 /// Where `agent` lists its MCP servers, as the person reads it.
-fn mcp_place(agent: Agent) -> String {
-    format!("~/{}", agent.mcp_config().0)
+fn mcp_place(agent: Agent, home: &Path) -> String {
+    tilde(&agent.mcp_config(home).0, home)
 }
 
 /// Every row writes outside the repo, since each agent's MCP entry is in its user config.
-fn picker_rows(found: &[(Agent, bool)]) -> Vec<Row> {
+fn picker_rows(found: &[(Agent, bool)], home: &Path) -> Vec<Row> {
     found
         .iter()
         .map(|&(agent, detected)| Row {
             label: agent.id().to_string(),
             detected,
-            summary: format!("{} · + MCP {}", summary(agent), mcp_place(agent)),
+            summary: format!("{} · + MCP {}", summary(agent), mcp_place(agent, home)),
             machine_wide: true,
         })
         .collect()
@@ -136,8 +137,8 @@ fn swaps_row() -> Row {
 }
 
 /// The picker: one row per agent, then the swaps row, checked unless `swaps` is off.
-fn agent_picker(found: &[(Agent, bool)], swaps: bool) -> Picker {
-    let mut rows = picker_rows(found);
+fn agent_picker(found: &[(Agent, bool)], home: &Path, swaps: bool) -> Picker {
+    let mut rows = picker_rows(found, home);
     rows.push(swaps_row());
     let mut picker = Picker::new(PICKER_TITLE, rows);
     if !swaps {
@@ -151,6 +152,7 @@ fn choose(
     selection: Selection,
     swaps: bool,
     found: &[(Agent, bool)],
+    home: &Path,
     terminal: Terminal,
 ) -> Result<Option<(Vec<Agent>, bool)>> {
     let detected = || found.iter().filter(|(_, d)| *d).map(|(a, _)| *a).collect();
@@ -158,7 +160,7 @@ fn choose(
         (Selection::Named(list), _) => Ok(Some((list, swaps))),
         (Selection::Detected, _) | (Selection::Ask, Terminal::Piped) => Ok(Some((detected(), swaps))),
         (Selection::Ask, Terminal::Interactive) => {
-            Ok(picker::run(agent_picker(found, swaps))?.map(|rows| {
+            Ok(picker::run(agent_picker(found, home, swaps))?.map(|rows| {
                 let on = rows.contains(&found.len());
                 (rows.into_iter().filter(|&i| i < found.len()).map(|i| found[i].0).collect(), on)
             }))
@@ -189,19 +191,13 @@ fn line(mark: char, label: &str, detail: &str) -> String {
     format!("{mark} {label:<LABEL_WIDTH$}  {detail}").trim_end().to_string()
 }
 
-fn tilde(path: &Path, home: &Path) -> String {
-    match path.strip_prefix(home) {
-        Ok(rest) => format!("~/{}", rest.display()),
-        Err(_) => path.display().to_string(),
-    }
-}
-
 /// Register Knot's MCP server with `agent`, as one report line.
 fn mcp_line(agent: Agent, home: &Path, bin: &Path, run: mcp::Runner) -> String {
-    let place = mcp_place(agent);
+    let place = mcp_place(agent, home);
     let (mark, detail) = match mcp::register(agent, home, bin, run) {
         Registered::Added => (DONE, format!("added to {place}")),
         Registered::AlreadyThere => (DONE, format!("already in {place}")),
+        Registered::Elsewhere(p) => (NOTE, format!("already in {place}, points at {p}")),
         Registered::NoCli(command) => (NOTE, format!("no {} command found; run: {command}", agent.id())),
         Registered::ByHand(what) => (NOTE, what),
         Registered::Failed(e) => (FAILED, format!("not added: {e}")),
@@ -273,7 +269,7 @@ pub(super) fn run(args: impl IntoIterator<Item = String>) -> Result<()> {
         Terminal::Piped
     };
 
-    let Some((agents, swaps)) = choose(selection, swaps, &found, terminal)? else {
+    let Some((agents, swaps)) = choose(selection, swaps, &found, &home, terminal)? else {
         eprintln!("{NOTE} cancelled, nothing written");
         return Ok(());
     };
@@ -326,19 +322,19 @@ mod tests {
     #[test]
     fn without_a_terminal_only_detected_agents_are_wired() {
         let found = [(Agent::Claude, true), (Agent::Codex, false), (Agent::Cursor, true)];
-        assert_eq!(choose(Selection::Ask, false, &found, Terminal::Piped).unwrap(), Some((vec![Agent::Claude, Agent::Cursor], false)));
-        assert_eq!(choose(Selection::Detected, true, &found, Terminal::Interactive).unwrap(), Some((vec![Agent::Claude, Agent::Cursor], true)));
+        assert_eq!(choose(Selection::Ask, false, &found, Path::new("/h"), Terminal::Piped).unwrap(), Some((vec![Agent::Claude, Agent::Cursor], false)));
+        assert_eq!(choose(Selection::Detected, true, &found, Path::new("/h"), Terminal::Interactive).unwrap(), Some((vec![Agent::Claude, Agent::Cursor], true)));
         let named = Selection::Named(vec![Agent::Codex]);
-        assert_eq!(choose(named, false, &found, Terminal::Interactive).unwrap(), Some((vec![Agent::Codex], false)));
+        assert_eq!(choose(named, false, &found, Path::new("/h"), Terminal::Interactive).unwrap(), Some((vec![Agent::Codex], false)));
     }
 
     #[test]
     fn the_swaps_row_starts_checked_unless_turned_off() {
         let found = [(Agent::Claude, true), (Agent::Codex, false)];
-        assert_eq!(agent_picker(&found, true).picked(), vec![0, 2]);
-        assert_eq!(agent_picker(&found, false).picked(), vec![0]);
+        assert_eq!(agent_picker(&found, Path::new("/h"), true).picked(), vec![0, 2]);
+        assert_eq!(agent_picker(&found, Path::new("/h"), false).picked(), vec![0]);
         let (_, swaps) = parse_args(args(&[])).unwrap();
-        assert_eq!(agent_picker(&found, swaps).picked(), vec![0, 2], "no flag: swaps checked");
+        assert_eq!(agent_picker(&found, Path::new("/h"), swaps).picked(), vec![0, 2], "no flag: swaps checked");
     }
 
     #[test]
@@ -393,6 +389,35 @@ mod tests {
         assert!(!repo.path().join("AGENTS.md").exists());
         assert!(repo.path().join(".knot/cache/index.json").is_file());
         assert_eq!(std::fs::read_dir(home.path()).unwrap().count(), 0, "nothing written to the home folder");
+    }
+
+    #[test]
+    fn an_entry_for_another_binary_is_named_not_changed() {
+        let repo = tempfile::tempdir().unwrap();
+        let home = tempfile::tempdir().unwrap();
+        let put = |rel: &str, text: &str| {
+            let file = home.path().join(rel);
+            std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+            std::fs::write(file, text).unwrap();
+        };
+        put(".claude.json", r#"{"mcpServers":{"knot":{"command":"/bin/knot"}}}"#);
+        put(".codex/config.toml", "[mcp_servers.knot]\ncommand = \"/old/knot\"\n");
+        put(".cursor/mcp.json", r#"{"mcpServers":{"knot":{"command":"/old/knot"}}}"#);
+        let never = |program: &str, _: &[String]| panic!("ran {program}");
+
+        let lines = wire(repo.path(), home.path(), &[Agent::Claude, Agent::Codex, Agent::Cursor], Path::new("/bin/knot"), &never).unwrap();
+
+        let mcp: Vec<&str> = lines.iter().map(String::as_str).filter(|l| l.contains(" mcp ")).collect();
+        assert_eq!(
+            mcp,
+            vec![
+                "✓ mcp           claude · already in ~/.claude.json",
+                "· mcp           codex · already in ~/.codex/config.toml, points at /old/knot",
+                "· mcp           cursor · already in ~/.cursor/mcp.json, points at /old/knot",
+            ]
+        );
+        let cursor = std::fs::read_to_string(home.path().join(".cursor/mcp.json")).unwrap();
+        assert_eq!(cursor, r#"{"mcpServers":{"knot":{"command":"/old/knot"}}}"#);
     }
 
     /// A hostile clone: instruction files linked out of the repo, one link inside it.

@@ -6,6 +6,14 @@ pub fn calculate_hash(path: &Path) -> anyhow::Result<String> {
     Ok(blake3::hash(&bytes).to_hex().to_string())
 }
 
+/// `path` as the person reads it: under `~/` when it sits in `home`.
+pub fn tilde(path: &Path, home: &Path) -> String {
+    match path.strip_prefix(home) {
+        Ok(rest) => format!("~/{}", rest.display()),
+        Err(_) => path.display().to_string(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

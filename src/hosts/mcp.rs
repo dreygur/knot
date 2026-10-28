@@ -7,8 +7,9 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-use super::Agent;
+use super::{jsonc, Agent};
 use crate::hooks::{read_settings, refuse_symlink, write_atomic};
+use crate::utils::tilde;
 
 const SERVER_NAME: &str = "knot";
 /// An agent CLI still running by then is waiting on something, most likely a prompt
@@ -38,6 +39,8 @@ pub enum Registered {
     Added,
     /// A `knot` entry was already there, and was left as it is.
     AlreadyThere,
+    /// A `knot` entry runs another binary, the one named; it was left as it is.
+    Elsewhere(String),
     /// The agent's CLI is not installed; the command to run once it is.
     NoCli(String),
     /// Knot cannot safely write this config; what to add to it by hand.
@@ -84,6 +87,16 @@ fn entry(agent: Agent, bin: &str) -> serde_json::Value {
     }
 }
 
+/// The entry to paste under `key` in the config at `place`, which Knot cannot rewrite.
+fn by_hand(agent: Agent, key: &str, place: &str, bin: &str) -> Registered {
+    Registered::ByHand(format!("add under \"{key}\" in {place}: \"{SERVER_NAME}\": {}", entry(agent, bin)))
+}
+
+/// Whether the config at `path` is a JSON object once its comments are gone.
+fn only_comments_in_the_way(path: &Path) -> bool {
+    std::fs::read_to_string(path).ok().and_then(|text| jsonc::parse(&text)).is_some_and(|v| v.is_object())
+}
+
 /// OpenCode with an `opencode.jsonc`: `None` when there is none, so `opencode.json` is
 /// written as for any JSON agent; otherwise already there, or the entry to paste.
 fn opencode_jsonc(home: &Path, bin: &str) -> Option<Registered> {
@@ -93,25 +106,40 @@ fn opencode_jsonc(home: &Path, bin: &str) -> Option<Registered> {
     if text.contains(&format!("\"{SERVER_NAME}\"")) {
         return Some(Registered::AlreadyThere);
     }
-    let entry = format!("\"{SERVER_NAME}\": {}", entry(Agent::OpenCode, bin));
-    Some(Registered::ByHand(format!("add under \"mcp\" in ~/{OPENCODE_JSONC}: {entry}")))
+    Some(by_hand(Agent::OpenCode, "mcp", &format!("~/{OPENCODE_JSONC}"), bin))
+}
+
+/// What to report for a `knot` entry already in `agent`'s config, never changed: there,
+/// or there for another binary. `None` when there is none.
+fn existing(agent: Agent, home: &Path, bin: &str) -> Option<Registered> {
+    if !agent.knot_wired(home) {
+        return None;
+    }
+    match agent.knot_command(home) {
+        Some(command) if command != bin => Some(Registered::Elsewhere(command)),
+        _ => Some(Registered::AlreadyThere),
+    }
 }
 
 /// Add Knot to an agent's JSON config under `home`. A file that does not parse, is not
-/// an object or is a symlink is refused, so a hand-edited config is never lost.
+/// an object or is a symlink is refused, so a config edited by hand is never lost; one
+/// with comments gets the entry to paste, since rewriting it would drop them.
 fn add_to_json(agent: Agent, home: &Path, bin: &str) -> Result<Registered> {
-    let (file, key) = agent.mcp_config();
-    let path = home.join(file);
+    let (path, key) = agent.mcp_config(home);
     refuse_symlink(&path)?;
-    let mut cfg = read_settings(&path)?;
+    if let Some(found) = existing(agent, home, bin) {
+        return Ok(found);
+    }
+    let mut cfg = match read_settings(&path) {
+        Ok(cfg) => cfg,
+        Err(_) if only_comments_in_the_way(&path) => return Ok(by_hand(agent, key, &tilde(&path, home), bin)),
+        Err(e) => return Err(e),
+    };
 
     match cfg.get(key) {
         None => cfg[key] = json!({}),
         Some(servers) if servers.is_object() => {}
         Some(_) => anyhow::bail!("{}'s \"{key}\" is not an object; Knot leaves it alone", path.display()),
-    }
-    if cfg[key].get(SERVER_NAME).is_some() {
-        return Ok(Registered::AlreadyThere);
     }
     cfg[key][SERVER_NAME] = entry(agent, bin);
 
@@ -127,8 +155,8 @@ fn add_to_json(agent: Agent, home: &Path, bin: &str) -> Result<Registered> {
 /// Add Knot through the agent's own CLI, which owns its config format. Both CLIs
 /// would replace or refuse an existing entry, so one already there is left alone first.
 fn add_with_cli(agent: Agent, home: &Path, bin: &str, run: Runner) -> Registered {
-    if agent.knot_wired(home) {
-        return Registered::AlreadyThere;
+    if let Some(found) = existing(agent, home, bin) {
+        return found;
     }
     let (program, scope): (&str, &[&str]) = match agent {
         Agent::Claude => ("claude", &["-s", "user"]),
@@ -139,7 +167,8 @@ fn add_with_cli(agent: Agent, home: &Path, bin: &str, run: Runner) -> Registered
 
     match run(program, &args) {
         Ran::Done => Registered::Added,
-        Ran::Missing => Registered::NoCli(format!("{program} {}", args.join(" "))),
+        // Printed for the person to paste, so a path with a space must stay one word
+        Ran::Missing => Registered::NoCli(format!("{program} {}", shell_words::join(&args))),
         Ran::Failed(e) => Registered::Failed(e),
     }
 }
@@ -203,7 +232,7 @@ mod tests {
 
         // A second run, or a knot entry the person set up by hand, is never rewritten
         std::fs::write(&file, r#"{"mcpServers":{"knot":{"command":"/mine/knot"}}}"#).unwrap();
-        assert_eq!(register(Agent::Gemini, home.path(), Path::new(BIN), &no_cli), Registered::AlreadyThere);
+        assert_eq!(register(Agent::Gemini, home.path(), Path::new(BIN), &no_cli), Registered::Elsewhere("/mine/knot".into()));
         assert_eq!(read(&file)["mcpServers"]["knot"]["command"], "/mine/knot");
     }
 
@@ -314,9 +343,9 @@ mod tests {
     #[test]
     fn an_existing_cli_entry_is_not_added_again() {
         let home = tempfile::tempdir().unwrap();
-        std::fs::write(home.path().join(".claude.json"), r#"{"mcpServers":{"knot":{"command":"/x"}}}"#).unwrap();
+        std::fs::write(home.path().join(".claude.json"), r#"{"mcpServers":{"knot":{"command":"/opt/knot/knot"}}}"#).unwrap();
         std::fs::create_dir_all(home.path().join(".codex")).unwrap();
-        std::fs::write(home.path().join(".codex/config.toml"), "[mcp_servers.knot]\ncommand = \"/x\"\n").unwrap();
+        std::fs::write(home.path().join(".codex/config.toml"), "[mcp_servers.knot]\ncommand = \"/opt/knot/knot\"\n").unwrap();
 
         for agent in [Agent::Claude, Agent::Codex] {
             assert_eq!(register(agent, home.path(), Path::new(BIN), &no_cli), Registered::AlreadyThere);
@@ -337,6 +366,37 @@ mod tests {
             register(Agent::Codex, home.path(), Path::new(BIN), &failing),
             Registered::Failed("codex exited with exit status: 1".into())
         );
+    }
+
+    #[test]
+    fn the_command_to_run_later_survives_a_space_in_the_path() {
+        let home = tempfile::tempdir().unwrap();
+        let missing = |_: &str, _: &[String]| Ran::Missing;
+
+        let got = register(Agent::Claude, home.path(), Path::new("/Users/Jane Doe/bin/knot"), &missing);
+
+        assert_eq!(got, Registered::NoCli("claude mcp add -s user knot -- '/Users/Jane Doe/bin/knot'".into()));
+    }
+
+    #[test]
+    fn a_config_with_comments_gets_the_entry_to_paste() {
+        let home = tempfile::tempdir().unwrap();
+        let mine = "{\n  // the house server\n  \"mcpServers\": { \"api\": { \"command\": \"x\" } } /* keep */\n}\n";
+        for (agent, file) in [(Agent::Cursor, ".cursor/mcp.json"), (Agent::Gemini, ".gemini/settings.json")] {
+            let path = home.path().join(file);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, mine).unwrap();
+
+            let got = register(agent, home.path(), Path::new(BIN), &no_cli);
+
+            let paste = format!("add under \"mcpServers\" in ~/{file}: \"knot\": {{\"command\":\"{BIN}\"}}");
+            assert_eq!(got, Registered::ByHand(paste), "{agent:?}");
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), mine, "{agent:?}: never edited");
+        }
+
+        let with_knot = "{\n  // pasted\n  \"mcpServers\": { \"knot\": { \"command\": \"/opt/knot/knot\" } }\n}\n";
+        std::fs::write(home.path().join(".cursor/mcp.json"), with_knot).unwrap();
+        assert_eq!(register(Agent::Cursor, home.path(), Path::new(BIN), &no_cli), Registered::AlreadyThere);
     }
 
     #[cfg(unix)]
