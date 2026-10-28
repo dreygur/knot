@@ -52,14 +52,19 @@ pub fn append(root: &Path, event: &Event) {
     }
 }
 
+/// A learning's id in the log: its file stem.
+pub fn learning_id(file: &Path) -> String {
+    file.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default()
+}
+
 /// Log that a repo learning was shown to the agent in the current session, with what it
 /// took to work out when that was recorded.
-pub fn learning_shown(root: &Path, id: &str, cost_minutes: Option<u64>, cost_tokens: Option<u64>) {
+pub fn learning_shown(root: &Path, session: &str, id: &str, cost_minutes: Option<u64>, cost_tokens: Option<u64>) {
     append(
         root,
         &Event {
             ts_ms: chrono::Utc::now().timestamp_millis(),
-            session: current_session(root),
+            session: session.to_string(),
             kind: EventKind::Learning,
             tool: "learning".to_string(),
             command: None,
@@ -166,11 +171,12 @@ mod tests {
     #[test]
     fn learning_event_round_trips() {
         let dir = tempfile::tempdir().unwrap();
-        learning_shown(dir.path(), "2026-10-27-x", Some(12), Some(27_000));
+        learning_shown(dir.path(), "s1", "2026-10-27-x", Some(12), Some(27_000));
 
         let events = all(dir.path());
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].kind, EventKind::Learning);
+        assert_eq!(events[0].session, "s1");
         assert_eq!(events[0].learning.as_deref(), Some("2026-10-27-x"));
         assert_eq!(events[0].cost_minutes, Some(12));
         assert_eq!(events[0].cost_tokens, Some(27_000));

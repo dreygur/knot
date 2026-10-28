@@ -95,8 +95,9 @@ fn ask_text(
     let limit = input.limit.unwrap_or(DEFAULT_ASK_LIMIT).min(MAX_ASK_LIMIT);
     let hits = crate::ask::ask(root, cache_root, &input.question, limit, crate::ask::Ranking::Hybrid)?;
     let learnings = crate::ask::related_learnings(root, &input.question, &hits);
+    let session = crate::ask::events::current_session(root);
     for l in &learnings {
-        crate::ask::events::learning_shown(root, &l.id(), l.cost_minutes, l.cost_tokens);
+        crate::ask::events::learning_shown(root, &session, &l.id(), l.cost_minutes, l.cost_tokens);
     }
 
     let mut out = String::new();

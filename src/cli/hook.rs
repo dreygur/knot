@@ -127,8 +127,7 @@ fn learnings_for_file(root: &Path, file: &Path, session_id: &str) -> Option<Stri
         .and_then(|c| c.get_string("user.name").ok())
         .unwrap_or_default();
     for l in &shown {
-        let id = l.file_path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
-        events::learning_shown(root, &id, l.frontmatter.cost_minutes, l.frontmatter.cost_tokens);
+        events::learning_shown(root, session_id, &events::learning_id(&l.file_path), l.frontmatter.cost_minutes, l.frontmatter.cost_tokens);
     }
     (!shown.is_empty()).then(|| learnings_block(&rel, &shown, root, &me))
 }
@@ -489,6 +488,7 @@ mod tests {
         assert_eq!(logged[0].kind, EventKind::Learning);
         assert_eq!(logged[0].learning.as_deref(), Some("2026-10-09_keep"));
         assert_eq!(logged[0].cost_tokens, Some(27_000));
+        assert_eq!(logged[0].session, "sess");
     }
 
     #[test]
