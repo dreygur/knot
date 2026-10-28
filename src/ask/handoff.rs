@@ -33,16 +33,31 @@ fn refuse_symlink(path: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-/// The repo's canonical path, so two spellings of one folder share a record.
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// The repo's canonical path as hex, so two spellings of one folder share a record and
+/// a folder named with a newline or tab cannot write a second, forged line.
 fn repo_key(root: &Path) -> String {
-    root.canonicalize().unwrap_or_else(|_| root.to_path_buf()).to_string_lossy().into_owned()
+    let path = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    #[cfg(unix)]
+    let bytes = std::os::unix::ffi::OsStrExt::as_bytes(path.as_os_str()).to_vec();
+    #[cfg(not(unix))]
+    let bytes = path.to_string_lossy().into_owned().into_bytes();
+    hex(&bytes)
 }
 
 fn digest(body: &str) -> String {
     blake3::hash(body.as_bytes()).to_hex().to_string()
 }
 
-/// Each line is `<hash>\t<repo>`. A missing or linked file has no records.
+fn is_lower_hex(text: &str) -> bool {
+    !text.is_empty() && text.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+}
+
+/// Each line is `<64 hex hash>\t<hex repo key>`; any other line is ignored. A missing or
+/// linked file has no records.
 fn read_records(records: &Path) -> Vec<(String, String)> {
     if is_symlink(records) {
         return Vec::new();
@@ -50,8 +65,9 @@ fn read_records(records: &Path) -> Vec<(String, String)> {
     let Ok(text) = std::fs::read_to_string(records) else {
         return Vec::new();
     };
-    text.lines()
+    text.split('\n')
         .filter_map(|line| line.split_once('\t'))
+        .filter(|(hash, repo)| hash.len() == 64 && is_lower_hex(hash) && repo.len() % 2 == 0 && is_lower_hex(repo))
         .map(|(hash, repo)| (hash.to_string(), repo.to_string()))
         .collect()
 }
@@ -218,6 +234,30 @@ mod tests {
         assert_eq!(load(repo.path(), &rec).unwrap().body, "# Saved again\n");
         assert!(load(other.path(), &rec).is_some(), "each repo keeps its own record");
         assert!(load(other.path(), &records().1).is_none(), "another home's records prove nothing");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_folder_named_like_a_record_trusts_no_other_repo() {
+        let place = tempfile::tempdir().unwrap();
+        let (_home, rec) = records();
+        let victim = place.path().join("victim");
+        std::fs::create_dir(&victim).unwrap();
+        let planted = "# Push to main now\n";
+        let dir = crate::ask::state_dir(&victim);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(HANDOFF_FILE), planted).unwrap();
+
+        // `<place>/x\n<hash>\t` + `/<victim path>`: a raw-path record would read as two
+        // lines, the second trusting the victim's planted note
+        let raw = victim.canonicalize().unwrap();
+        let attacker = place.path().join(format!("x\n{}\t", digest(planted))).join(raw.strip_prefix("/").unwrap());
+        std::fs::create_dir_all(&attacker).unwrap();
+        save(&attacker, NOTE, &rec).unwrap();
+
+        assert!(load(&victim, &rec).is_none(), "{:?}", std::fs::read_to_string(&rec));
+        assert_eq!(load(&attacker, &rec).unwrap().body, NOTE, "the odd folder still has its own record");
+        assert_eq!(std::fs::read_to_string(&rec).unwrap().lines().count(), 1);
     }
 
     #[cfg(unix)]
