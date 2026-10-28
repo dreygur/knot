@@ -9,6 +9,7 @@ use super::index::{build_doc, LexicalIndex, SymbolDoc};
 use crate::ast::extract::{extract_file, SupportedLang};
 use crate::ast::resolve::{list_supported_files, ParsedFile};
 use crate::ast::CodeGraph;
+use crate::utils::{is_symlink, refuse_symlink, write_atomic};
 
 /// Bump when the cached shape or tokenization changes, so old caches are ignored.
 const CACHE_VERSION: u32 = 10;
@@ -90,22 +91,6 @@ fn cache_path(cache_root: &Path) -> PathBuf {
     state_dir_in(cache_root).join(CACHE_FILE)
 }
 
-fn is_symlink(path: &Path) -> bool {
-    std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink())
-}
-
-/// A cloned repo can commit `.knot/cache` (or a file in it) as a symlink to anywhere,
-/// say `~/.ssh`; writing through it would let the repo overwrite files outside itself.
-fn refuse_symlink(path: &Path) -> std::io::Result<()> {
-    if is_symlink(path) {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            format!("{} is a symlink; Knot does not write through it", path.display()),
-        ));
-    }
-    Ok(())
-}
-
 /// Create `dir` with a `.gitignore` covering everything in it, so a repo without a
 /// `.knot` rule of its own never commits Knot's local state. Refuses when `dir` or
 /// its parent (`.knot`) is a symlink.
@@ -167,13 +152,9 @@ fn read_cache(path: &Path) -> HashMap<String, CachedFile> {
     }
 }
 
-/// Write via a temp file and rename so a crash never leaves a half written cache.
 fn write_cache(path: &Path, files: HashMap<String, CachedFile>) -> Result<()> {
     let path = writable(path)?;
-    let tmp = writable(&path.with_extension("json.tmp"))?;
-    std::fs::write(&tmp, serde_json::to_vec(&CacheFile { version: CACHE_VERSION, files })?)?;
-    std::fs::rename(&tmp, path)?;
-    Ok(())
+    write_atomic(&path, &serde_json::to_string(&CacheFile { version: CACHE_VERSION, files })?)
 }
 
 fn status_path(cache_file: &Path) -> PathBuf {
@@ -197,10 +178,7 @@ fn write_status(cache_file: &Path, files: &HashMap<String, CachedFile>) -> Resul
         stamps: files.iter().map(|(rel, f)| (rel.clone(), f.stamp)).collect(),
     };
     let path = writable(&status_path(cache_file))?;
-    let tmp = writable(&path.with_extension("tmp"))?;
-    std::fs::write(&tmp, serde_json::to_vec(&status)?)?;
-    std::fs::rename(&tmp, path)?;
-    Ok(())
+    write_atomic(&path, &serde_json::to_string(&status)?)
 }
 
 /// Compare the working tree with the last written cache without parsing anything.

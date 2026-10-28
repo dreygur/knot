@@ -12,6 +12,8 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
+use crate::utils::{is_symlink, refuse_symlink};
+
 const HANDOFF_FILE: &str = "handoff.md";
 /// The records file's name in Knot's data folder.
 pub const RECORDS_FILE: &str = "handoffs.txt";
@@ -23,17 +25,6 @@ const DAY: u64 = 24 * HOUR;
 pub struct Handoff {
     pub body: String,
     pub saved: SystemTime,
-}
-
-fn is_symlink(path: &Path) -> bool {
-    std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink())
-}
-
-fn refuse_symlink(path: &Path) -> std::io::Result<()> {
-    if is_symlink(path) {
-        return Err(std::io::Error::other(format!("{} is a symlink; Knot does not use it", path.display())));
-    }
-    Ok(())
 }
 
 fn hex(bytes: &[u8]) -> String {

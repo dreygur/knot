@@ -35,6 +35,25 @@ pub struct RepoLearning {
     pub file_path: PathBuf,
 }
 
+/// The file a `touches` entry names: `\` read as `/`, without a `#symbol` or
+/// `file.rs::symbol` suffix and without leading `./`.
+pub fn touch_path(touch: &str) -> String {
+    let path = touch.replace('\\', "/");
+    let path = path.split('#').next().unwrap_or("");
+    let path = match path.find("::") {
+        Some(idx) if path[..idx].contains('.') => &path[..idx],
+        _ => path,
+    };
+    path.trim_start_matches("./").to_string()
+}
+
+impl RepoLearning {
+    /// Whether one of this learning's `touches` entries is `rel_file`.
+    pub fn touches_file(&self, rel_file: &str) -> bool {
+        self.frontmatter.touches.iter().any(|t| touch_path(t) == rel_file)
+    }
+}
+
 fn sanitize_slug(text: &str) -> String {
     let mut slug = String::new();
     let mut prev_dash = false;
@@ -335,7 +354,7 @@ pub struct NewNote<'a> {
 pub fn write_note(repo_root: &Path, note: &NewNote) -> Result<(PathBuf, Uuid)> {
     use std::io::Write as _;
     for dir in [repo_root.join(".knot"), learnings_dir(repo_root)] {
-        if fs::symlink_metadata(&dir).is_ok_and(|m| m.file_type().is_symlink()) {
+        if crate::utils::is_symlink(&dir) {
             anyhow::bail!("{} is a symlink; learnings are only written to a real directory in the repo", dir.display());
         }
     }
@@ -425,6 +444,14 @@ mod tests {
     use super::*;
     use crate::memory::MemoryScope;
     use tempfile::tempdir;
+
+    #[test]
+    fn touch_path_names_the_file() {
+        for touch in ["src/a.rs", "./src/a.rs", "././src/a.rs", "src/a.rs#run", "src\\a.rs", "src/a.rs::run"] {
+            assert_eq!(touch_path(touch), "src/a.rs", "{touch}");
+        }
+        assert_eq!(touch_path("crate::engine"), "crate::engine", "a module path keeps its ::");
+    }
 
     #[test]
     fn test_quality_gate_requires_causal_why() {

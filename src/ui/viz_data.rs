@@ -66,16 +66,6 @@ fn folder_of(file: &str) -> String {
     }
 }
 
-/// Same rule as the hook: a learning touches a file when a `touches` entry,
-/// minus any `#fragment` and leading `./`, is that file's path.
-fn touches(learning: &RepoLearning, file: &str) -> bool {
-    learning.frontmatter.touches.iter().any(|t| {
-        let t = t.replace('\\', "/");
-        let path = t.split('#').next().unwrap_or("").trim_start_matches("./");
-        path == file
-    })
-}
-
 /// Turns the code graph and the active learnings into what the page draws. Calls to
 /// symbols outside the graph and calls to self are dropped.
 pub(crate) fn viz_data(graph: &CodeGraph, learnings: &[RepoLearning]) -> VizData {
@@ -103,7 +93,7 @@ pub(crate) fn viz_data(graph: &CodeGraph, learnings: &[RepoLearning]) -> VizData
                 folder: folders.binary_search(&folder).unwrap_or(0),
                 kind: s.kind.as_str().to_string(),
                 rank: (rank.get(&s.id).copied().unwrap_or(0.0) * 1e6).round() / 1e6,
-                learnings: (0..learnings.len()).filter(|&i| touches(&learnings[i], &file)).collect(),
+                learnings: (0..learnings.len()).filter(|&i| learnings[i].touches_file(&file)).collect(),
             }
         })
         .collect();

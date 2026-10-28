@@ -4,7 +4,8 @@ use std::path::Path;
 use anyhow::{bail, Result};
 
 use super::picker::{self, Picker, Row};
-use super::{count, register_path, PathChange, SUPPORTED_LANGUAGES};
+use super::{register_path, PathChange, SUPPORTED_LANGUAGES};
+use crate::utils::count;
 use crate::hosts::mcp::{self, Registered};
 use crate::hosts::{Agent, Target};
 use crate::utils::tilde;

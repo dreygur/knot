@@ -129,15 +129,6 @@ pub fn transcript_window(transcript: &Path) -> Option<(i64, i64)> {
     Some((start, last_prompt))
 }
 
-/// `850`, `12k`, `3.4M`.
-pub fn short(tokens: usize) -> String {
-    match tokens {
-        0..=999 => tokens.to_string(),
-        1_000..=999_999 => format!("{}k", (tokens + 500) / 1_000),
-        _ => format!("{:.1}M", tokens as f64 / 1_000_000.0),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -188,12 +179,5 @@ mod tests {
         let ms = |s: &str| chrono::DateTime::parse_from_rfc3339(s).unwrap().timestamp_millis();
         assert_eq!(start, ms("2026-10-27T10:00:00Z"));
         assert_eq!(prompt, ms("2026-10-27T10:06:00Z"), "a prompt with an image counts, found past a long turn");
-    }
-
-    #[test]
-    fn short_numbers() {
-        assert_eq!(short(850), "850");
-        assert_eq!(short(12_400), "12k");
-        assert_eq!(short(3_400_000), "3.4M");
     }
 }

@@ -5,6 +5,7 @@ pub mod handoff;
 mod index;
 mod learnings;
 pub mod map;
+pub mod render;
 pub mod savings;
 pub mod session;
 mod tokenize;
@@ -14,7 +15,7 @@ pub use cache::{
     claim_reindex, index_status, state_file, state_file_readable, load_corpus, release_reindex, IndexStatus,
 };
 pub use index::LexicalIndex;
-pub use learnings::{flatten, related_learnings};
+pub use learnings::{flatten, mark_shown, related_learnings};
 pub use tokenize::tokenize;
 
 use serde::Serialize;
@@ -22,6 +23,7 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use crate::ast::{compute_weighted_pagerank, CodeGraph};
+use crate::utils::count;
 
 /// Lexical hits considered for the final ranking.
 const LEXICAL_CANDIDATES: usize = 60;
@@ -160,7 +162,6 @@ pub fn current_repo_root() -> std::io::Result<std::path::PathBuf> {
 /// The code index and learnings of `root`, for status output. The vault counts beside
 /// it are memories, not code, so without this line an empty vault reads as "nothing indexed".
 pub fn repo_summary(root: &Path) -> String {
-    let count = |n: usize, word: &str| format!("{n} {word}{}", if n == 1 { "" } else { "s" });
     let index = match index_status(root, &index_root(root)) {
         Err(e) => format!("unreadable ({e})"),
         Ok(s) if s.files == 0 && !s.indexed => "no supported code files here".to_string(),

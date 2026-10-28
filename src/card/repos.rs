@@ -5,6 +5,8 @@ use anyhow::Result;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
+use crate::utils::refuse_symlink;
+
 const LIST_DIR: &str = ".knot";
 const LIST_FILE: &str = "repos.txt";
 
@@ -55,13 +57,6 @@ fn try_register(home: &Path, repo_root: &Path) -> Result<()> {
     let line = if content.is_empty() || content.ends_with('\n') { format!("{entry}\n") } else { format!("\n{entry}\n") };
     let mut file = std::fs::OpenOptions::new().create(true).append(true).open(&path)?;
     file.write_all(line.as_bytes())?;
-    Ok(())
-}
-
-fn refuse_symlink(path: &Path) -> Result<()> {
-    if std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink()) {
-        anyhow::bail!("{} is a symlink; Knot does not write through it", path.display());
-    }
     Ok(())
 }
 

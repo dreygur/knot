@@ -5,7 +5,7 @@ pub mod mcp;
 pub use agent::{Agent, Target};
 
 use agent::{ANTIGRAVITY_SKILL, CURSOR_RULE};
-use crate::hooks::{refuse_symlink, write_atomic};
+use crate::utils::{is_symlink, refuse_symlink, write_atomic};
 use anyhow::Result;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -43,8 +43,7 @@ fn protocol_block() -> String {
 /// a link, so a link is followed only to a file inside `repo_root` (`CLAUDE.md ->
 /// AGENTS.md`); one that points out of the repo or at nothing is refused.
 fn repo_file(repo_root: &Path, path: &Path) -> Result<PathBuf> {
-    let is_link = fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink());
-    if !is_link {
+    if !is_symlink(path) {
         return Ok(path.to_path_buf());
     }
     let Ok(real) = path.canonicalize() else {
@@ -64,17 +63,7 @@ fn upsert_block_into_file(repo_root: &Path, path: &Path, block: &str) -> Result<
         Err(e) => anyhow::bail!("cannot read {}: {e}", path.display()),
     };
 
-    let updated = if let (Some(s), Some(e)) = (existing.find(START_MARKER), existing.find(END_MARKER)) {
-        if s < e {
-            let after_end = e + END_MARKER.len();
-            format!("{}{}{}", &existing[..s], block.trim(), &existing[after_end..])
-        } else {
-            format!("{existing}\n{block}\n")
-        }
-    } else {
-        format!("{existing}\n{block}\n")
-    };
-
+    let updated = crate::utils::upsert_block(&existing, block, START_MARKER, END_MARKER);
     write_atomic(&path, updated.trim_start())
 }
 

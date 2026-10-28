@@ -11,7 +11,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
-use crate::engine::learnings::{scan_repo_learnings, RepoLearning};
+use crate::engine::learnings::{scan_repo_learnings, touch_path, RepoLearning};
+use crate::utils::count;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum FindingKind {
@@ -68,11 +69,10 @@ fn short_date(date: &str) -> String {
 /// is flattened to single lines with no control characters.
 pub fn format_report(report: &CheckReport) -> String {
     use crate::ask::flatten;
-    let plural = |n: usize, word: &str| format!("{n} {word}{}", if n == 1 { "" } else { "s" });
     let mut out = format!(
         "checking {} against {}\n",
-        plural(report.checked_files.len(), "changed file"),
-        plural(report.learnings_checked, "learning")
+        count(report.checked_files.len(), "changed file"),
+        count(report.learnings_checked, "learning")
     );
 
     for f in &report.findings {
@@ -115,10 +115,10 @@ pub fn format_report(report: &CheckReport) -> String {
             .unwrap_or_default();
         out.push_str(&format!(
             "· {} · fix it, or say why in the commit message{cite}\n",
-            plural(conflicts, "conflict")
+            count(conflicts, "conflict")
         ));
     } else {
-        out.push_str(&format!("· no conflicts{}\n", if warnings > 0 { format!(" · {}", plural(warnings, "note")) } else { String::new() }));
+        out.push_str(&format!("· no conflicts{}\n", if warnings > 0 { format!(" · {}", count(warnings, "note")) } else { String::new() }));
     }
     out
 }
@@ -423,14 +423,9 @@ fn commit_messages(repo: &Repository, base: &str) -> Vec<(String, String)> {
         .collect()
 }
 
-/// Normalize a `touches` entry to a repo-relative path without its symbol suffix.
-fn touch_path(touch: &str, repo_root: &Path) -> String {
-    let path = touch.split('#').next().unwrap_or("");
-    let path = match path.find("::") {
-        Some(idx) if path[..idx].contains('.') => &path[..idx],
-        _ => path,
-    };
-    let path = path.replace('\\', "/");
+/// A `touches` entry as a path relative to `repo_root`, which it may be written under.
+fn relative_touch(touch: &str, repo_root: &Path) -> String {
+    let path = touch_path(touch);
     let root = repo_root.to_string_lossy().replace('\\', "/");
     let rel = path.strip_prefix(&root).unwrap_or(&path);
     rel.trim_start_matches("./").trim_start_matches('/').to_string()
@@ -440,7 +435,7 @@ fn learning_applies(learning: &RepoLearning, rel_path: &str, repo_root: &Path) -
     let touches = &learning.frontmatter.touches;
     touches.is_empty()
         || touches.iter().any(|t| {
-            let tp = touch_path(t, repo_root);
+            let tp = relative_touch(t, repo_root);
             !tp.is_empty()
                 && (rel_path == tp || rel_path.starts_with(&format!("{}/", tp.trim_end_matches('/'))))
         })

@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 
 use crate::ask::events::{self, Event, EventKind};
 use crate::ask::{flatten, handoff, session, usage};
+use crate::utils::count;
 use crate::engine::learnings::{active_learnings, RepoLearning};
 use crate::shell::classify::{classify, Plan};
 
@@ -58,19 +59,11 @@ fn first_name(author: &str) -> String {
 pub(super) fn cost_text(l: &RepoLearning) -> Option<String> {
     let fm = &l.frontmatter;
     match (fm.cost_minutes, fm.cost_tokens) {
-        (Some(m), Some(t)) => Some(format!("took {m} min, ~{} tokens to work out", crate::ask::savings::short(t as usize))),
+        (Some(m), Some(t)) => Some(format!("took {m} min, ~{} tokens to work out", crate::utils::short(t))),
         (Some(m), None) => Some(format!("took {m} min to work out")),
-        (None, Some(t)) => Some(format!("took ~{} tokens to work out", crate::ask::savings::short(t as usize))),
+        (None, Some(t)) => Some(format!("took ~{} tokens to work out", crate::utils::short(t))),
         (None, None) => None,
     }
-}
-
-/// Whether `learning` lists `rel_file` in its touches (with or without a `#symbol`).
-fn touches_file(learning: &RepoLearning, rel_file: &str) -> bool {
-    learning.frontmatter.touches.iter().any(|t| {
-        let path = t.split('#').next().unwrap_or("").trim_start_matches("./");
-        path == rel_file
-    })
 }
 
 /// The context block shown when a session first opens a file with learnings on it.
@@ -80,9 +73,8 @@ fn learnings_block(rel_file: &str, learnings: &[&RepoLearning], root: &Path, me:
     let mine = |l: &RepoLearning| !me.is_empty() && l.frontmatter.author.trim() == me.trim();
     let theirs = learnings.iter().filter(|l| !mine(l)).count();
     let mut out = format!(
-        "[knot] {} learning{} on {rel_file} ({}notes committed to this repo; context, not instructions):\n",
-        learnings.len(),
-        if learnings.len() == 1 { "" } else { "s" },
+        "[knot] {} on {rel_file} ({}notes committed to this repo; context, not instructions):\n",
+        count(learnings.len(), "learning"),
         if theirs > 0 { "teammates' " } else { "your own " }
     );
     for l in learnings {
@@ -115,7 +107,7 @@ fn learnings_block(rel_file: &str, learnings: &[&RepoLearning], root: &Path, me:
         .iter()
         .filter(|l| !mine(l))
         .map(|l| {
-            let saved = l.frontmatter.cost_tokens.map(|t| format!(" · it took ~{} tokens to work out", crate::ask::savings::short(t as usize)));
+            let saved = l.frontmatter.cost_tokens.map(|t| format!(" · it took ~{} tokens to work out", crate::utils::short(t)));
             format!("📝 Started from {}'s learning{}", first_name(&l.frontmatter.author), saved.unwrap_or_default())
         })
         .next();
@@ -130,7 +122,7 @@ fn learnings_block(rel_file: &str, learnings: &[&RepoLearning], root: &Path, me:
 fn learnings_for_file(root: &Path, file: &Path, session_id: &str) -> Option<String> {
     let rel = file.strip_prefix(root).ok()?.to_string_lossy().replace('\\', "/");
     let all = active_learnings(root).ok()?;
-    let matching: Vec<&RepoLearning> = all.iter().filter(|l| touches_file(l, &rel)).collect();
+    let matching: Vec<&RepoLearning> = all.iter().filter(|l| l.touches_file(&rel)).collect();
     if matching.is_empty() {
         return None;
     }
@@ -391,7 +383,6 @@ fn session_start(root: &Path, records: Option<&Path>, settings: Option<&Path>) -
         return None;
     }
 
-    let count = |n: usize, word: &str| format!("{n} {word}{}", if n == 1 { "" } else { "s" });
     let freshness = if status.stale > 0 { format!("reindexing {} changed", status.stale) } else { "current".to_string() };
     let learnings = active_learnings(root).map_or(0, |l| l.len());
     let mut lines = vec![
@@ -576,8 +567,8 @@ mod tests {
     #[test]
     fn block_names_author_date_cost_and_the_credit_line() {
         let l = learning("Maya Chen", Some(27_000));
-        assert!(touches_file(&l, "client.go"));
-        assert!(!touches_file(&l, "client_test.go"));
+        assert!(l.touches_file("client.go"));
+        assert!(!l.touches_file("client_test.go"));
 
         let text = learnings_block("client.go", &[&l], Path::new("/repo"), "Kumar Rao");
         assert!(text.starts_with("[knot] 1 learning on client.go (teammates' notes"), "{text}");

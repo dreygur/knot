@@ -111,8 +111,28 @@ pub fn transcript_cost(transcript: &Path, now_ms: i64) -> Option<(u64, u64)> {
     Some((minutes, tokens))
 }
 
-fn shown_path(dir: &Path, session_id: &str) -> PathBuf {
-    dir.join(format!("shown-{}.txt", safe_id(session_id)))
+fn shown_name(session_id: &str) -> String {
+    format!("shown-{}.txt", safe_id(session_id))
+}
+
+/// Of `keys`, the ones not yet listed in the state file `name` in `dir`; those are
+/// appended to it. The file is vetted by `state_file` before it is read, so a
+/// committed link is never followed. A key whose line cannot be written is left out.
+fn mark_new(dir: &Path, name: &str, keys: &[String]) -> Vec<String> {
+    let Ok(path) = super::state_file(dir, name) else {
+        return Vec::new();
+    };
+    let seen: HashSet<String> = std::fs::read_to_string(&path)
+        .map(|s| s.lines().map(str::to_string).collect())
+        .unwrap_or_default();
+    let fresh: Vec<&String> = keys.iter().filter(|k| !seen.contains(*k)).collect();
+    if fresh.is_empty() {
+        return Vec::new();
+    }
+    let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) else {
+        return Vec::new();
+    };
+    fresh.into_iter().filter(|k| writeln!(f, "{k}").is_ok()).cloned().collect()
 }
 
 /// Of `ids`, the ones `session_id` has not been shown in `root` yet; those are marked shown.
@@ -123,30 +143,15 @@ pub fn first_showing(root: &Path, session_id: &str, ids: &[String]) -> Vec<Strin
 }
 
 fn first_showing_in(dir: &Path, session_id: &str, ids: &[String]) -> Vec<String> {
-    let path = shown_path(dir, session_id);
-    let seen: HashSet<String> = std::fs::read_to_string(&path)
-        .map(|s| s.lines().map(str::to_string).collect())
-        .unwrap_or_default();
-    let fresh: Vec<&String> = ids.iter().filter(|id| !seen.contains(*id)).collect();
-    if fresh.is_empty() {
-        return Vec::new();
-    }
-    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-    let Ok(path) = super::state_file(dir, &name) else {
-        return Vec::new();
-    };
-    let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) else {
-        return Vec::new();
-    };
-    fresh.into_iter().filter(|id| writeln!(f, "{id}").is_ok()).cloned().collect()
+    mark_new(dir, &shown_name(session_id), ids)
 }
 
 /// Forget that `session_id` was shown `id` in `root`, so it can be shown again. Writes
 /// only when the mark is there, since it runs after every tool call.
 pub fn unmark(root: &Path, session_id: &str, id: &str) {
     let dir = super::state_dir(root);
-    let path = shown_path(&dir, session_id);
-    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let name = shown_name(session_id);
+    let path = dir.join(&name);
     if !super::state_file_readable(&dir, &name) {
         return;
     }
@@ -169,17 +174,8 @@ pub fn deny_once(root: &Path, session_id: &str, command: &str) -> bool {
 }
 
 fn deny_once_in(dir: &Path, session_id: &str, command: &str) -> bool {
-    let name = format!("denied-{}.txt", safe_id(session_id));
     let hash = blake3::hash(command.as_bytes()).to_hex().to_string();
-    let Ok(path) = super::state_file(dir, &name) else { return false };
-    let seen = std::fs::read_to_string(&path).is_ok_and(|s| s.lines().any(|l| l == hash));
-    if seen {
-        return false;
-    }
-    match std::fs::OpenOptions::new().create(true).append(true).open(&path) {
-        Ok(mut f) => writeln!(f, "{hash}").is_ok(),
-        Err(_) => false,
-    }
+    !mark_new(dir, &format!("denied-{}.txt", safe_id(session_id)), &[hash]).is_empty()
 }
 
 #[cfg(test)]
@@ -283,6 +279,24 @@ mod tests {
         assert!(first_showing_in(dir.path(), "s1", &ids).is_empty());
         assert_eq!(first_showing_in(dir.path(), "s2", &ids[..1]), vec!["a".to_string()]);
         assert_eq!(first_showing_in(dir.path(), "../evil", &ids).len(), 2, "ids are made file-safe");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlinked_mark_file_is_never_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let pipe = outside.path().join("pipe");
+        assert!(std::process::Command::new("mkfifo").arg(&pipe).status().unwrap().success());
+        std::os::unix::fs::symlink(&pipe, dir.path().join(shown_name("s1"))).unwrap();
+
+        // Opening a pipe with no writer blocks, so a read through the link never returns
+        let (tx, rx) = std::sync::mpsc::channel();
+        let path = dir.path().to_path_buf();
+        std::thread::spawn(move || tx.send(first_showing_in(&path, "s1", &["a".to_string()])));
+        let fresh = rx.recv_timeout(std::time::Duration::from_secs(5)).expect("read through the link");
+
+        assert!(fresh.is_empty(), "{fresh:?}");
     }
 
     #[cfg(unix)]

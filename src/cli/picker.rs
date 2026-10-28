@@ -3,9 +3,9 @@ use std::io::{self, Write};
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use crossterm::{cursor, execute, terminal};
 
-const LIGHT_GREEN: &str = "\x1b[38;2;191;217;155m";
-const OLIVE: &str = "\x1b[38;2;152;159;95m";
-const AMBER: &str = "\x1b[38;5;179m";
+pub(super) const LIGHT_GREEN: &str = "\x1b[38;2;191;217;155m";
+pub(super) const OLIVE: &str = "\x1b[38;2;152;159;95m";
+pub(super) const AMBER: &str = "\x1b[38;5;179m";
 const RESET: &str = "\x1b[0m";
 const NOT_DETECTED: &str = " (not detected)";
 const MIN_LABEL_WIDTH: usize = 12;

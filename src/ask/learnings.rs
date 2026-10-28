@@ -9,7 +9,7 @@ use std::collections::HashSet;
 use std::path::Path;
 
 use super::{tokenize, AskHit};
-use crate::engine::learnings::{active_learnings, RepoLearning};
+use crate::engine::learnings::{active_learnings, touch_path, RepoLearning};
 
 const MAX_LEARNINGS: usize = 3;
 const MAX_SUMMARY_CHARS: usize = 240;
@@ -46,7 +46,7 @@ impl LearningHit {
             Some(author) => format!("\"{}\" · {author} · {date}", self.title),
             None => format!("\"{}\" · {date}", self.title),
         };
-        let short = |t: u64| super::savings::short(t as usize);
+        let short = crate::utils::short;
         match (self.cost_minutes, self.cost_tokens) {
             (Some(m), Some(t)) => line.push_str(&format!(" · took {m} min, ~{} tokens to work out", short(t))),
             (None, Some(t)) => line.push_str(&format!(" · took ~{} tokens to work out", short(t))),
@@ -62,7 +62,7 @@ impl LearningHit {
 
     /// The line to end a reply with when this learning shaped it.
     pub fn credit(&self) -> String {
-        let cost = self.cost_tokens.map(|t| format!(" · it took ~{} tokens to work out", super::savings::short(t as usize)));
+        let cost = self.cost_tokens.map(|t| format!(" · it took ~{} tokens to work out", crate::utils::short(t)));
         let whose = self.known_author().map_or("a team learning".to_string(), |a| format!("{a}'s learning"));
         format!("📝 Started from {whose}{}", cost.unwrap_or_default())
     }
@@ -94,11 +94,6 @@ fn summary_of(body: &str) -> String {
     flatten(decided.or_else(first).unwrap_or(""), MAX_SUMMARY_CHARS)
 }
 
-fn touch_path(touch: &str) -> &str {
-    let path = touch.split_once('#').map_or(touch, |(p, _)| p);
-    path.strip_prefix("./").unwrap_or(path)
-}
-
 fn score(learning: &RepoLearning, query: &HashSet<String>, hits: &[AskHit]) -> Option<(f64, Vec<String>)> {
     let mut touched = Vec::new();
     let mut touch_score = 0.0;
@@ -106,8 +101,8 @@ fn score(learning: &RepoLearning, query: &HashSet<String>, hits: &[AskHit]) -> O
         let path = touch_path(touch);
         if let Some(rank) = hits.iter().position(|h| h.file == path) {
             touch_score += 1.0 / (rank as f64 + 1.0);
-            if !touched.iter().any(|t| t == path) {
-                touched.push(path.to_string());
+            if !touched.contains(&path) {
+                touched.push(path);
             }
         }
     }
@@ -152,6 +147,18 @@ pub fn related_learnings(repo_root: &Path, query: &str, hits: &[AskHit]) -> Vec<
     related.sort_by(|a, b| b.score.total_cmp(&a.score).then_with(|| a.file.cmp(&b.file)));
     related.truncate(MAX_LEARNINGS);
     related
+}
+
+/// Log each of `learnings` as shown to the current session, so the card and the
+/// savings can count what it was spared.
+pub fn mark_shown(repo_root: &Path, learnings: &[LearningHit]) {
+    if learnings.is_empty() {
+        return;
+    }
+    let session = super::events::current_session(repo_root);
+    for l in learnings {
+        super::events::learning_shown(repo_root, &session, Path::new(&l.file), l.cost_minutes, l.cost_tokens);
+    }
 }
 
 #[cfg(test)]

@@ -2,6 +2,8 @@ use anyhow::Result;
 use serde_json::json;
 use std::path::{Path, PathBuf};
 
+use crate::utils::{refuse_symlink, write_atomic};
+
 /// Markers that identify Knot's own entries in `~/.claude/settings.json`: the current
 /// `knot hook` commands and the older shell script hooks they replace.
 /// The pre-tool and session-start markers include the quoted binary's name so another tool's own
@@ -201,38 +203,6 @@ fn register_repo_in(repo_root: &Path, bin_path: &Path, home: &Path) -> Result<Sw
     }
     ignore_in_git(repo_root)?;
     Ok(result)
-}
-
-pub(crate) fn refuse_symlink(path: &Path) -> Result<()> {
-    if std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink()) {
-        anyhow::bail!("{} is a symlink; Knot does not write through it", path.display());
-    }
-    Ok(())
-}
-
-/// Write to a sibling temp file and rename it into place, so a crash leaves the old file.
-/// The temp file is created fresh, never opened through a planted link, and takes the
-/// old file's mode, so a private config holding a token stays private.
-pub(crate) fn write_atomic(path: &Path, content: &str) -> Result<()> {
-    use std::io::Write;
-    refuse_symlink(path)?;
-    let mut name = path.file_name().unwrap_or_default().to_os_string();
-    name.push(".knot-tmp");
-    let tmp = path.with_file_name(name);
-    // A crash can leave one behind; removing a link removes the link, not its target
-    match std::fs::remove_file(&tmp) {
-        Err(e) if e.kind() != std::io::ErrorKind::NotFound => anyhow::bail!("cannot replace {}: {e}", tmp.display()),
-        _ => {}
-    }
-
-    let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(&tmp)?;
-    if let Ok(old) = std::fs::metadata(path) {
-        file.set_permissions(old.permissions())?;
-    }
-    file.write_all(content.as_bytes())?;
-    drop(file);
-    std::fs::rename(&tmp, path)?;
-    Ok(())
 }
 
 /// A missing file is `{}`; one that cannot be read or is not a JSON object is an error

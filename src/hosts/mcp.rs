@@ -8,8 +8,8 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 use super::{jsonc, Agent};
-use crate::hooks::{read_settings, refuse_symlink, write_atomic};
-use crate::utils::tilde;
+use crate::hooks::read_settings;
+use crate::utils::{refuse_symlink, tilde, write_atomic};
 
 const SERVER_NAME: &str = "knot";
 /// An agent CLI still running by then is waiting on something, most likely a prompt

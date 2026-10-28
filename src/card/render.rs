@@ -1,7 +1,8 @@
 //! Draw the share card: fill an SVG template, then rasterise it to a 1200×675 PNG.
 
 use super::stats::{CardStats, Trend};
-use crate::ui::viz_assets::{MONO, SANS, SANS_SEMIBOLD};
+use crate::ui::viz_assets::{LOGO_LIGHT, MONO, SANS, SANS_SEMIBOLD};
+use crate::utils::{fill_slots, short};
 use anyhow::Context;
 use base64::Engine;
 use resvg::{tiny_skia, usvg};
@@ -9,7 +10,6 @@ use skrifa::prelude::{FontRef, LocationRef, MetadataProvider, Size};
 use std::sync::Arc;
 
 const TEMPLATE: &str = include_str!("card.svg");
-const LOGO: &[u8] = include_bytes!("../../assets/logo-light.png");
 
 /// Family names inside the embedded fonts: subsets of IBM Plex, renamed as the OFL requires.
 const SANS_FAMILY: &str = "Knot Sans";
@@ -94,46 +94,25 @@ pub(crate) fn svg(view: &CardView) -> String {
         None => esc(&s.label),
     };
 
-    let logo = base64::engine::general_purpose::STANDARD.encode(LOGO);
-    fill(
-        TEMPLATE,
-        &[
-            ("logo", logo),
-            ("sans", SANS_FAMILY.into()),
-            ("mono", MONO_FAMILY.into()),
-            ("top_right", top_right),
-            ("tokens_saved", tokens_saved),
-            ("less_to_read", less_to_read),
-            ("less_x", format!("{less_x:.1}")),
-            ("trend", trend(&s.trend)),
-            ("graph_tokens", saved(s.graph.tokens)),
-            ("graph_count", counted(s.graph.count, "answer")),
-            ("learning_tokens", saved(s.learnings.tokens)),
-            ("learning_count", esc(&learning_count)),
-            ("swap_tokens", saved(s.swaps.tokens)),
-            ("swap_count", counted(s.swaps.count, "run")),
-            ("chips", chips(&view.agents)),
-        ],
-    )
-}
-
-/// 999, 1.2k, 40k, 4.1M, 4M, 1.2B.
-pub fn short(n: u64) -> String {
-    const UNITS: [(f64, &str); 3] = [(1e3, "k"), (1e6, "M"), (1e9, "B")];
-    if n < 1_000 {
-        return n.to_string();
-    }
-    let mut unit = UNITS
-        .iter()
-        .rposition(|(size, _)| n as f64 >= *size)
-        .unwrap_or(0);
-    // 999,960 rounds to "1000.0k"; step up a unit instead
-    if unit + 1 < UNITS.len() && (n as f64 / UNITS[unit].0 * 10.0).round() >= 10_000.0 {
-        unit += 1;
-    }
-    let (size, suffix) = UNITS[unit];
-    let number = format!("{:.1}", n as f64 / size);
-    format!("{}{suffix}", number.strip_suffix(".0").unwrap_or(&number))
+    let logo = base64::engine::general_purpose::STANDARD.encode(LOGO_LIGHT);
+    let slots = [
+        ("logo", logo),
+        ("sans", SANS_FAMILY.into()),
+        ("mono", MONO_FAMILY.into()),
+        ("top_right", top_right),
+        ("tokens_saved", tokens_saved),
+        ("less_to_read", less_to_read),
+        ("less_x", format!("{less_x:.1}")),
+        ("trend", trend(&s.trend)),
+        ("graph_tokens", saved(s.graph.tokens)),
+        ("graph_count", counted(s.graph.count, "answer")),
+        ("learning_tokens", saved(s.learnings.tokens)),
+        ("learning_count", esc(&learning_count)),
+        ("swap_tokens", saved(s.swaps.tokens)),
+        ("swap_count", counted(s.swaps.count, "run")),
+        ("chips", chips(&view.agents)),
+    ];
+    fill_slots(TEMPLATE, |key| slots.iter().find(|(k, _)| *k == key).map(|(_, v)| v.clone()))
 }
 
 /// "1 answer", "1,931 answers".
@@ -289,23 +268,6 @@ fn esc(text: &str) -> String {
 }
 
 /// Replace each `{{key}}` in one pass, so a value that itself contains `{{...}}` is left alone.
-fn fill(template: &str, values: &[(&str, String)]) -> String {
-    let mut out = String::with_capacity(template.len());
-    let mut rest = template;
-    while let Some(start) = rest.find("{{") {
-        out += &rest[..start];
-        let after = &rest[start + 2..];
-        let Some(end) = after.find("}}") else { break };
-        let key = &after[..end];
-        match values.iter().find(|(k, _)| *k == key) {
-            Some((_, v)) => out += v,
-            None => out += &rest[start..start + 2 + end + 2],
-        }
-        rest = &after[end + 2..];
-    }
-    out + rest
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -367,18 +329,6 @@ mod tests {
         };
         let png = render_png(&view).unwrap();
         assert_eq!(png_size(&png), (1200, 675));
-    }
-
-    #[test]
-    fn short_formats() {
-        assert_eq!(short(999), "999");
-        assert_eq!(short(1_234), "1.2k");
-        assert_eq!(short(4_100_000), "4.1M");
-        assert_eq!(short(1_200_000_000), "1.2B");
-        assert_eq!(short(999_960), "1M");
-        assert_eq!(short(40_000), "40k");
-        assert_eq!(short(4_000_000), "4M");
-        assert_eq!(short(1_000), "1k");
     }
 
     #[test]

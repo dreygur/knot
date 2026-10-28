@@ -6,6 +6,7 @@ use std::time::{Duration, Instant};
 
 use crate::ui::viz_assets::{data_uri_png, font_face_css, FA2_JS, GRAPHOLOGY_JS, LICENSES, LOGO_DARK, LOGO_LIGHT, MARK_DARK_64, MARK_LIGHT_64, SIGMA_JS};
 use crate::ui::viz_data::{viz_data, VizData};
+use crate::utils::fill_slots;
 
 const TEMPLATE: &str = include_str!("viz.html");
 const PAGE_FILE: &str = "graph.html";
@@ -13,29 +14,6 @@ const PAGE_FILE: &str = "graph.html";
 const OPEN_GRACE: Duration = Duration::from_secs(2);
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 const OPEN_POLL: Duration = Duration::from_millis(50);
-
-/// Replace each `{{NAME}}` in `template` with `value(NAME)`, in one pass, so text that
-/// was inserted is never scanned for slots. Unknown names are left as they are.
-fn fill(template: &str, value: impl Fn(&str) -> Option<String>) -> String {
-    let mut out = String::with_capacity(template.len());
-    let mut rest = template;
-    while let Some(open) = rest.find("{{") {
-        out.push_str(&rest[..open]);
-        let after = &rest[open + 2..];
-        match after.find("}}").and_then(|close| value(&after[..close]).map(|v| (close, v))) {
-            Some((close, v)) => {
-                out.push_str(&v);
-                rest = &after[close + 2..];
-            }
-            None => {
-                out.push_str("{{");
-                rest = after;
-            }
-        }
-    }
-    out.push_str(rest);
-    out
-}
 
 /// The whole `knot viz` page: one offline file with the scripts, fonts, images and
 /// data inlined.
@@ -62,7 +40,7 @@ pub(crate) fn render_page(data: &VizData) -> String {
             _ => return None,
         })
     };
-    fill(TEMPLATE, slot)
+    fill_slots(TEMPLATE, slot)
 }
 
 /// Runs `opener path` and gives it `OPEN_GRACE` to fail. `open` and most `xdg-open`
