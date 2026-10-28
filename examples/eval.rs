@@ -5,7 +5,7 @@
 //! file-only results never score. Spans come from parsing the corpus, not from
 //! either tool's index.
 //!
-//!   cargo run --release --example eval -- [--engine trail|knot|knot-lexical]...
+//!   cargo run --release --example eval -- [--engine trail|knot|knot-lexical|ext:<name>]...
 //!       [--corpus NAME] [--questions eval/holdout.json]
 
 use anyhow::{bail, Context, Result};
@@ -20,6 +20,11 @@ const QUESTIONS_PATH: &str = "eval/questions.json";
 const RESULT_LIMIT: usize = 10;
 const TOP_K: usize = 5;
 const ENGINES: &[&str] = &["trail", "knot"];
+/// `--engine ext:<name>` runs `eval/adapters/<name>.sh <corpus root> <question> <limit>`,
+/// which prints one `file:Lstart-Lend` (or bare `file`) per line, best first, with
+/// paths relative to the corpus root. Any other tool plugs in without touching this file.
+const EXTERNAL_PREFIX: &str = "ext:";
+const ADAPTERS_DIR: &str = "eval/adapters";
 
 #[derive(Deserialize)]
 struct Corpus {
@@ -129,6 +134,13 @@ fn file_in_top_k(pointers: &[String], spans: &[Span]) -> bool {
 fn engine_command(engine: &str, query: &str, corpus_root: &Path) -> Command {
     let limit = RESULT_LIMIT.to_string();
     match engine {
+        external if external.starts_with(EXTERNAL_PREFIX) => {
+            let name = &external[EXTERNAL_PREFIX.len()..];
+            let adapter = std::env::current_dir().unwrap_or_default().join(format!("{ADAPTERS_DIR}/{name}.sh"));
+            let mut cmd = Command::new(adapter);
+            cmd.arg(corpus_root).arg(query).arg(&limit);
+            cmd
+        }
         "trail" => {
             let mut cmd = Command::new("trail");
             cmd.args(["ask", query, "--json", "--no-refresh", "-n", &limit]).arg(corpus_root);
@@ -157,6 +169,10 @@ fn ask(engine: &str, query: &str, corpus_root: &Path) -> Result<(Vec<String>, Du
         bail!("{engine} exited {}: {}", output.status, String::from_utf8_lossy(&output.stderr).trim());
     }
     let stdout = String::from_utf8_lossy(&output.stdout);
+    if engine.starts_with(EXTERNAL_PREFIX) {
+        let pointers = stdout.lines().map(str::trim).filter(|l| !l.is_empty()).map(String::from).collect();
+        return Ok((pointers, elapsed));
+    }
     let json_start = stdout.find('{').context("no JSON in output")?;
     let parsed: AskOutput = serde_json::from_str(&stdout[json_start..]).context("parse ask JSON")?;
     Ok((parsed.hits.into_iter().map(|h| h.pointer).collect(), elapsed))
