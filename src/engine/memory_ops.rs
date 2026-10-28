@@ -345,8 +345,20 @@ impl StorageEngine {
             .to_string_lossy()
             .to_string();
 
+        let replaced: std::collections::HashSet<Uuid> =
+            repo_learnings.iter().filter_map(|l| l.frontmatter.replaces).collect();
+
         let mut count = 0;
         for l in repo_learnings {
+            // A replaced learning leaves recall; only this repo's own copy is removed.
+            if replaced.contains(&l.frontmatter.id) {
+                if let Some(existing) = self.graph.get_node(l.frontmatter.id).await? {
+                    if existing.scope == MemoryScope::Project(project_id.clone()) {
+                        self.forget(existing.id).await?;
+                    }
+                }
+                continue;
+            }
             let issues = crate::engine::learnings::quality_issues(&l.body, &l.frontmatter.touches, repo_root);
             if !issues.is_empty() {
                 tracing::warn!("Learning {} fails quality gate: {}", l.file_path.display(), issues.join("; "));

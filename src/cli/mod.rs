@@ -62,7 +62,7 @@ fn format_commit_cli(r: &CommitReport) -> String {
 
 fn format_status_cli(r: &StatusReport) -> String {
     format!(
-        "[KNOT] status  L1(session)={} L2(project)={} L3(global)={} skills={} ghosts={} db={}\n",
+        "[KNOT] vault   L1(session)={} L2(project)={} L3(global)={} skills={} ghosts={} db={}\n",
         r.l1_nodes, r.l2_nodes, r.l3_nodes, r.skills, r.ghost_count, r.db_health,
     )
 }
@@ -95,7 +95,7 @@ fn usage_exit(usage: &str) -> ! {
 }
 
 const COMMANDS: &[&str] = &[
-    "recall", "commit", "callers", "callees", "blast", "ask", "grep", "map", "note", "skeleton", "index", "statusline", "check",
+    "recall", "commit", "callers", "callees", "blast", "ask", "grep", "shell", "map", "note", "skeleton", "index", "statusline", "check",
     "explore", "viz", "status", "logs", "init", "help", "version",
 ];
 
@@ -326,6 +326,7 @@ async fn cli_status() -> Result<()> {
     let engine = StorageEngine::new(&data_dir).await?;
     let status = engine.knot_status().await?;
     print!("{}", format_status_cli(&status));
+    print!("{}", crate::ask::repo_summary(&crate::ask::current_repo_root()?));
     Ok(())
 }
 
@@ -429,20 +430,23 @@ fn refine_touches_by_named_symbols(root: &Path, touches: Vec<String>, body: &str
         .collect()
 }
 
-/// `knot note --title "<the fact>" [--touches path[#symbol]]...`, body on stdin.
+/// `knot note --title "<the fact>" [--touches path[#symbol]]... [--replaces <id>]`, body on stdin.
 fn cli_note(mut args: impl Iterator<Item = String>) -> Result<()> {
     use std::io::{IsTerminal, Read};
+    const USAGE: &str = "knot note --title \"<the fact>\" [--touches path[#symbol]]... [--replaces <id>]  (body on stdin)";
     let mut title = String::new();
     let mut touches = Vec::new();
+    let mut replaces = None;
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--title" | "-t" => title = args.next().unwrap_or_default(),
             "--touches" => touches.push(args.next().ok_or_else(|| anyhow::anyhow!("--touches needs path[#symbol]"))?),
-            _ => usage_exit("knot note --title \"<the fact>\" [--touches path[#symbol]]...  (body on stdin)"),
+            "--replaces" => replaces = Some(args.next().ok_or_else(|| anyhow::anyhow!("--replaces needs a learning id"))?),
+            _ => usage_exit(USAGE),
         }
     }
     if title.trim().is_empty() {
-        usage_exit("knot note --title \"<the fact>\" [--touches path[#symbol]]...  (body on stdin)");
+        usage_exit(USAGE);
     }
     let mut body = String::new();
     if !std::io::stdin().is_terminal() {
@@ -456,6 +460,8 @@ fn cli_note(mut args: impl Iterator<Item = String>) -> Result<()> {
 
     let here = std::env::current_dir()?;
     let root = crate::ask::repo_root(&here);
+    // Resolved before anything else, so a mistyped id fails before the touches are worked out
+    let replaced = replaces.map(|id| crate::engine::learnings::find_learning(&root, &id)).transpose()?;
     // Without --touches: what this change touched, down to the symbols when only a few
     // changed, so the learning surfaces on that code and not on every edit to the file
     const MAX_INFERRED_SYMBOLS: usize = 3;
@@ -503,11 +509,20 @@ fn cli_note(mut args: impl Iterator<Item = String>) -> Result<()> {
         author: &author,
         cost_minutes: cost.map(|c| c.0),
         cost_tokens: cost.map(|c| c.1),
+        replaces: replaced.as_ref().map(|l| l.frontmatter.id),
     };
     let (path, id) = crate::engine::learnings::write_note(&root, &note)?;
     let rel = path.strip_prefix(&root).unwrap_or(&path).to_string_lossy();
 
     println!("[KNOT] ✓ Saved learning {} · {rel}", &id.to_string()[..8]);
+    if let Some(old) = &replaced {
+        println!(
+            "       replaces {} \"{}\"; its file stays but is no longer shown",
+            &old.frontmatter.id.to_string()[..8],
+            crate::ask::flatten(&old.frontmatter.title, 80)
+        );
+        println!("       knot check stops checking against it once this is on the base branch");
+    }
     if !touches.is_empty() {
         println!("       touches {}", touches.join(", "));
     }
@@ -741,6 +756,36 @@ fn cli_grep(opts: &crate::ask::grep::GrepOptions, json: bool) -> Result<()> {
     Ok(())
 }
 
+/// Print what Knot answers for a swapped command. A command Knot does not answer runs
+/// in the shell unchanged, so a stale rewrite still works.
+fn cli_shell(command: &str) -> Result<()> {
+    let here = std::env::current_dir()?;
+    let root = crate::ask::repo_root(&here);
+    let raw = |cmd: &str| -> Result<i32> { Ok(std::process::Command::new("sh").arg("-c").arg(cmd).status()?.code().unwrap_or(1)) };
+    match swap_or_raw(command, &root, &here, &mut std::io::stdout(), raw)? {
+        Some(code) => std::process::exit(code),
+        None => Ok(()),
+    }
+}
+
+/// Print Knot's answer for `command` to `out`. Anything that goes wrong on the Knot path
+/// runs the original command with `raw` instead; its exit code is returned.
+fn swap_or_raw(
+    command: &str,
+    root: &Path,
+    here: &Path,
+    out: &mut impl std::io::Write,
+    raw: impl FnOnce(&str) -> Result<i32>,
+) -> Result<Option<i32>> {
+    match crate::shell::run::run(command, root, here) {
+        Ok(text) => {
+            out.write_all(text.as_bytes())?;
+            Ok(None)
+        }
+        Err(_) => raw(command).map(Some),
+    }
+}
+
 fn cli_map(max_dirs: usize, json: bool) -> Result<()> {
     let cwd = crate::ask::current_repo_root()?;
     let map = crate::ask::map::map(&cwd, Some(&crate::ask::index_root(&cwd)), max_dirs)?;
@@ -783,60 +828,99 @@ fn statusline_dir(input: &str) -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
+/// Learnings still in force; replaced ones are not counted.
 fn count_repo_learnings(dir: &Path) -> usize {
     let Some(root) = git2::Repository::discover(dir).ok().and_then(|r| r.workdir().map(Path::to_path_buf)) else {
         return 0;
     };
-    std::fs::read_dir(crate::engine::learnings::learnings_dir(&root))
-        .map(|entries| {
-            entries
-                .filter_map(|e| e.ok())
-                .filter(|e| e.path().extension().is_some_and(|ext| ext == "md"))
-                .count()
-        })
-        .unwrap_or(0)
+    crate::engine::learnings::active_learnings(&root).map_or(0, |l| l.len())
 }
 
 /// Tokens Knot saved since the last prompt and since the session began, from the
-/// transcript Claude Code names in its status line JSON.
+/// transcript Claude Code names in its status line JSON. Without a session id there is
+/// nothing to attribute events to, so nothing is shown.
 fn statusline_savings(input: &str, root: &Path) -> Option<(usize, usize)> {
     let json: serde_json::Value = serde_json::from_str(input).ok()?;
+    let session_id = json.get("session_id")?.as_str().filter(|s| !s.is_empty())?;
     let transcript = json.get("transcript_path")?.as_str()?;
     let (session_start, last_prompt) = crate::ask::savings::transcript_window(Path::new(transcript))?;
-    match crate::ask::savings::saved_since(root, &[last_prompt, session_start])[..] {
+    match crate::ask::events::saved_since(root, session_id, &[last_prompt, session_start])[..] {
         [reply, session] => Some((reply, session)),
         _ => None,
     }
 }
 
-fn statusline_text(status: &crate::ask::IndexStatus, learnings: usize, saved: Option<(usize, usize)>) -> String {
-    let mut parts = vec!["knot".to_string()];
-    if !status.indexed {
-        if status.files > 0 {
-            parts.push(format!("indexing {} files", status.files));
-        }
-    } else {
-        parts.push(format!("{} symbols", status.symbols));
-        if status.stale > 0 {
-            parts.push(format!("reindexing {} changed", status.stale));
-        }
-    }
-    if learnings > 0 {
-        parts.push(format!("{learnings} learning{}", if learnings == 1 { "" } else { "s" }));
-    }
-    if let Some((reply, session)) = saved.filter(|(_, session)| *session > 0) {
-        use crate::ask::savings::short;
-        // An upper bound: it assumes every file an answer names would have been read whole
-        if reply > 0 {
-            parts.push(format!("≤{} saved this reply, ≤{} session (est.)", short(reply), short(session)));
-        } else {
-            parts.push(format!("≤{} saved this session (est.)", short(session)));
-        }
-    }
-    parts.join(" · ")
+/// What the status line shows, gathered before it is drawn.
+struct StatusLine {
+    index: crate::ask::IndexStatus,
+    learnings: usize,
+    saved: Option<(usize, usize)>,
+    /// Claude Code's context window use, as it reports it.
+    ctx_pct: Option<u64>,
+    last_edit: Option<String>,
+    color: bool,
 }
 
-/// One line for Claude Code's status line. Only stats files; when the index is behind,
+/// Two lines: the index, learnings and savings, then the session (context use, last edit).
+fn statusline_text(s: &StatusLine) -> String {
+    use crate::ask::savings::short;
+    const INDIGO: &str = "\x1b[38;2;84;111;255m";
+    const AMBER: &str = "\x1b[38;5;179m";
+    const TEXT: &str = "\x1b[38;5;251m";
+    const MUTED: &str = "\x1b[38;5;244m";
+    let paint = |colour: &str, text: &str| {
+        if s.color { format!("{colour}{text}\x1b[0m") } else { text.to_string() }
+    };
+    let sep = paint(MUTED, " · ");
+    let count = |n: usize, word: &str| format!("{n} {word}{}", if n == 1 { "" } else { "s" });
+
+    let mut top = vec![format!("{}{}", paint(MUTED, "◆ "), paint(INDIGO, "knot"))];
+    if !s.index.indexed {
+        if s.index.files > 0 {
+            top.push(paint(AMBER, &format!("indexing {} files…", s.index.files)));
+        }
+    } else {
+        top.push(paint(TEXT, &count(s.index.symbols, "symbol")));
+        top.push(if s.index.stale > 0 {
+            paint(AMBER, &format!("reindexing {} changed", s.index.stale))
+        } else {
+            paint(INDIGO, "✓ current")
+        });
+    }
+    if s.learnings > 0 {
+        top.push(paint(AMBER, &count(s.learnings, "learning")));
+    }
+    if let Some((reply, session)) = s.saved.filter(|(_, session)| *session > 0) {
+        // An upper bound: it assumes every file an answer names would have been read whole
+        top.push(paint(
+            INDIGO,
+            &if reply > 0 {
+                format!("≤{} saved this reply, ≤{} session (est.)", short(reply), short(session))
+            } else {
+                format!("≤{} saved this session (est.)", short(session))
+            },
+        ));
+    }
+
+    let mut bottom = Vec::new();
+    if let Some(pct) = s.ctx_pct {
+        bottom.push(paint(TEXT, &format!("ctx {pct}%")));
+    }
+    if let Some(file) = &s.last_edit {
+        let name = Path::new(file).file_name().map_or(file.clone(), |n| n.to_string_lossy().to_string());
+        bottom.push(format!("{}{}", paint(MUTED, "last edit: "), paint(TEXT, &crate::ask::flatten(&name, 60))));
+    }
+
+    let mut out = top.join(&sep);
+    if !bottom.is_empty() {
+        out.push('\n');
+        out.push_str(&paint(MUTED, "▸ "));
+        out.push_str(&bottom.join(&sep));
+    }
+    out
+}
+
+/// Claude Code's status line. Only stats files; when the index is behind,
 /// starts `knot index` in the background so the next query finds it current.
 fn cli_statusline() -> Result<()> {
     use std::io::{IsTerminal, Read};
@@ -867,8 +951,16 @@ fn cli_statusline() -> Result<()> {
         }
     }
 
-    let saved = statusline_savings(&input, &dir);
-    println!("{}", statusline_text(&status, count_repo_learnings(&dir), saved));
+    let json: serde_json::Value = serde_json::from_str(&input).unwrap_or_default();
+    let line = StatusLine {
+        index: status,
+        learnings: count_repo_learnings(&dir),
+        saved: statusline_savings(&input, &dir),
+        ctx_pct: json.pointer("/context_window/used_percentage").and_then(|v| v.as_f64()).map(|p| p.round() as u64),
+        last_edit: crate::ask::session::last_edit(&dir),
+        color: std::env::var_os("NO_COLOR").is_none(),
+    };
+    println!("{}", statusline_text(&line));
     Ok(())
 }
 
@@ -1047,15 +1139,17 @@ pub fn print_help() {
     println!("  knot map [--max-dirs N] [--json]        Orientation: directories, hubs, most central code");
     println!("  knot grep <pattern> [-i] [--fixed] [--in <path>] [--json]");
     println!("                                          Every match in indexed code, grouped by symbol");
+    println!("  knot shell -- <command>                 Run a grep or sed range the way Knot answers it (used by the hook)");
     println!("  knot index [--quiet]                    Refresh the code index (graph commands also do this)");
-    println!("  knot statusline                         One line for Claude Code's status line");
+    println!("  knot statusline                         Claude Code's status line (index, learnings, savings, context)");
     println!("                                          (tokens saved are estimated: files an answer names, read");
     println!("                                          whole at 4 bytes per token, minus the answer; an upper bound)");
-    println!("  knot note --title \"<fact>\" [--touches f#sym]  Save a team learning (body on stdin)");
+    println!("  knot note --title \"<fact>\" [--touches f#sym] [--replaces <id>]");
+    println!("                                          Save a team learning (body on stdin); --replaces retires an older one");
     println!("  knot check [--base <ref>] [--remote]    Audit git diff against repo learnings");
     println!("  knot explore [query]                    Interactive terminal TUI code graph explorer");
     println!("  knot viz                                Launch interactive code graph visualizer");
-    println!("  knot status                             Vault health check");
+    println!("  knot status                             Vault health, plus this repo's code index and learnings");
     println!("  knot logs [--follow|-f]                 View activity log");
     println!("  knot init [--agents <ids>] [-y|--yes]   Pick agents, write their instructions, index this repo");
     println!("                                          (agents: claude, codex, opencode, gemini, antigravity, cursor)");
@@ -1130,10 +1224,18 @@ pub async fn run() -> Result<()> {
             }
             cli_grep(&opts, json)
         }
+        Some("shell") => {
+            let command = args.skip_while(|a| a == "--").collect::<Vec<_>>().join(" ");
+            if command.trim().is_empty() {
+                usage_exit("knot shell -- <command>");
+            }
+            cli_shell(&command)
+        }
         Some("note") => cli_note(args),
         Some("hook") => {
             let event = args.next().unwrap_or_default();
-            hook::run(&event).await
+            let flags: Vec<String> = args.collect();
+            hook::run(&event, &flags).await
         }
         Some("map") => {
             let mut max_dirs = crate::ask::map::DEFAULT_MAX_DIRS;
@@ -1202,6 +1304,33 @@ mod tests {
     }
 
     #[test]
+    fn knot_shell_runs_the_original_only_when_knot_has_no_answer() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("src")).unwrap();
+        std::fs::write(dir.path().join("src/a.rs"), "fn alpha() {}\n").unwrap();
+        let body: String = (0..40).map(|i| format!("    let alpha_{i} = \"alpha value with a longer tail of text\";\n")).collect();
+        std::fs::write(dir.path().join("src/big.rs"), format!("fn big() {{\n{body}}}\n")).unwrap();
+        let root = dir.path();
+
+        let mut out = Vec::new();
+        let code = swap_or_raw("grep -rn alpha src", root, root, &mut out, |cmd| panic!("ran {cmd}")).unwrap();
+        assert_eq!(code, None);
+        assert!(String::from_utf8(out).unwrap().starts_with("[knot] ran `knot grep`"));
+
+        for cmd in ["echo hi", "grep -rn alpha src/a.rs", "sed -n '1,1p' src/a.rs"] {
+            let mut out = Vec::new();
+            let mut ran = None;
+            let code = swap_or_raw(cmd, root, root, &mut out, |c| {
+                ran = Some(c.to_string());
+                Ok(3)
+            })
+            .unwrap();
+            assert_eq!((code, ran.as_deref()), (Some(3), Some(cmd)), "{cmd}");
+            assert!(out.is_empty(), "{cmd}");
+        }
+    }
+
+    #[test]
     fn limit_args_parse_both_forms_and_reject_garbage() {
         assert_eq!(parse_limit_args(args(&[])).unwrap(), 5);
         assert_eq!(parse_limit_args(args(&["--depth", "3"])).unwrap(), 3);
@@ -1246,5 +1375,32 @@ mod tests {
         assert_eq!(statusline_dir(json), Some(PathBuf::from("/a")));
         assert_eq!(statusline_dir(r#"{"cwd":"/b"}"#), Some(PathBuf::from("/b")));
         assert_eq!(statusline_dir("not json"), None);
+    }
+
+    #[test]
+    fn statusline_shows_freshness_and_a_session_line() {
+        let index = crate::ask::IndexStatus { indexed: true, files: 40, symbols: 2165, stale: 0 };
+        let mut line = StatusLine {
+            index,
+            learnings: 3,
+            saved: Some((0, 41_000)),
+            ctx_pct: Some(42),
+            last_edit: Some("src/cli/mod.rs".into()),
+            color: false,
+        };
+        assert_eq!(
+            statusline_text(&line),
+            "◆ knot · 2165 symbols · ✓ current · 3 learnings · ≤41k saved this session (est.)\n▸ ctx 42% · last edit: mod.rs"
+        );
+
+        line.index.stale = 2;
+        line.ctx_pct = None;
+        line.last_edit = None;
+        line.saved = None;
+        assert_eq!(statusline_text(&line), "◆ knot · 2165 symbols · reindexing 2 changed · 3 learnings");
+
+        line.last_edit = Some("evil\x1b[2J.rs".into());
+        line.color = true;
+        assert!(!statusline_text(&line).contains("\x1b[2J"), "a planted file name cannot drive the terminal");
     }
 }

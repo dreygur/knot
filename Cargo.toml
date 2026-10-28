@@ -16,6 +16,9 @@ name = "knot"
 path = "src/lib.rs"
 
 [dependencies]
+# Tokenising Bash commands the hooks inspect
+shell-words = "1.1"
+
 # MCP transport
 rmcp = { version = "0.1", features = ["server", "transport-io"] }
 schemars = "0.8"

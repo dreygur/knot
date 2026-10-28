@@ -9,7 +9,7 @@ use std::collections::HashSet;
 use std::path::Path;
 
 use super::{tokenize, AskHit};
-use crate::engine::learnings::{scan_repo_learnings, RepoLearning};
+use crate::engine::learnings::{active_learnings, RepoLearning};
 
 const MAX_LEARNINGS: usize = 3;
 const MAX_SUMMARY_CHARS: usize = 240;
@@ -126,7 +126,7 @@ fn score(learning: &RepoLearning, query: &HashSet<String>, hits: &[AskHit]) -> O
 
 /// Up to three repo learnings related to `query` and its code `hits`, best first.
 pub fn related_learnings(repo_root: &Path, query: &str, hits: &[AskHit]) -> Vec<LearningHit> {
-    let Ok(learnings) = scan_repo_learnings(repo_root) else {
+    let Ok(learnings) = active_learnings(repo_root) else {
         return Vec::new();
     };
     let query: HashSet<String> = tokenize(query).into_iter().collect();

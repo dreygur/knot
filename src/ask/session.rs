@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 /// A session older than this is not credited with a new learning's cost.
 const SESSION_FRESH_MS: i64 = 12 * 60 * 60 * 1000;
 const SESSION_FILE: &str = "session.json";
+const LAST_EDIT_FILE: &str = "last_edit";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionRef {
@@ -35,6 +36,21 @@ fn remember_in(dir: &Path, session: &SessionRef) {
     if let Ok(json) = serde_json::to_vec(session) {
         let _ = std::fs::write(path, json);
     }
+}
+
+/// Note `rel_file` as the file the agent last edited in `root`, for the status line.
+pub fn note_edit(root: &Path, rel_file: &str) {
+    if let Ok(path) = super::state_file(&super::state_dir(root), LAST_EDIT_FILE) {
+        let _ = std::fs::write(path, rel_file);
+    }
+}
+
+/// The file the agent last edited in `root`. It is read from the repo's own folder, so
+/// callers print it through `flatten`.
+pub fn last_edit(root: &Path) -> Option<String> {
+    let text = std::fs::read_to_string(super::state_dir(root).join(LAST_EDIT_FILE)).ok()?;
+    let text = text.trim();
+    (!text.is_empty()).then(|| text.to_string())
 }
 
 /// Where Claude Code writes transcripts: `$CLAUDE_CONFIG_DIR/projects`, else `~/.claude/projects`.
@@ -119,6 +135,26 @@ fn first_showing_in(dir: &Path, session_id: &str, ids: &[String]) -> Vec<String>
         }
     }
     fresh
+}
+
+/// True the first time `session_id` runs this exact `command` in `root`, false after.
+/// Used to block a command once and let the same command through when it is repeated.
+pub fn deny_once(root: &Path, session_id: &str, command: &str) -> bool {
+    deny_once_in(&super::state_dir(root), session_id, command)
+}
+
+fn deny_once_in(dir: &Path, session_id: &str, command: &str) -> bool {
+    let name = format!("denied-{}.txt", safe_id(session_id));
+    let hash = blake3::hash(command.as_bytes()).to_hex().to_string();
+    let Ok(path) = super::state_file(dir, &name) else { return false };
+    let seen = std::fs::read_to_string(&path).is_ok_and(|s| s.lines().any(|l| l == hash));
+    if seen {
+        return false;
+    }
+    match std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+        Ok(mut f) => writeln!(f, "{hash}").is_ok(),
+        Err(_) => false,
+    }
 }
 
 #[cfg(test)]
@@ -222,5 +258,19 @@ mod tests {
         assert!(first_showing_in(dir.path(), "s1", &ids).is_empty());
         assert_eq!(first_showing_in(dir.path(), "s2", &ids[..1]), vec!["a".to_string()]);
         assert_eq!(first_showing_in(dir.path(), "../evil", &ids).len(), 2, "ids are made file-safe");
+    }
+}
+
+#[cfg(test)]
+mod deny_tests {
+    use super::*;
+
+    #[test]
+    fn deny_once_is_per_session() {
+        let repo = tempfile::tempdir().unwrap();
+        assert!(deny_once(repo.path(), "s1", "python3 -c x"));
+        assert!(!deny_once(repo.path(), "s1", "python3 -c x"), "second time runs");
+        assert!(deny_once(repo.path(), "s1", "python3 -c y"), "another command is denied once too");
+        assert!(deny_once(repo.path(), "s2", "python3 -c x"), "another session has its own");
     }
 }
