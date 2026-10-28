@@ -58,9 +58,9 @@ account: everything runs locally and learnings travel through git.
 curl -fsSL https://raw.githubusercontent.com/dreygur/knot/main/install.sh | bash
 ```
 
-Downloads the binary to `~/.local/bin/knot`, creates `~/.knot`, registers Knot as an MCP
-server with Claude Code and Codex when their CLIs are installed, and prints the config to
-paste for every other client.
+Downloads the binary to `~/.local/bin/knot`, registers Knot as an MCP server with Claude
+Code and Codex when their CLIs are installed, and prints the config to paste for every
+other client.
 
 ### Windows
 
@@ -101,11 +101,22 @@ cd your-repo
 knot init
 ```
 
-`knot init` adds Knot to your `PATH`, writes agent instructions into the repo (`AGENTS.md`,
-`CLAUDE.md`, `GEMINI.md`, `.cursor/rules/knot.mdc`, and an Antigravity skill in
-`~/.gemini/skills/knot/`), indexes the code, and tells you what to do next. The instructions
-sit between `<!-- knot:start -->` and `<!-- knot:end -->` markers, so re-running `init`
-updates them in place and leaves the rest of each file alone.
+`knot init` asks which agents you use, with the ones installed here already checked, and
+writes instructions only for those:
+
+| Agent | Writes |
+|---|---|
+| `claude` | `CLAUDE.md` |
+| `codex`, `opencode` | `AGENTS.md` |
+| `gemini` | `GEMINI.md` |
+| `antigravity` | `GEMINI.md` and a skill in `~/.gemini/skills/knot/` |
+| `cursor` | `.cursor/rules/knot.mdc` |
+
+Then it adds Knot to your `PATH` if it isn't there yet and indexes the code into
+`.knot/cache/`. `knot init --agents claude,codex` skips the picker; `knot init --yes` takes
+every agent found on this machine. The instructions sit between `<!-- knot:start -->` and
+`<!-- knot:end -->` markers, so re-running `init` updates them in place and leaves the rest
+of each file alone.
 
 Commit the instruction files and `.knot/learnings/` so teammates and their agents get them.
 
@@ -122,11 +133,11 @@ also get learnings and clash warnings pushed to them while they work.
 | OpenAI Codex CLI | `codex mcp add knot -- knot` | `AGENTS.md` | - |
 | Gemini CLI | `~/.gemini/settings.json`: `"mcpServers": {"knot": {"command": "knot"}}` | `GEMINI.md` | - |
 | OpenCode | `opencode.json`: `"mcp": {"knot": {"type": "local", "command": ["knot"], "enabled": true}}` | `AGENTS.md` | - |
-| Cursor | `~/.cursor/mcp.json`: `"mcpServers": {"knot": {"command": "knot"}}` | `.cursor/rules/knot.mdc`, `AGENTS.md` | - |
-| Antigravity | its MCP settings, `command: knot` | `~/.gemini/skills/knot/SKILL.md` | - |
-| Windsurf | `~/.codeium/windsurf/mcp_config.json`: `"mcpServers": {"knot": {"command": "knot"}}` | `AGENTS.md`, where the agent reads it | - |
-| VS Code (Copilot) | `.vscode/mcp.json`: `"servers": {"knot": {"type": "stdio", "command": "knot"}}` | `AGENTS.md`, where the agent reads it | - |
-| Any other MCP client | stdio server, command `knot`, no arguments | `AGENTS.md`, where the agent reads it | - |
+| Cursor | `~/.cursor/mcp.json`: `"mcpServers": {"knot": {"command": "knot"}}` | `.cursor/rules/knot.mdc` | - |
+| Antigravity | its MCP settings, `command: knot` | `GEMINI.md`, `~/.gemini/skills/knot/SKILL.md` | - |
+| Windsurf | `~/.codeium/windsurf/mcp_config.json`: `"mcpServers": {"knot": {"command": "knot"}}` | `AGENTS.md` if you pick `codex` or `opencode` | - |
+| VS Code (Copilot) | `.vscode/mcp.json`: `"servers": {"knot": {"type": "stdio", "command": "knot"}}` | `AGENTS.md` if you pick `codex` or `opencode` | - |
+| Any other MCP client | stdio server, command `knot`, no arguments | `AGENTS.md` if you pick `codex` or `opencode` | - |
 
 Agents without hooks still see learnings through `knot ask` / `knot_ask`, and `knot check`
 works anywhere you run it (including CI).
@@ -318,7 +329,7 @@ execute_skill(skill_name="format-module", variables=[{key:"file_path", value:"sr
 | Command | What it does |
 |---|---|
 | `knot` | Start the MCP server (stdio) |
-| `knot init` | Add Knot to `PATH`, write agent instructions into the repo, index it |
+| `knot init [--agents <ids>] [-y\|--yes]` | Pick agents, write their instructions, add Knot to `PATH`, index the repo |
 | `knot map [--max-dirs N] [--json]` | Directory clusters, hubs and the most central code |
 | `knot ask <question> [--source] [--json] [-n N]` | Ranked code answers with `file:line` spans, plus related learnings |
 | `knot grep <pattern> [-i] [--fixed] [--in <path>] [--json]` | Every match in indexed code, grouped by enclosing symbol |
@@ -384,7 +395,7 @@ Files ignored by `.gitignore` are skipped, and so are these directories wherever
 
 | Variable | Default | Effect |
 |---|---|---|
-| `KNOT_DATA_DIR` | `~/.knot` | Where the vault, caches and logs live |
+| `KNOT_DATA_DIR` | `~/.knot` | Where the vault and activity log live |
 | `KNOT_LOG` | `knot=info` | Log level (`knot=debug` for more) |
 | `KNOT_READ_ONLY` | unset | Set to refuse every write through MCP and skip syncing learnings into the vault |
 | `KNOT_NO_FETCH` | unset | Never run `git fetch`; clash checks use the refs already fetched |
@@ -395,15 +406,16 @@ Files ignored by `.gitignore` are skipped, and so are these directories wherever
 
 | Path | Contents |
 |---|---|
-| `~/.knot/knot.db` | Memory vault (SQLite) |
-| `~/.knot/cache/ask/` | Per-repo parse cache, keyed by file size and mtime |
-| `~/.knot/savings.jsonl` | Estimated tokens saved per answer, for the status line |
-| `~/.knot/sessions/` | Which agent session is working in which repo, and which learnings it was shown |
+| `~/.knot/knot.db` | Memory vault (SQLite), shared across repos |
 | `~/.knot/activity.log` | Activity log (`knot logs`) |
 | `<repo>/.knot/learnings/` | Team learnings, committed to git |
+| `<repo>/.knot/cache/index.json` | Parse cache, keyed by file size and mtime |
+| `<repo>/.knot/cache/savings.jsonl` | Estimated tokens saved per answer, for the status line |
+| `<repo>/.knot/cache/session.json`, `shown-*.txt` | The agent session working here, and which learnings it was shown |
 
-Knot writes into a repository only when you run `knot init` (agent instruction files) or
-`knot note` (a learning).
+`.knot/cache/` carries its own `.gitignore`, so nothing in it is ever committed. Knot
+writes anything else into a repository only when you run `knot init` (agent instruction
+files) or `knot note` (a learning).
 
 ---
 

@@ -614,7 +614,7 @@ impl KnotServer {
         #[tool(aggr)] input: AskInput,
     ) -> Result<CallToolResult, McpError> {
         let cwd = crate::ask::current_repo_root().map_err(|e| mcp_err(e.into()))?;
-        let cache_root = crate::ask::default_cache_root();
+        let cache_root = crate::ask::index_root(&cwd);
         let (text, files) = ask_text(&cwd, Some(&cache_root), &input).map_err(mcp_err)?;
         crate::ask::savings::record(&cwd, "ask", &files, &text);
         Ok(self.with_alerts(text))
@@ -632,7 +632,7 @@ impl KnotServer {
             fixed: input.fixed.unwrap_or(false),
             within: input.within,
         };
-        let report = crate::ask::grep::grep(&cwd, Some(&crate::ask::default_cache_root()), &opts).map_err(mcp_err)?;
+        let report = crate::ask::grep::grep(&cwd, Some(&crate::ask::index_root(&cwd)), &opts).map_err(mcp_err)?;
         let text = crate::ask::grep::format_report(&report);
         let files: Vec<String> = report.groups.iter().map(|g| g.file.clone()).collect();
         crate::ask::savings::record(&cwd, "grep", &files, &text);
@@ -642,7 +642,7 @@ impl KnotServer {
     #[tool(description = "Orientation for an unfamiliar repo: file, symbol and edge counts, languages, directory clusters with their most called symbols, and the most central non-test code by PageRank ($0, no LLM). Call once at the start of work in a new codebase.")]
     async fn knot_map(&self) -> Result<CallToolResult, McpError> {
         let cwd = crate::ask::current_repo_root().map_err(|e| mcp_err(e.into()))?;
-        let map = crate::ask::map::map(&cwd, Some(&crate::ask::default_cache_root()), crate::ask::map::DEFAULT_MAX_DIRS)
+        let map = crate::ask::map::map(&cwd, Some(&crate::ask::index_root(&cwd)), crate::ask::map::DEFAULT_MAX_DIRS)
             .map_err(mcp_err)?;
         let text = crate::ask::map::format_map(&map);
         crate::ask::savings::record(&cwd, "map", &crate::ask::map::covered_files(&map), &text);

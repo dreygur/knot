@@ -31,8 +31,8 @@ pub fn estimate_tokens(bytes: u64) -> usize {
     bytes.div_ceil(4) as usize
 }
 
-fn ledger_path() -> PathBuf {
-    super::default_cache_root().join(LEDGER_FILE)
+fn ledger_path(root: &Path) -> PathBuf {
+    super::state_dir(root).join(LEDGER_FILE)
 }
 
 fn now_ms() -> i64 {
@@ -54,7 +54,7 @@ pub fn saved_tokens(root: &Path, files: &[String], output: &str) -> usize {
 /// Append what one answer saved to the ledger. Failures are ignored: savings are a
 /// report, never a reason for a command to fail.
 pub fn record(root: &Path, tool: &str, files: &[String], output: &str) {
-    record_at(&ledger_path(), root, tool, files, output, now_ms());
+    record_at(&ledger_path(root), root, tool, files, output, now_ms());
 }
 
 fn record_at(ledger: &Path, root: &Path, tool: &str, files: &[String], output: &str, ts_ms: i64) {
@@ -64,9 +64,8 @@ fn record_at(ledger: &Path, root: &Path, tool: &str, files: &[String], output: &
     }
     let entry = Entry { ts_ms, root: root.to_string_lossy().into_owned(), tool: tool.to_string(), saved };
     let Ok(line) = serde_json::to_string(&entry) else { return };
-    if let Some(dir) = ledger.parent() {
-        let _ = std::fs::create_dir_all(dir);
-    }
+    let (Some(dir), Some(name)) = (ledger.parent(), ledger.file_name()) else { return };
+    let Ok(ledger) = super::state_file(dir, &name.to_string_lossy()) else { return };
     if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(ledger) {
         let _ = writeln!(file, "{line}");
     }
@@ -92,7 +91,7 @@ fn read_head(path: &Path, max: u64) -> Option<String> {
 
 /// Tokens saved in `root` at or after each of `since` (milliseconds), in order.
 pub fn saved_since(root: &Path, since: &[i64]) -> Vec<usize> {
-    saved_since_in(&ledger_path(), root, since)
+    saved_since_in(&ledger_path(root), root, since)
 }
 
 fn saved_since_in(ledger: &Path, root: &Path, since: &[i64]) -> Vec<usize> {
