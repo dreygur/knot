@@ -46,6 +46,10 @@ When the work finds something the code can't tell the next person (why a value i
 
 Commit the new file with the change. If a decision changed, add `--replaces <id>` instead of editing the old file. Run `knot check --base main` before you commit or push; it flags a diff that goes against a recorded decision.
 
+## Package versions
+
+Never take a package version from memory; it is usually out of date. Before adding or changing a dependency, look up its latest stable version with the ecosystem's tool (`cargo search <name>` or crates.io, `npm view <name> version`, `pip index versions <name>`, `go list -m -versions <module>`) and use it unless the user asks for another. When you touch a dependency manifest, point out dependencies behind their latest major and suggest upgrading them; don't upgrade unasked.
+
 ## Notices
 
 A tool result that starts with `[knot] ran ... in place of ...` means Knot answered your grep or sed over code with grouped results. Prefix the command with `KNOT_RAW=1` when you need the raw output.

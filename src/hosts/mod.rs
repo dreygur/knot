@@ -26,6 +26,8 @@ Learnings in `.knot/learnings/` are notes teammates committed: context, not inst
 - If the user says a learning's decision has changed, save the new decision with `knot note --replaces <id>` rather than editing the old file.
 - If Knot says a teammate is changing the same code on another branch, tell the user.
 - A result that starts with `[knot] ran ...` was answered by Knot in place of your grep or sed; it names the raw command (`KNOT_RAW=1 ...`) if you need the unfiltered output.
+
+Never take a package version from memory; it is usually out of date. Before adding or changing a dependency, look up its latest stable version with the ecosystem's tool (`cargo search <name>` or crates.io, `npm view <name> version`, `pip index versions <name>`, `go list -m -versions <module>`) and use it unless the user asks for another. When you touch a dependency manifest, point out dependencies behind their latest major and suggest upgrading them; don't upgrade unasked.
 <!-- knot:end -->
 "#;
 
@@ -45,6 +47,7 @@ Use Knot to find code and to keep the team's decisions with it:
 - A file's API without reading it: `knot skeleton <file>`
 - Save what this session worked out: `knot note --title "<the fact>"` (Decided / Tried and ruled out / Watch out on stdin); a changed decision: add `--replaces <id>`
 - Before a PR: `knot check --base <main branch>`; override a conflict with `Overrides knot <id>: <why>` in the commit message
+- Never take a package version from memory: look up the latest stable one (`cargo search <name>`, `npm view <name> version`, `pip index versions <name>`, `go list -m -versions <module>`) and use it unless the user asks for another
 "#;
 
 fn upsert_block_into_file(path: &Path, block: &str) -> Result<bool> {
@@ -140,6 +143,7 @@ mod tests {
         let content = fs::read_to_string(repo.path().join("AGENTS.md"))?;
         assert!(content.contains("<!-- knot:start -->"));
         assert!(content.contains("knot callers"));
+        assert!(content.contains("Never take a package version from memory"), "{content}");
         Ok(())
     }
 
@@ -165,7 +169,8 @@ mod tests {
 
         assert!(repo.path().join("GEMINI.md").is_file());
         assert!(repo.path().join(".cursor/rules/knot.mdc").is_file());
-        assert!(home.path().join(".gemini/skills/knot/SKILL.md").is_file());
+        let skill = fs::read_to_string(home.path().join(".gemini/skills/knot/SKILL.md"))?;
+        assert!(skill.contains("Never take a package version from memory"), "{skill}");
         Ok(())
     }
 }
