@@ -15,7 +15,7 @@ use crate::ast::CodeGraph;
 /// Matched lines longer than this are cut, so one minified line cannot flood the output.
 const MAX_LINE_CHARS: usize = 200;
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct GrepOptions {
     pub pattern: String,
     pub ignore_case: bool,
