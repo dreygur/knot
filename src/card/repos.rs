@@ -2,6 +2,7 @@
 //! line) so the card can total every repo's event log.
 
 use anyhow::Result;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 const LIST_DIR: &str = ".knot";
@@ -34,7 +35,7 @@ fn try_register(home: &Path, repo_root: &Path) -> Result<()> {
     let path = dir.join(LIST_FILE);
     refuse_symlink(&dir)?;
     refuse_symlink(&path)?;
-    let mut content = match std::fs::read_to_string(&path) {
+    let content = match std::fs::read_to_string(&path) {
         Ok(t) => t,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
         Err(e) => anyhow::bail!("cannot read {}: {e}", path.display()),
@@ -42,30 +43,19 @@ fn try_register(home: &Path, repo_root: &Path) -> Result<()> {
     if content.lines().any(|l| l == entry) {
         return Ok(());
     }
-    if !content.is_empty() && !content.ends_with('\n') {
-        content.push('\n');
-    }
-    content.push_str(&entry);
-    content.push('\n');
     std::fs::create_dir_all(&dir)?;
-    write_atomic(&path, &content)
+    // One short O_APPEND write is atomic, so processes registering at once lose no line.
+    // A race may list a repo twice; `list` dedupes.
+    let line = if content.is_empty() || content.ends_with('\n') { format!("{entry}\n") } else { format!("\n{entry}\n") };
+    let mut file = std::fs::OpenOptions::new().create(true).append(true).open(&path)?;
+    file.write_all(line.as_bytes())?;
+    Ok(())
 }
 
 fn refuse_symlink(path: &Path) -> Result<()> {
     if std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink()) {
         anyhow::bail!("{} is a symlink; Knot does not write through it", path.display());
     }
-    Ok(())
-}
-
-/// Write to a sibling temp file and rename it into place, so a crash leaves the old file.
-fn write_atomic(path: &Path, content: &str) -> Result<()> {
-    let mut name = path.file_name().unwrap_or_default().to_os_string();
-    name.push(".knot-tmp");
-    let tmp = path.with_file_name(name);
-    refuse_symlink(&tmp)?;
-    std::fs::write(&tmp, content)?;
-    std::fs::rename(&tmp, path)?;
     Ok(())
 }
 
@@ -111,6 +101,19 @@ mod tests {
         std::os::unix::fs::symlink(&target, home.path().join(".knot/repos.txt")).unwrap();
         register(home.path(), repo_with_cache().path());
         assert_eq!(std::fs::read_to_string(&target).unwrap(), "keep\n");
+    }
+
+    #[test]
+    fn concurrent_registrations_all_land() {
+        let home = tempfile::tempdir().unwrap();
+        let repos: Vec<_> = (0..16).map(|_| repo_with_cache()).collect();
+        std::thread::scope(|s| {
+            for repo in &repos {
+                let home = home.path();
+                s.spawn(move || register(home, repo.path()));
+            }
+        });
+        assert_eq!(list(home.path()).len(), 16);
     }
 
     #[test]

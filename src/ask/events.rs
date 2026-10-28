@@ -45,7 +45,7 @@ pub struct Event {
 /// Append one event. Failures are ignored: the log is a report, never a reason for a
 /// command to fail.
 pub fn append(root: &Path, event: &Event) {
-    // Unit tests never touch the real home
+    // Unit tests never touch the real home (integration tests that spawn the binary are not covered)
     let home = if cfg!(test) { None } else { dirs::home_dir() };
     append_to(root, event, home.as_deref());
 }
