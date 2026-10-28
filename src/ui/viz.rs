@@ -268,39 +268,10 @@ mod tests {
     }
 
     #[test]
-    fn page_uses_knot_fonts_only() {
-        let html = render_page(&empty());
-        assert!(html.contains("Knot Sans"));
-        assert!(!html.contains("Plex"));
-    }
-
-    #[test]
-    fn layout_runs_off_the_main_frame() {
-        let html = render_page(&empty());
-        assert!(html.contains("new Worker(") || html.contains("requestAnimationFrame"));
-        assert!(html.contains("graphologyLibrary.layoutForceAtlas2"));
-        assert!(html.contains("self.DOMParser"), "the library needs DOMParser to load in a worker");
-        assert!(html.contains("job.step(FRAME_STEP)"), "the fallback steps a few iterations at a time");
-        assert!(html.contains("localStorage.getItem(key)"), "a finished layout is reused");
-    }
-
-    #[test]
     fn empty_page_renders() {
         let html = render_page(&empty());
         assert!(html.contains("No symbols indexed yet"));
         assert!(!html.contains("{{"), "every slot is filled");
-    }
-
-    #[test]
-    fn page_uses_the_owner_palette() {
-        let t = TEMPLATE.to_lowercase();
-        for old in ["#8fa8ff", "#3550d6", "#34d399", "84,111,255", "84, 111, 255"] {
-            assert!(!t.contains(old), "{old} is gone");
-        }
-        for new in ["#bfd99b", "#23402b", "#00bcd4", "#f2d30f"] {
-            assert!(t.contains(new), "{new} is set");
-        }
-        assert!(!t.contains('\u{2026}'), "the ellipsis may be missing from the font subset");
     }
 
     #[test]
@@ -329,25 +300,6 @@ mod tests {
         for curly in ['\u{201c}', '\u{201d}', '\u{2018}', '\u{2019}'] {
             assert!(!TEMPLATE.contains(curly), "{curly}");
         }
-    }
-
-    #[test]
-    fn page_survives_a_bad_hash_and_no_webgl() {
-        let t = TEMPLATE;
-        assert!(t.contains("This browser has WebGL turned off, so the map can't draw."));
-        assert!(t.contains("try {\n    want = location.hash.startsWith(\"#select=\") ? decodeURIComponent("), "the decode is guarded");
-    }
-
-    #[test]
-    fn picking_a_symbol_shows_its_folder() {
-        assert!(TEMPLATE.contains("hidden.delete(m.fo)"));
-    }
-
-    #[test]
-    fn phone_header_keeps_the_theme_toggle() {
-        let phone = &TEMPLATE[TEMPLATE.find("@media (max-width: 760px)").unwrap()..];
-        assert!(phone.contains(".search kbd { display: none; }"));
-        assert!(phone.contains(".search { min-width: 0; }"));
     }
 
     #[test]

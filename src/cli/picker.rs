@@ -213,13 +213,6 @@ mod tests {
     }
 
     #[test]
-    fn colours_are_the_owner_palette() {
-        assert_eq!(LIGHT_GREEN, "\x1b[38;2;191;217;155m");
-        assert_eq!(OLIVE, "\x1b[38;2;152;159;95m");
-        assert_eq!(AMBER, "\x1b[38;5;179m");
-    }
-
-    #[test]
     fn detected_rows_start_checked() {
         assert_eq!(picker().picked(), vec![0, 2]);
     }

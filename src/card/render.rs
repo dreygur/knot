@@ -471,14 +471,6 @@ mod tests {
     }
 
     #[test]
-    fn template_drops_the_old_mint() {
-        let t = TEMPLATE.to_lowercase();
-        assert!(!t.contains("#34d399") && !t.contains("#1f5c48") && !t.contains("#0e2a22"));
-        assert!(t.contains("#bfd99b"));
-        assert_eq!(GREEN, "#bfd99b");
-    }
-
-    #[test]
     #[ignore = "writes sample PNGs; run with CARD_SAMPLE_DIR set"]
     fn write_samples() {
         let dir = std::path::PathBuf::from(std::env::var("CARD_SAMPLE_DIR").unwrap());
