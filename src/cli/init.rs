@@ -8,7 +8,7 @@ use super::{count, register_path, PathChange, SUPPORTED_LANGUAGES};
 use crate::hosts::mcp::{self, Registered};
 use crate::hosts::{Agent, Target};
 
-const USAGE: &str = "knot init [--agents <id,id...>] [--swaps] [-y|--yes]";
+const USAGE: &str = "knot init [--agents <id,id...>] [--no-swaps] [-y|--yes]";
 const PICKER_TITLE: &str = "knot init · pick the agents you use:";
 const LABEL_WIDTH: usize = 12;
 const DONE: char = '✓';
@@ -48,20 +48,24 @@ fn parse_ids(value: &str, into: &mut Vec<Agent>) -> Result<()> {
     Ok(())
 }
 
-/// The agent selection and whether `--swaps` was given.
+/// The agent selection and whether swaps go on: yes unless `--no-swaps` was given.
 fn parse_args(args: impl IntoIterator<Item = String>) -> Result<(Selection, bool)> {
     let mut args = args.into_iter().peekable();
     let mut named: Option<Vec<Agent>> = None;
     let mut yes = false;
-    let mut swaps = false;
+    let mut swaps = true;
 
     while let Some(arg) = args.next() {
         if arg == "-y" || arg == "--yes" {
             yes = true;
             continue;
         }
+        if arg == "--no-swaps" {
+            swaps = false;
+            continue;
+        }
+        // Swaps used to be opt-in; scripts that still ask for them keep working
         if arg == "--swaps" {
-            swaps = true;
             continue;
         }
         // `--agents claude,codex`, `--agents claude codex` and `--agents=claude` all work
@@ -121,7 +125,7 @@ fn picker_rows(found: &[(Agent, bool)]) -> Vec<Row> {
         .collect()
 }
 
-/// The extra picker row for per-repo shell swaps; it starts unchecked unless `--swaps` was given.
+/// The extra picker row for per-repo shell swaps; it starts checked unless `--no-swaps` was given.
 fn swaps_row() -> Row {
     Row {
         label: "swaps".to_string(),
@@ -129,6 +133,17 @@ fn swaps_row() -> Row {
         summary: "Claude Code only · grep and sed over code answered by knot, python code edits stopped · .claude/settings.local.json".to_string(),
         machine_wide: false,
     }
+}
+
+/// The picker: one row per agent, then the swaps row, checked unless `swaps` is off.
+fn agent_picker(found: &[(Agent, bool)], swaps: bool) -> Picker {
+    let mut rows = picker_rows(found);
+    rows.push(swaps_row());
+    let mut picker = Picker::new(PICKER_TITLE, rows);
+    if !swaps {
+        picker.uncheck(found.len());
+    }
+    picker
 }
 
 /// The agents to wire and whether to turn swaps on, or `None` when the person cancelled the picker.
@@ -143,13 +158,7 @@ fn choose(
         (Selection::Named(list), _) => Ok(Some((list, swaps))),
         (Selection::Detected, _) | (Selection::Ask, Terminal::Piped) => Ok(Some((detected(), swaps))),
         (Selection::Ask, Terminal::Interactive) => {
-            let mut rows = picker_rows(found);
-            rows.push(swaps_row());
-            let mut picker = Picker::new(PICKER_TITLE, rows);
-            if !swaps {
-                picker.uncheck(found.len());
-            }
-            Ok(picker::run(picker)?.map(|rows| {
+            Ok(picker::run(agent_picker(found, swaps))?.map(|rows| {
                 let on = rows.contains(&found.len());
                 (rows.into_iter().filter(|&i| i < found.len()).map(|i| found[i].0).collect(), on)
             }))
@@ -283,9 +292,10 @@ mod tests {
 
     #[test]
     fn parses_agent_lists_in_every_spelling() {
-        assert_eq!(parse_args(args(&[])).unwrap(), (Selection::Ask, false));
+        assert_eq!(parse_args(args(&[])).unwrap(), (Selection::Ask, true), "swaps are on unless turned off");
         assert_eq!(parse_args(args(&["-y", "--swaps"])).unwrap(), (Selection::Detected, true));
-        let both = (Selection::Named(vec![Agent::Claude, Agent::Codex]), false);
+        assert_eq!(parse_args(args(&["-y", "--no-swaps"])).unwrap(), (Selection::Detected, false));
+        let both = (Selection::Named(vec![Agent::Claude, Agent::Codex]), true);
         assert_eq!(parse_args(args(&["--agents", "claude,codex"])).unwrap(), both);
         assert_eq!(parse_args(args(&["--agents", "claude", "codex", "--yes"])).unwrap(), both);
         assert_eq!(parse_args(args(&["--agents=claude,claude,codex"])).unwrap(), both);
@@ -306,6 +316,15 @@ mod tests {
         assert_eq!(choose(Selection::Detected, true, &found, Terminal::Interactive).unwrap(), Some((vec![Agent::Claude, Agent::Cursor], true)));
         let named = Selection::Named(vec![Agent::Codex]);
         assert_eq!(choose(named, false, &found, Terminal::Interactive).unwrap(), Some((vec![Agent::Codex], false)));
+    }
+
+    #[test]
+    fn the_swaps_row_starts_checked_unless_turned_off() {
+        let found = [(Agent::Claude, true), (Agent::Codex, false)];
+        assert_eq!(agent_picker(&found, true).picked(), vec![0, 2]);
+        assert_eq!(agent_picker(&found, false).picked(), vec![0]);
+        let (_, swaps) = parse_args(args(&[])).unwrap();
+        assert_eq!(agent_picker(&found, swaps).picked(), vec![0, 2], "no flag: swaps checked");
     }
 
     #[test]
