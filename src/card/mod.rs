@@ -46,11 +46,13 @@ fn wired_agents(home: &Path) -> Vec<String> {
     Agent::ALL.into_iter().filter(|a| a.knot_wired(home)).map(|a| a.display().to_string()).collect()
 }
 
-/// List the repo we are in, so history written before the list existed still counts.
-/// Best-effort and silent; outside a repo there is nothing to list.
-pub fn register_current(home: &Path, repo: Option<&Path>) {
-    if let Some(root) = repo {
-        repos::register(home, root);
+/// List the git work tree `dir` is in, so history written before the list existed still
+/// counts. Best-effort and silent. Outside git nothing is listed: a plain folder such as
+/// `~`, which holds `~/.knot/cache`, is not a repo.
+pub fn register_current(home: &Path, dir: &Path) {
+    let root = git2::Repository::discover(dir).ok().and_then(|r| r.workdir().map(Path::to_path_buf));
+    if let Some(root) = root {
+        repos::register(home, &root);
     }
 }
 
@@ -81,12 +83,12 @@ pub fn run(args: impl IntoIterator<Item = String>) -> Result<()> {
     let args = parse_args(args)?;
     let home = dirs::home_dir().ok_or_else(|| anyhow::anyhow!("cannot determine the home directory"))?;
     let now = Local::now();
-    let here = crate::ask::current_repo_root().ok();
-    register_current(&home, here.as_deref());
+    let cwd = std::env::current_dir()?;
+    register_current(&home, &cwd);
     let root = if args.repo { Some(crate::ask::current_repo_root()?) } else { None };
     let out = match args.out {
         Some(out) => out,
-        None => default_path(&home, now.date_naive(), &std::env::current_dir()?),
+        None => default_path(&home, now.date_naive(), &cwd),
     };
     let view = build_view(&home, root.as_deref(), now);
     for line in make_card(&view, &out, &clipboard::copy_png)? {
@@ -191,16 +193,23 @@ mod tests {
         let work = tempfile::tempdir().unwrap();
         // events.jsonl already exists, so the log write never registered it
         let root = repo_named(work.path(), "old", 700);
+        git2::Repository::init(&root).unwrap();
+        std::fs::create_dir(root.join("src")).unwrap();
         assert!(repos::list(home.path()).is_empty());
         assert_eq!(build_view(home.path(), None, now()).stats.graph.tokens, 0);
 
-        register_current(home.path(), Some(&root));
+        // From a subfolder too: the work tree's root is listed
+        register_current(home.path(), &root.join("src"));
         assert_eq!(build_view(home.path(), None, now()).stats.graph.tokens, 700);
+    }
 
-        // outside a repo it is a no-op
-        let other_home = tempfile::tempdir().unwrap();
-        register_current(other_home.path(), None);
-        assert!(repos::list(other_home.path()).is_empty());
+    #[test]
+    fn a_folder_outside_git_is_never_listed() {
+        // Running from `~`, which holds `~/.knot/cache`, must not list home as a repo
+        let home = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(home.path().join(".knot/cache")).unwrap();
+        register_current(home.path(), home.path());
+        assert!(repos::list(home.path()).is_empty());
     }
 
     #[test]

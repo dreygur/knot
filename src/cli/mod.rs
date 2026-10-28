@@ -1103,8 +1103,8 @@ pub async fn run_mcp_server() -> Result<()> {
     }
 
     // So the share card counts this repo's older history; silent, stdout is the protocol
-    if let (Some(home), Ok(root)) = (dirs::home_dir(), crate::ask::current_repo_root()) {
-        crate::card::register_current(&home, Some(&root));
+    if let (Some(home), Ok(cwd)) = (dirs::home_dir(), std::env::current_dir()) {
+        crate::card::register_current(&home, &cwd);
     }
 
     // Syncing writes repo learnings into the vault, which a read-only vault must not get
