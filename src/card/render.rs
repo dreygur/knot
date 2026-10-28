@@ -9,9 +9,13 @@ use std::sync::Arc;
 
 const TEMPLATE: &str = include_str!("card.svg");
 const LOGO: &[u8] = include_bytes!("../../assets/logo-light.png");
-const SANS: &[u8] = include_bytes!("../../assets/fonts/IBMPlexSans-Regular.ttf");
-const SANS_SEMIBOLD: &[u8] = include_bytes!("../../assets/fonts/IBMPlexSans-SemiBold.ttf");
-const MONO: &[u8] = include_bytes!("../../assets/fonts/IBMPlexMono-Regular.ttf");
+const SANS: &[u8] = include_bytes!("../../assets/fonts/KnotSans-Regular.ttf");
+const SANS_SEMIBOLD: &[u8] = include_bytes!("../../assets/fonts/KnotSans-SemiBold.ttf");
+const MONO: &[u8] = include_bytes!("../../assets/fonts/KnotMono-Regular.ttf");
+
+/// Family names inside the embedded fonts: subsets of IBM Plex, renamed as the OFL requires.
+const SANS_FAMILY: &str = "Knot Sans";
+const MONO_FAMILY: &str = "Knot Mono";
 
 const WIDTH: u32 = 1200;
 const HEIGHT: u32 = 675;
@@ -40,7 +44,7 @@ pub fn render_png(view: &CardView) -> anyhow::Result<Vec<u8>> {
         fonts.load_font_data(font.to_vec());
     }
     let options = usvg::Options {
-        font_family: "IBM Plex Sans".into(),
+        font_family: SANS_FAMILY.into(),
         fontdb: Arc::new(fonts),
         ..Default::default()
     };
@@ -70,7 +74,7 @@ pub(crate) fn svg(view: &CardView) -> String {
     let caption = width(SANS, "tokens saved", 24.0) + 12.0 + width(MONO, "≈ estimated", 18.0);
     let less_x = LEFT + width(SANS_SEMIBOLD, &tokens_saved, 84.0).max(caption) + 80.0;
 
-    let mut learning_count = format!("{} learnings", grouped(s.learnings.count));
+    let mut learning_count = counted(s.learnings.count, "learning");
     match s.learnings.minutes {
         0 => {}
         m @ 1..=59 => learning_count += &format!(" · {m} min"),
@@ -79,10 +83,13 @@ pub(crate) fn svg(view: &CardView) -> String {
 
     let top_right = match &view.repo_name {
         Some(name) => {
-            let name: String = name.chars().take(MAX_REPO_CHARS).collect();
+            let mut shown: String = name.chars().take(MAX_REPO_CHARS).collect();
+            if shown.len() < name.len() {
+                shown.push('…');
+            }
             format!(
                 "<tspan fill=\"#c3ccd8\">{}</tspan> · {}",
-                esc(&name),
+                esc(&shown),
                 esc(&s.label)
             )
         }
@@ -94,23 +101,25 @@ pub(crate) fn svg(view: &CardView) -> String {
         TEMPLATE,
         &[
             ("logo", logo),
+            ("sans", SANS_FAMILY.into()),
+            ("mono", MONO_FAMILY.into()),
             ("top_right", top_right),
             ("tokens_saved", tokens_saved),
             ("less_to_read", less_to_read),
             ("less_x", format!("{less_x:.1}")),
             ("trend", trend(&s.trend)),
             ("graph_tokens", saved(s.graph.tokens)),
-            ("graph_count", format!("{} answers", grouped(s.graph.count))),
+            ("graph_count", counted(s.graph.count, "answer")),
             ("learning_tokens", saved(s.learnings.tokens)),
             ("learning_count", esc(&learning_count)),
             ("swap_tokens", saved(s.swaps.tokens)),
-            ("swap_count", format!("{} runs", grouped(s.swaps.count))),
+            ("swap_count", counted(s.swaps.count, "run")),
             ("chips", chips(&view.agents)),
         ],
     )
 }
 
-/// 999, 1.2k, 4.1M, 1.2B.
+/// 999, 1.2k, 40k, 4.1M, 4M, 1.2B.
 pub fn short(n: u64) -> String {
     const UNITS: [(f64, &str); 3] = [(1e3, "k"), (1e6, "M"), (1e9, "B")];
     if n < 1_000 {
@@ -125,7 +134,16 @@ pub fn short(n: u64) -> String {
         unit += 1;
     }
     let (size, suffix) = UNITS[unit];
-    format!("{:.1}{suffix}", n as f64 / size)
+    let number = format!("{:.1}", n as f64 / size);
+    format!("{}{suffix}", number.strip_suffix(".0").unwrap_or(&number))
+}
+
+/// "1 answer", "1,931 answers".
+fn counted(n: u64, noun: &str) -> String {
+    match n {
+        1 => format!("1 {noun}"),
+        n => format!("{} {noun}s", grouped(n)),
+    }
 }
 
 /// A tile's figure: "−2.6M", or "0" when nothing was saved.
@@ -156,7 +174,7 @@ fn trend(trend: &Trend) -> String {
         Trend::Daily(days) => days,
         Trend::PerSession(tokens) => {
             return format!(
-                "<text x=\"{RIGHT}\" y=\"244.6\" text-anchor=\"end\" font-family=\"IBM Plex Sans\" font-size=\"24\" fill=\"#8b97a8\">≈ <tspan font-weight=\"600\" fill=\"#e6edf3\">{}</tspan> tokens saved per session</text>",
+                "<text x=\"{RIGHT}\" y=\"244.6\" text-anchor=\"end\" font-family=\"{SANS_FAMILY}\" font-size=\"24\" fill=\"#8b97a8\">≈ <tspan font-weight=\"600\" fill=\"#e6edf3\">{}</tspan> tokens saved per session</text>",
                 short(*tokens)
             );
         }
@@ -239,7 +257,7 @@ fn chips(agents: &[String]) -> String {
 
 fn chip(x: f32, w: f32, label: &str) -> String {
     format!(
-        "<rect x=\"{:.1}\" y=\"608\" width=\"{w:.1}\" height=\"38\" rx=\"19\" fill=\"none\" stroke=\"#2a3442\" stroke-width=\"2\"/><text x=\"{:.1}\" y=\"634.5\" font-family=\"IBM Plex Sans\" font-size=\"22\" fill=\"#c3ccd8\">{}</text>\n  ",
+        "<rect x=\"{:.1}\" y=\"608\" width=\"{w:.1}\" height=\"38\" rx=\"19\" fill=\"none\" stroke=\"#2a3442\" stroke-width=\"2\"/><text x=\"{:.1}\" y=\"634.5\" font-family=\"{SANS_FAMILY}\" font-size=\"22\" fill=\"#c3ccd8\">{}</text>\n  ",
         x + 1.0,
         x + 20.0,
         esc(label)
@@ -355,7 +373,60 @@ mod tests {
         assert_eq!(short(1_234), "1.2k");
         assert_eq!(short(4_100_000), "4.1M");
         assert_eq!(short(1_200_000_000), "1.2B");
-        assert_eq!(short(999_960), "1.0M");
+        assert_eq!(short(999_960), "1M");
+        assert_eq!(short(40_000), "40k");
+        assert_eq!(short(4_000_000), "4M");
+        assert_eq!(short(1_000), "1k");
+    }
+
+    #[test]
+    fn embedded_fonts_are_never_named_plex() {
+        use skrifa::raw::TableProvider;
+        for font in [SANS, SANS_SEMIBOLD, MONO] {
+            let font = FontRef::new(font).unwrap();
+            let name = font.name().unwrap();
+            for record in name.name_record() {
+                let text: String = record.string(name.string_data()).unwrap().chars().collect();
+                assert!(
+                    !text.contains("Plex"),
+                    "name ID {} is {text:?}",
+                    record.name_id()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn counts_of_one_are_singular() {
+        let mut view = sample();
+        view.stats.graph.count = 1;
+        view.stats.learnings = LearningTile {
+            count: 1,
+            tokens: 500,
+            minutes: 0,
+        };
+        view.stats.swaps.count = 1;
+        let svg = drawn(&view);
+        for line in [">1 answer<", ">1 learning<", ">1 run<"] {
+            assert!(svg.contains(line), "missing {line}");
+        }
+        assert!(drawn(&sample()).contains(">1,931 answers<"));
+    }
+
+    #[test]
+    fn long_repo_name_is_cut_with_an_ellipsis() {
+        let mut view = sample();
+        view.repo_name = Some(format!("{}&{}", "a".repeat(30), "b".repeat(30)));
+        let svg = drawn(&view);
+        assert!(svg.contains(&format!(
+            "{}&amp;{}…</tspan>",
+            "a".repeat(30),
+            "b".repeat(9)
+        )));
+        render_png(&view).unwrap();
+
+        view.repo_name = Some("a".repeat(40));
+        assert!(drawn(&view).contains(&format!(">{}</tspan>", "a".repeat(40))));
     }
 
     #[test]
