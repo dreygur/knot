@@ -125,7 +125,8 @@ It also registers Knot's MCP server with each picked agent in that agent's user 
 (the MCP column under [Agent support](#agent-support)): through `claude mcp add` and
 `codex mcp add` for Claude Code and Codex, and by adding a `knot` entry to the JSON file for
 the others. An existing `knot` entry is left as it is, and a config file that doesn't parse
-is reported, not rewritten. Then it adds Knot to your `PATH` if it isn't there yet and indexes
+is reported, not rewritten. If you keep OpenCode's config in `opencode.jsonc`, Knot never edits it
+(that would lose its comments) and prints the entry to paste instead. Then it adds Knot to your `PATH` if it isn't there yet and indexes
 the code into `.knot/cache/`. `knot init --agents claude,codex` skips the picker; `knot init --yes` takes
 every agent found on this machine. The instructions sit between `<!-- knot:start -->` and
 `<!-- knot:end -->` markers, so re-running `init` updates them in place and leaves the rest

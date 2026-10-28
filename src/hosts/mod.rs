@@ -14,6 +14,8 @@ use std::path::{Path, PathBuf};
 const SKILL_MD: &str = include_str!("../../skills/knot/SKILL.md");
 const START_MARKER: &str = "<!-- knot:start -->";
 const END_MARKER: &str = "<!-- knot:end -->";
+/// Without `alwaysApply`, Cursor treats a rule as one the agent may pick or skip.
+const CURSOR_FRONTMATTER: &str = "---\ndescription: Knot code graph and team learnings\nalwaysApply: true\n---";
 
 /// The skill without its frontmatter: what an instruction file needs.
 fn skill_body() -> &'static str {
@@ -60,7 +62,8 @@ pub fn install_cursor_rule(repo_root: &Path) -> Result<PathBuf> {
     if let Some(parent) = target.parent() {
         fs::create_dir_all(parent)?;
     }
-    fs::write(&target, protocol_block())?;
+    // The rule is Knot's own file, so it is rewritten whole: one frontmatter, one block
+    fs::write(&target, format!("{CURSOR_FRONTMATTER}\n\n{}\n", protocol_block()))?;
     Ok(target)
 }
 
@@ -175,6 +178,21 @@ mod tests {
         assert!(!content.contains("Find code before opening files."), "{content}");
         assert_eq!(block_in(&content), skill_body());
         assert!(content.starts_with("# House rules") && content.contains("## Footer"), "{content}");
+        Ok(())
+    }
+
+    #[test]
+    fn the_cursor_rule_always_applies_and_a_rerun_keeps_one_of_each() -> Result<()> {
+        let repo = tempdir()?;
+        let home = tempdir()?;
+        configure_agents(repo.path(), home.path(), &[Agent::Cursor])?;
+        configure_agents(repo.path(), home.path(), &[Agent::Cursor])?;
+
+        let rule = fs::read_to_string(repo.path().join(".cursor/rules/knot.mdc"))?;
+        assert!(rule.starts_with("---\ndescription: Knot code graph and team learnings\nalwaysApply: true\n---\n"), "{rule}");
+        assert_eq!(rule.matches("alwaysApply").count(), 1, "{rule}");
+        assert_eq!(rule.matches(START_MARKER).count(), 1, "{rule}");
+        assert_eq!(block_in(&rule), skill_body());
         Ok(())
     }
 

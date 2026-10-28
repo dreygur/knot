@@ -203,6 +203,7 @@ fn mcp_line(agent: Agent, home: &Path, bin: &Path, run: mcp::Runner) -> String {
         Registered::Added => (DONE, format!("added to {place}")),
         Registered::AlreadyThere => (DONE, format!("already in {place}")),
         Registered::NoCli(command) => (NOTE, format!("no {} command found; run: {command}", agent.id())),
+        Registered::ByHand(what) => (NOTE, what),
         Registered::Failed(e) => (FAILED, format!("not added: {e}")),
     };
     line(mark, "mcp", &format!("{} · {detail}", agent.id()))

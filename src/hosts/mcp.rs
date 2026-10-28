@@ -15,8 +15,9 @@ const SERVER_NAME: &str = "knot";
 /// nobody will answer, so it is stopped.
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
 const POLL_EVERY: Duration = Duration::from_millis(50);
-/// OpenCode merges this next to `opencode.json`; Knot cannot edit it without losing
-/// its comments, so it only looks for an entry there.
+/// When the person keeps OpenCode's user config here, a separate `opencode.json` beside
+/// it is never created, and Knot cannot edit JSONC without losing its comments, so it
+/// only looks for an entry there or prints the one to paste.
 const OPENCODE_JSONC: &str = ".config/opencode/opencode.jsonc";
 
 /// How an agent's own CLI ran.
@@ -39,6 +40,8 @@ pub enum Registered {
     AlreadyThere,
     /// The agent's CLI is not installed; the command to run once it is.
     NoCli(String),
+    /// Knot cannot safely write this config; what to add to it by hand.
+    ByHand(String),
     Failed(String),
 }
 
@@ -81,8 +84,17 @@ fn entry(agent: Agent, bin: &str) -> serde_json::Value {
     }
 }
 
-fn in_opencode_jsonc(home: &Path) -> bool {
-    std::fs::read_to_string(home.join(OPENCODE_JSONC)).is_ok_and(|text| text.contains(&format!("\"{SERVER_NAME}\"")))
+/// OpenCode with an `opencode.jsonc`: `None` when there is none, so `opencode.json` is
+/// written as for any JSON agent; otherwise already there, or the entry to paste.
+fn opencode_jsonc(home: &Path, bin: &str) -> Option<Registered> {
+    let path = home.join(OPENCODE_JSONC);
+    std::fs::symlink_metadata(&path).ok()?;
+    let text = std::fs::read_to_string(&path).unwrap_or_default();
+    if text.contains(&format!("\"{SERVER_NAME}\"")) {
+        return Some(Registered::AlreadyThere);
+    }
+    let entry = format!("\"{SERVER_NAME}\": {}", entry(Agent::OpenCode, bin));
+    Some(Registered::ByHand(format!("add under \"mcp\" in ~/{OPENCODE_JSONC}: {entry}")))
 }
 
 /// Add Knot to an agent's JSON config under `home`. A file that does not parse, is not
@@ -98,7 +110,7 @@ fn add_to_json(agent: Agent, home: &Path, bin: &str) -> Result<Registered> {
         Some(servers) if servers.is_object() => {}
         Some(_) => anyhow::bail!("{}'s \"{key}\" is not an object; Knot leaves it alone", path.display()),
     }
-    if cfg[key].get(SERVER_NAME).is_some() || (agent == Agent::OpenCode && in_opencode_jsonc(home)) {
+    if cfg[key].get(SERVER_NAME).is_some() {
         return Ok(Registered::AlreadyThere);
     }
     cfg[key][SERVER_NAME] = entry(agent, bin);
@@ -135,6 +147,11 @@ fn add_with_cli(agent: Agent, home: &Path, bin: &str, run: Runner) -> Registered
 /// Register Knot's MCP server at `bin` with `agent`, never touching an existing entry.
 pub fn register(agent: Agent, home: &Path, bin: &Path, run: Runner) -> Registered {
     let bin = bin.to_string_lossy();
+    if agent == Agent::OpenCode {
+        if let Some(done) = opencode_jsonc(home, &bin) {
+            return done;
+        }
+    }
     match agent {
         Agent::Claude | Agent::Codex => add_with_cli(agent, home, &bin, run),
         _ => add_to_json(agent, home, &bin).unwrap_or_else(|e| Registered::Failed(e.to_string())),
@@ -199,6 +216,38 @@ mod tests {
 
         assert_eq!(register(Agent::OpenCode, home.path(), Path::new(BIN), &no_cli), Registered::AlreadyThere);
         assert!(!home.path().join(".config/opencode/opencode.json").exists());
+    }
+
+    #[test]
+    fn an_opencode_jsonc_without_knot_gets_the_entry_to_paste_not_a_second_file() {
+        let home = tempfile::tempdir().unwrap();
+        let jsonc = home.path().join(OPENCODE_JSONC);
+        std::fs::create_dir_all(jsonc.parent().unwrap()).unwrap();
+        let mine = "{\n  // mine\n  \"theme\": \"dark\"\n}\n";
+        std::fs::write(&jsonc, mine).unwrap();
+
+        let got = register(Agent::OpenCode, home.path(), Path::new(BIN), &no_cli);
+
+        assert_eq!(
+            got,
+            Registered::ByHand(format!(
+                "add under \"mcp\" in ~/{OPENCODE_JSONC}: \"knot\": {{\"command\":[\"{BIN}\"],\"enabled\":true,\"type\":\"local\"}}"
+            ))
+        );
+        assert!(!home.path().join(".config/opencode/opencode.json").exists(), "never a second file beside the jsonc");
+        assert_eq!(std::fs::read_to_string(&jsonc).unwrap(), mine, "the jsonc is never edited");
+    }
+
+    #[test]
+    fn an_existing_opencode_json_alone_is_still_written() {
+        let home = tempfile::tempdir().unwrap();
+        let json_file = home.path().join(".config/opencode/opencode.json");
+        std::fs::create_dir_all(json_file.parent().unwrap()).unwrap();
+        std::fs::write(&json_file, r#"{"theme":"dark"}"#).unwrap();
+
+        assert_eq!(register(Agent::OpenCode, home.path(), Path::new(BIN), &no_cli), Registered::Added);
+        assert_eq!(read(&json_file)["mcp"]["knot"]["command"][0], BIN);
+        assert_eq!(read(&json_file)["theme"], "dark");
     }
 
     #[test]
