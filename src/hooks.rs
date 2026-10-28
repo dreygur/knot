@@ -66,12 +66,8 @@ fn wanted_hooks(bin: &str) -> Vec<(&'static str, serde_json::Value)> {
 }
 
 fn merge_settings(settings: &Path, bin: &str) -> Result<bool> {
-    let mut cfg: serde_json::Value = if settings.exists() {
-        let s = std::fs::read_to_string(settings)?;
-        serde_json::from_str(&s).unwrap_or_else(|_| json!({}))
-    } else {
-        json!({})
-    };
+    // A file that does not parse is the user's to fix; rewriting it from `{}` would lose it
+    let mut cfg = read_settings(settings)?;
     let before = cfg.clone();
 
     if !cfg.get("hooks").is_some_and(|h| h.is_object()) {
@@ -205,8 +201,8 @@ fn read_settings(path: &Path) -> Result<serde_json::Value> {
     };
     match serde_json::from_str::<serde_json::Value>(&text) {
         Ok(v) if v.is_object() => Ok(v),
-        Ok(_) => anyhow::bail!("{} is not a JSON object; fix it and run knot init --swaps again", path.display()),
-        Err(e) => anyhow::bail!("{} is not valid JSON ({e}); fix it and run knot init --swaps again", path.display()),
+        Ok(_) => anyhow::bail!("{} is not a JSON object; Knot leaves it alone until it is fixed", path.display()),
+        Err(e) => anyhow::bail!("{} is not valid JSON ({e}); Knot leaves it alone until it is fixed", path.display()),
     }
 }
 
@@ -233,11 +229,16 @@ fn ignore_in_git(repo_root: &Path) -> Result<()> {
     if repo.status_should_ignore(Path::new(LOCAL_SETTINGS)).unwrap_or(false) {
         return Ok(());
     }
-    let info = repo.path().join("info");
+    // git reads info/exclude from the common dir, which a linked worktree's own gitdir is not
+    let info = repo.commondir().join("info");
     let exclude = info.join("exclude");
     refuse_symlink(&info)?;
     refuse_symlink(&exclude)?;
-    let mut content = std::fs::read_to_string(&exclude).unwrap_or_default();
+    let mut content = match std::fs::read_to_string(&exclude) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => anyhow::bail!("cannot read {}: {e}", exclude.display()),
+    };
     if !content.is_empty() && !content.ends_with('\n') {
         content.push('\n');
     }
@@ -348,6 +349,70 @@ mod tests {
         register_repo_in(repo.path(), Path::new(BIN), home.path()).unwrap();
         let exclude = std::fs::read_to_string(repo.path().join(".git/info/exclude")).unwrap();
         assert!(exclude.matches(".claude/settings.local.json").count() <= 1, "{exclude}");
+    }
+
+    /// Point the repo's excludes file at an empty one, so a global ignore that already
+    /// covers the settings file cannot make a test pass without Knot's own exclude.
+    fn without_global_ignore(git: &git2::Repository, dir: &Path) {
+        let empty = dir.join(".git/empty-excludes");
+        std::fs::write(&empty, "").unwrap();
+        git.config().unwrap().set_str("core.excludesFile", &empty.to_string_lossy()).unwrap();
+    }
+
+    #[test]
+    fn local_settings_are_git_ignored_in_a_linked_worktree() {
+        let main = tempfile::tempdir().unwrap();
+        let home = tempfile::tempdir().unwrap();
+        let git = git2::Repository::init(main.path()).unwrap();
+        let sig = git2::Signature::now("Maya", "m@x").unwrap();
+        let tree = git.find_tree(git.index().unwrap().write_tree().unwrap()).unwrap();
+        git.commit(Some("HEAD"), &sig, &sig, "init", &tree, &[]).unwrap();
+        let place = tempfile::tempdir().unwrap();
+        let wt_path = place.path().join("wt");
+        git.worktree("wt", &wt_path, None).unwrap();
+        without_global_ignore(&git, main.path());
+        assert!(!git2::Repository::open(&wt_path).unwrap().status_should_ignore(Path::new(LOCAL_SETTINGS)).unwrap());
+
+        register_repo_in(&wt_path, Path::new(BIN), home.path()).unwrap();
+
+        let wt = git2::Repository::open(&wt_path).unwrap();
+        assert!(wt.status_should_ignore(Path::new(LOCAL_SETTINGS)).unwrap());
+        let exclude = std::fs::read_to_string(main.path().join(".git/info/exclude")).unwrap();
+        assert!(exclude.contains(LOCAL_SETTINGS), "{exclude}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_unreadable_git_exclude_is_an_error_not_wiped() {
+        use std::os::unix::fs::PermissionsExt;
+        let repo = tempfile::tempdir().unwrap();
+        let home = tempfile::tempdir().unwrap();
+        let git = git2::Repository::init(repo.path()).unwrap();
+        without_global_ignore(&git, repo.path());
+        let exclude = repo.path().join(".git/info/exclude");
+        std::fs::create_dir_all(exclude.parent().unwrap()).unwrap();
+        std::fs::write(&exclude, "keep-me/\n").unwrap();
+        std::fs::set_permissions(&exclude, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+        let result = register_repo_in(repo.path(), Path::new(BIN), home.path());
+
+        std::fs::set_permissions(&exclude, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("exclude"), "{err}");
+        assert_eq!(std::fs::read_to_string(&exclude).unwrap(), "keep-me/\n");
+    }
+
+    #[test]
+    fn malformed_user_settings_are_left_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let settings = dir.path().join("settings.json");
+        let broken = "{\"permissions\": {\"allow\": [\"x\"],},}\n";
+        std::fs::write(&settings, broken).unwrap();
+
+        let err = merge_settings(&settings, "\"/bin/knot\"").unwrap_err().to_string();
+
+        assert!(err.contains("settings.json"), "{err}");
+        assert_eq!(std::fs::read_to_string(&settings).unwrap(), broken);
     }
 
     #[test]
