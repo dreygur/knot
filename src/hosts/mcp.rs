@@ -30,7 +30,7 @@ pub enum Ran {
     Failed(String),
 }
 
-/// Runs an agent's CLI. Tests pass a fake, so no real CLI ever runs from them.
+/// Runs an agent's CLI. Tests pass a mock, so no real CLI ever runs from them.
 pub type Runner<'a> = &'a dyn Fn(&str, &[String]) -> Ran;
 
 /// What registering Knot with one agent did.

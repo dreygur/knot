@@ -58,7 +58,7 @@ Never take a package version from memory; it is usually out of date. Before addi
 
 ## Handoff
 
-Keep a handoff note so a new session can pick up where this one stops. Save it at checkpoints: after each finished step, before a long task, and when the user says they're stopping. When Knot warns that the context window or the five hour limit is near, write it right away. Pipe it to `knot handoff save`; it lands in the repo's git-ignored `.knot/cache/handoff.md` and replaces the last one. Change it only by saving again: Knot ignores a note it did not save, or one edited since. Give the goal, what's done with commit hashes, the next step, open questions and the files in progress. A new session is told when one is waiting: `knot handoff show` prints it, and `knot handoff clear` removes it once the work is picked up.
+Keep a handoff note so a new session can pick up where this one stops. Save it at checkpoints: after each finished step, before a long task, and when the user says they're stopping. When Knot warns that the context window or the five hour limit is near, write it right away. Pipe it to `knot handoff save`; it lands in the repo's `.knot/cache/handoff.md`, which git ignores, and replaces the last one. Change it only by saving again: Knot ignores a note it did not save, or one edited since. Give the goal, what's done with commit hashes, the next step, open questions and the files in progress. A new session is told when one is waiting: `knot handoff show` prints it, and `knot handoff clear` removes it once the work is picked up.
 
 ## Notices and index state
 

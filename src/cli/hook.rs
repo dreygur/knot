@@ -476,8 +476,8 @@ fn post_tool(root: &Path, session_id: &str, tool: &str, file: &str) -> Option<se
     (!context.is_empty()).then(|| hook_output("PostToolUse", &context.join("\n\n")))
 }
 
-/// What the every-tool PostToolUse hook adds: a limit warning, so a session that only
-/// runs Bash is warned too. It runs after every call, so it only reads one small file.
+/// What the PostToolUse hook adds after every tool: a limit warning, so a session that
+/// only runs Bash is warned too. It runs after every call, so it only reads one small file.
 fn usage_check(root: &Path, session_id: &str) -> Option<serde_json::Value> {
     limit_warning(root, session_id).map(|warning| hook_output("PostToolUse", &warning))
 }

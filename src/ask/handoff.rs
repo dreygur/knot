@@ -1,10 +1,10 @@
 //! The note one session leaves for the next when it stops before the work is done:
 //! the goal, what's done, the next step, open questions, files in progress. It lives in
-//! the repo's git-ignored `.knot/cache/`, private to this machine.
+//! the repo's `.knot/cache/`, which git ignores, private to this machine.
 //!
 //! A note is shown only when it proves it came from `knot handoff save` here: saving
-//! records its hash, keyed by the repo, in a user-private file outside the repo
-//! (`~/.knot/handoffs.txt`). A note planted by a clone or an unpacked archive, or one
+//! records its hash, keyed by the repo, in a file outside the repo that only the user
+//! can read (`~/.knot/handoffs.txt`). A note planted by a clone or an unpacked archive, or one
 //! edited by hand since, has no matching record and is ignored, because the next
 //! session is told to continue from it.
 
@@ -15,6 +15,9 @@ use std::time::SystemTime;
 const HANDOFF_FILE: &str = "handoff.md";
 /// The records file's name in Knot's data folder.
 pub const RECORDS_FILE: &str = "handoffs.txt";
+const MINUTE: u64 = 60;
+const HOUR: u64 = 60 * MINUTE;
+const DAY: u64 = 24 * HOUR;
 
 /// A saved handoff and when it was written.
 pub struct Handoff {
@@ -163,9 +166,6 @@ pub fn title(body: &str) -> Option<&str> {
 
 /// "just now", "12 min ago", "2 h ago", "3 days ago".
 pub fn age(saved: SystemTime, now: SystemTime) -> String {
-    const MINUTE: u64 = 60;
-    const HOUR: u64 = 60 * MINUTE;
-    const DAY: u64 = 24 * HOUR;
     let secs = now.duration_since(saved).map_or(0, |d| d.as_secs());
     match secs {
         s if s < MINUTE => "just now".to_string(),
