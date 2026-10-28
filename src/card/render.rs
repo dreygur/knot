@@ -1,6 +1,7 @@
 //! Draw the share card: fill an SVG template, then rasterise it to a 1200×675 PNG.
 
 use super::stats::{CardStats, Trend};
+use crate::ui::viz_assets::{MONO, SANS, SANS_SEMIBOLD};
 use anyhow::Context;
 use base64::Engine;
 use resvg::{tiny_skia, usvg};
@@ -9,9 +10,6 @@ use std::sync::Arc;
 
 const TEMPLATE: &str = include_str!("card.svg");
 const LOGO: &[u8] = include_bytes!("../../assets/logo-light.png");
-const SANS: &[u8] = include_bytes!("../../assets/fonts/KnotSans-Regular.ttf");
-const SANS_SEMIBOLD: &[u8] = include_bytes!("../../assets/fonts/KnotSans-SemiBold.ttf");
-const MONO: &[u8] = include_bytes!("../../assets/fonts/KnotMono-Regular.ttf");
 
 /// Family names inside the embedded fonts: subsets of IBM Plex, renamed as the OFL requires.
 const SANS_FAMILY: &str = "Knot Sans";
