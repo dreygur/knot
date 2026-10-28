@@ -661,9 +661,11 @@ async fn cli_ask(args: AskArgs) -> Result<()> {
     let cache_root = crate::ask::index_root(&cwd);
     let hits = crate::ask::ask(&cwd, Some(&cache_root), &args.query, args.limit, args.ranking)?;
     let learnings = crate::ask::related_learnings(&cwd, &args.query, &hits);
-    let session = crate::ask::events::current_session(&cwd);
-    for l in &learnings {
-        crate::ask::events::learning_shown(&cwd, &session, &l.id(), l.cost_minutes, l.cost_tokens);
+    if !learnings.is_empty() {
+        let session = crate::ask::events::current_session(&cwd);
+        for l in &learnings {
+            crate::ask::events::learning_shown(&cwd, &session, std::path::Path::new(&l.file), l.cost_minutes, l.cost_tokens);
+        }
     }
 
     if args.json {

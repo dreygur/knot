@@ -127,7 +127,7 @@ fn learnings_for_file(root: &Path, file: &Path, session_id: &str) -> Option<Stri
         .and_then(|c| c.get_string("user.name").ok())
         .unwrap_or_default();
     for l in &shown {
-        events::learning_shown(root, session_id, &events::learning_id(&l.file_path), l.frontmatter.cost_minutes, l.frontmatter.cost_tokens);
+        events::learning_shown(root, session_id, &l.file_path, l.frontmatter.cost_minutes, l.frontmatter.cost_tokens);
     }
     (!shown.is_empty()).then(|| learnings_block(&rel, &shown, root, &me))
 }
@@ -466,9 +466,10 @@ mod tests {
     }
 
     #[test]
-    fn shown_learnings_are_logged() {
+    fn shown_learnings_are_logged_once_committed() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
+        let repo = git2::Repository::init(root).unwrap();
         let learnings = root.join(".knot/learnings");
         std::fs::create_dir_all(&learnings).unwrap();
         std::fs::write(
@@ -477,6 +478,16 @@ mod tests {
              touches:\n  - src/a.rs\ncost_minutes: 12\ncost_tokens: 27000\n---\n\n## Decided\nKeep it.\n",
         )
         .unwrap();
+
+        // Untracked: the session that wrote it would be crediting itself
+        assert!(learnings_for_file(root, &root.join("src/a.rs"), "writer").is_some());
+        assert!(events::all(root).is_empty());
+
+        let sig = git2::Signature::now("Maya", "m@x").unwrap();
+        let mut index = repo.index().unwrap();
+        index.add_path(Path::new(".knot/learnings/2026-10-09_keep.md")).unwrap();
+        let tree = repo.find_tree(index.write_tree().unwrap()).unwrap();
+        repo.commit(Some("HEAD"), &sig, &sig, "add learning", &tree, &[]).unwrap();
 
         let text = learnings_for_file(root, &root.join("src/a.rs"), "sess");
         assert!(text.is_some());

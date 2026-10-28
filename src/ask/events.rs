@@ -68,9 +68,15 @@ pub fn learning_id(file: &Path) -> String {
     file.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default()
 }
 
-/// Log that a repo learning was shown to the agent in the current session, with what it
-/// took to work out when that was recorded.
-pub fn learning_shown(root: &Path, session: &str, id: &str, cost_minutes: Option<u64>, cost_tokens: Option<u64>) {
+/// Log that the repo learning at `file` (absolute, or relative to `root`) was shown to the
+/// agent in the current session, with what it took to work out when that was recorded.
+/// Only a learning committed in HEAD counts: an untracked one is still the writing
+/// session's own note, and showing it back would credit that session with its own cost.
+pub fn learning_shown(root: &Path, session: &str, file: &Path, cost_minutes: Option<u64>, cost_tokens: Option<u64>) {
+    if !committed(root, file) {
+        return;
+    }
+    let id = learning_id(file);
     append(
         root,
         &Event {
@@ -82,11 +88,20 @@ pub fn learning_shown(root: &Path, session: &str, id: &str, cost_minutes: Option
             bytes_before: 0,
             bytes_after: 0,
             saved_tokens: 0,
-            learning: Some(id.to_string()),
+            learning: Some(id),
             cost_minutes,
             cost_tokens,
         },
     );
+}
+
+/// Whether `file` exists in the HEAD tree of the repo `root` is in.
+fn committed(root: &Path, file: &Path) -> bool {
+    let Ok(repo) = git2::Repository::discover(root) else { return false };
+    let Some(workdir) = repo.workdir().and_then(|w| std::fs::canonicalize(w).ok()) else { return false };
+    let Ok(full) = std::fs::canonicalize(root.join(file)) else { return false };
+    let Ok(rel) = full.strip_prefix(&workdir) else { return false };
+    repo.head().and_then(|h| h.peel_to_tree()).and_then(|t| t.get_path(rel)).is_ok()
 }
 
 /// Every event in the log, oldest first; lines that do not parse are skipped.
@@ -220,10 +235,45 @@ mod tests {
         assert!(all(linked_log.path()).is_empty());
     }
 
+    /// A git repo holding `rel`, committed when `commit` is set.
+    fn repo_with_file(rel: &str, commit: bool) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = git2::Repository::init(dir.path()).unwrap();
+        let path = dir.path().join(rel);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "x").unwrap();
+        if commit {
+            let sig = git2::Signature::now("Maya", "m@x").unwrap();
+            let mut index = repo.index().unwrap();
+            index.add_path(Path::new(rel)).unwrap();
+            let tree = repo.find_tree(index.write_tree().unwrap()).unwrap();
+            repo.commit(Some("HEAD"), &sig, &sig, "add", &tree, &[]).unwrap();
+        }
+        dir
+    }
+
+    #[test]
+    fn only_committed_learnings_are_logged() {
+        let rel = ".knot/learnings/2026-10-27-x.md";
+        let untracked = repo_with_file(rel, false);
+        learning_shown(untracked.path(), "s1", Path::new(rel), None, Some(9));
+        assert!(all(untracked.path()).is_empty());
+
+        let outside_git = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(outside_git.path().join(".knot/learnings")).unwrap();
+        std::fs::write(outside_git.path().join(rel), "x").unwrap();
+        learning_shown(outside_git.path(), "s1", Path::new(rel), None, Some(9));
+        assert!(all(outside_git.path()).is_empty());
+
+        let committed = repo_with_file(rel, true);
+        learning_shown(committed.path(), "s1", &committed.path().join(rel), None, Some(9));
+        assert_eq!(all(committed.path()).len(), 1);
+    }
+
     #[test]
     fn learning_event_round_trips() {
-        let dir = tempfile::tempdir().unwrap();
-        learning_shown(dir.path(), "s1", "2026-10-27-x", Some(12), Some(27_000));
+        let dir = repo_with_file(".knot/learnings/2026-10-27-x.md", true);
+        learning_shown(dir.path(), "s1", Path::new(".knot/learnings/2026-10-27-x.md"), Some(12), Some(27_000));
 
         let events = all(dir.path());
         assert_eq!(events.len(), 1);
