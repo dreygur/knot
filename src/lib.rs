@@ -9,7 +9,7 @@ pub mod hosts;
 pub mod jitv;
 pub mod logging;
 pub mod memory;
-pub mod shell;
+pub mod python_block;
 pub mod skills;
 pub mod tools;
 pub mod ui;

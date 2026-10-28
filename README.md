@@ -134,15 +134,13 @@ of each file alone.
 
 Commit the instruction files and `.knot/learnings/` so teammates and their agents get them.
 
-### Shell swaps (Claude Code, per repo)
+### Python block (Claude Code, per repo)
 
-When you pick Claude Code, `knot init` turns swaps on unless you pass `--no-swaps` (or uncheck
-the `swaps` row in the picker). It adds a `PreToolUse` Bash hook to `.claude/settings.local.json` in this repo only, and keeps that file
-out of git. With it on, a `grep` or `sed -n` range over indexed code is answered by
-`knot shell`, and the result starts with a `[knot] ran ...` line naming what ran and how to get
-the raw output (`KNOT_RAW=1 <your command>`). Python scripts that edit code are stopped and
-pointed at the edit tools. If another Bash hook (such as rtk) is already set up, Knot only stops
-the python edits. `knot status` shows `swaps=on|off|python-only`.
+When you pick Claude Code, `knot init` adds a `PreToolUse` Bash hook to
+`.claude/settings.local.json` in this repo only, and keeps that file out of git. It stops a
+python script that writes a code file the first time an agent runs it in a session and points
+the agent at its edit tools; the same command run again goes through. It only ever denies, so it
+runs beside any other Bash hook. `knot status` shows `python_block=on|off`.
 
 ---
 
@@ -348,8 +346,8 @@ input=$(cat); printf '%s' "$input" | knot statusline >/dev/null; printf '%s' "$i
 
 ## Share what Knot saved
 
-`knot card` draws a 1200×675 PNG of the tokens Knot saved: graph answers, learnings reused and
-`grep`/`sed` swaps, totalled across every repo it has worked in. It saves the file to
+`knot card` draws a 1200×675 PNG of the tokens Knot saved: graph answers and learnings reused,
+totalled across every repo it has worked in. It saves the file to
 `~/Downloads/knot-card-YYYY-MM-DD.png` (the current folder if there is no Downloads) and puts the
 image on the clipboard, so you can paste it straight into a post.
 
@@ -415,7 +413,7 @@ execute_skill(skill_name="format-module", variables=[{key:"file_path", value:"sr
 | Command | What it does |
 |---|---|
 | `knot` | Start the MCP server (stdio) |
-| `knot init [--agents <ids>] [--no-swaps] [-y\|--yes]` | Pick agents, write their instructions, add Knot to `PATH`, index the repo |
+| `knot init [--agents <ids>] [-y\|--yes]` | Pick agents, write their instructions, add Knot to `PATH`, index the repo |
 | `knot map [--max-dirs N] [--json]` | Directory clusters, hubs and the most central code |
 | `knot ask <question> [--source] [--json] [-n N]` | Ranked code answers with `file:line` spans, plus related learnings |
 | `knot grep <pattern> [-i] [--fixed] [--in <path>] [--json]` | Every match in indexed code, grouped by enclosing symbol |

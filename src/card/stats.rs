@@ -11,13 +11,12 @@ const MIN_TREND_DAYS: usize = 3;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct CardStats {
-    /// Graph answers + swaps + reused learnings.
+    /// Graph answers + reused learnings.
     pub tokens_saved: u64,
     /// 0.0..=1.0; `None` when nothing was read before.
     pub less_to_read: Option<f64>,
     pub graph: Tile,
     pub learnings: LearningTile,
-    pub swaps: Tile,
     pub label: String,
     pub trend: Trend,
 }
@@ -63,7 +62,6 @@ pub fn collect(repos: &[PathBuf], now: DateTime<Local>) -> CardStats {
     }
 
     let mut graph = Tile::default();
-    let mut swaps = Tile::default();
     let (mut before, mut after) = (0u64, 0u64);
     let mut sessions: HashSet<&str> = HashSet::new();
     let mut per_day: HashMap<NaiveDate, u64> = HashMap::new();
@@ -74,19 +72,15 @@ pub fn collect(repos: &[PathBuf], now: DateTime<Local>) -> CardStats {
         if !e.session.is_empty() {
             sessions.insert(&e.session);
         }
-        let tile = match e.kind {
-            EventKind::Answer => &mut graph,
-            EventKind::Swap => &mut swaps,
-            _ => {
-                if let Some(id) = e.learning.as_deref() {
-                    learnings.insert(id, e);
-                }
-                continue;
+        if e.kind != EventKind::Answer {
+            if let Some(id) = e.learning.as_deref() {
+                learnings.insert(id, e);
             }
-        };
+            continue;
+        }
         let saved = e.saved_tokens as u64;
-        tile.tokens = tile.tokens.saturating_add(saved);
-        tile.count = tile.count.saturating_add(1);
+        graph.tokens = graph.tokens.saturating_add(saved);
+        graph.count = graph.count.saturating_add(1);
         before = before.saturating_add(e.bytes_before);
         after = after.saturating_add(e.bytes_after);
         add(per_day.entry(day_of(e.ts_ms)).or_default(), saved);
@@ -101,7 +95,7 @@ pub fn collect(repos: &[PathBuf], now: DateTime<Local>) -> CardStats {
         add(per_day.entry(day_of(e.ts_ms)).or_default(), tokens);
     }
 
-    let tokens_saved = graph.tokens.saturating_add(swaps.tokens).saturating_add(learned.tokens);
+    let tokens_saved = graph.tokens.saturating_add(learned.tokens);
     let today = now.date_naive();
     let first_day = all.first().map(|e| day_of(e.ts_ms));
     let trend = match first_day {
@@ -125,7 +119,6 @@ pub fn collect(repos: &[PathBuf], now: DateTime<Local>) -> CardStats {
         less_to_read: (before > 0).then(|| (1.0 - after as f64 / before as f64).clamp(0.0, 1.0)),
         graph,
         learnings: learned,
-        swaps,
         label: label(capped, first_day, today),
         trend,
     }
@@ -175,7 +168,6 @@ mod tests {
             session: "s1".to_string(),
             kind,
             tool: "t".to_string(),
-            command: None,
             bytes_before: 0,
             bytes_after: 0,
             saved_tokens: saved,
@@ -201,25 +193,23 @@ mod tests {
     }
 
     #[test]
-    fn headline_is_the_sum_of_the_three_tiles() {
+    fn headline_is_the_sum_of_the_tiles() {
         let repo = repo_with(&[
             event(EventKind::Answer, 1, 2_000),
             event(EventKind::Answer, 1, 600),
-            event(EventKind::Swap, 1, 400),
             learning("a", 1, Some(27_000)),
             learning("a", 1, Some(27_000)),
             learning("b", 1, None),
         ]);
         let stats = collect(&[repo.path().to_path_buf()], now());
-        assert_eq!(stats.tokens_saved, 30_000);
+        assert_eq!(stats.tokens_saved, 29_600);
         assert_eq!(stats.learnings.count, 2);
         assert_eq!(stats.learnings.tokens, 27_000);
         assert_eq!(stats.graph, Tile { tokens: 2_600, count: 2 });
-        assert_eq!(stats.swaps, Tile { tokens: 400, count: 1 });
     }
 
     #[test]
-    fn less_to_read_uses_answers_and_swaps_only() {
+    fn less_to_read_uses_answers_only() {
         let mut answer = event(EventKind::Answer, 1, 10);
         answer.bytes_before = 1_000;
         answer.bytes_after = 250;
@@ -251,7 +241,6 @@ mod tests {
         assert_eq!(stats.less_to_read, None);
         assert_eq!(stats.graph, Tile::default());
         assert_eq!(stats.learnings, LearningTile::default());
-        assert_eq!(stats.swaps, Tile::default());
         assert_eq!(stats.trend, Trend::PerSession(0));
     }
 
@@ -289,9 +278,9 @@ mod tests {
     #[test]
     fn old_events_beyond_the_tail_still_count() {
         let mut oldest = event(EventKind::Answer, 20, 1_000);
-        oldest.command = Some("x".repeat(100));
+        oldest.tool = "x".repeat(100);
         let mut filler = event(EventKind::Answer, 1, 1);
-        filler.command = Some("y".repeat(1_000));
+        filler.tool = "y".repeat(1_000);
         let mut batch = vec![oldest];
         batch.extend(std::iter::repeat_with(|| filler.clone()).take(2_500));
         let repo = repo_with(&batch);
@@ -388,7 +377,7 @@ mod tests {
         let repo = repo_with(&[
             event(EventKind::Answer, 4, usize::MAX - 1),
             event(EventKind::Answer, 2, 10),
-            event(EventKind::Swap, 0, usize::MAX),
+            event(EventKind::Answer, 0, usize::MAX),
             learning("a", 0, Some(u64::MAX)),
         ]);
         let stats = collect(&[repo.path().to_path_buf()], now());
@@ -401,10 +390,10 @@ mod tests {
 
     #[test]
     fn less_to_read_is_never_negative() {
-        let mut swap = event(EventKind::Swap, 1, 0);
-        swap.bytes_before = 100;
-        swap.bytes_after = 400;
-        let repo = repo_with(&[swap]);
+        let mut answer = event(EventKind::Answer, 1, 0);
+        answer.bytes_before = 100;
+        answer.bytes_after = 400;
+        let repo = repo_with(&[answer]);
         assert_eq!(collect(&[repo.path().to_path_buf()], now()).less_to_read, Some(0.0));
     }
 }

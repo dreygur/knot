@@ -172,12 +172,8 @@ pub fn repo_summary(root: &Path) -> String {
         Ok(s) => format!("{}, current", count(s.symbols, "symbol")),
     };
     let learnings = crate::engine::learnings::active_learnings(root).map_or(0, |l| l.len());
-    let swaps = match crate::hooks::repo_swaps(root) {
-        Some(crate::hooks::SwapInstall::Installed) => "on",
-        Some(crate::hooks::SwapInstall::Deferred { .. }) => "python-only",
-        None => "off",
-    };
-    format!("[KNOT] repo    {}\n        index={index}  learnings={learnings}\n        swaps={swaps}\n", root.display())
+    let python_block = if crate::hooks::repo_python_block(root) { "on" } else { "off" };
+    format!("[KNOT] repo    {}\n        index={index}  learnings={learnings}\n        python_block={python_block}\n", root.display())
 }
 
 /// The code graph for `root`, reparsing only files changed since the last load, so
@@ -251,7 +247,7 @@ mod tests {
 
         load_graph(dir.path()).unwrap();
         let summary = repo_summary(dir.path());
-        assert!(summary.contains("index=2 symbols, current") && summary.contains("learnings=0") && summary.contains("swaps=off"), "{summary}");
+        assert!(summary.contains("index=2 symbols, current") && summary.contains("learnings=0") && summary.contains("python_block=off"), "{summary}");
 
         write(dir.path(), "src/b.rs", "pub fn gamma() {}\n");
         assert!(repo_summary(dir.path()).contains("1 changed file reindex"));

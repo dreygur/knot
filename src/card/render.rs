@@ -108,8 +108,6 @@ fn svg(view: &CardView) -> String {
         ("graph_count", counted(s.graph.count, "answer")),
         ("learning_tokens", saved(s.learnings.tokens)),
         ("learning_count", esc(&learning_count)),
-        ("swap_tokens", saved(s.swaps.tokens)),
-        ("swap_count", counted(s.swaps.count, "run")),
         ("chips", chips(&view.agents)),
     ];
     fill_slots(TEMPLATE, |key| slots.iter().find(|(k, _)| *k == key).map(|(_, v)| v.clone()))
@@ -287,10 +285,6 @@ mod tests {
                     tokens: 40_000,
                     minutes: 660,
                 },
-                swaps: Tile {
-                    tokens: 1_500_000,
-                    count: 1_592,
-                },
                 label: "last 30 days".into(),
                 trend: Trend::Daily(vec![1, 4, 2, 9, 12, 30, 41]),
             },
@@ -357,9 +351,8 @@ mod tests {
             tokens: 500,
             minutes: 0,
         };
-        view.stats.swaps.count = 1;
         let svg = drawn(&view);
-        for line in [">1 answer<", ">1 learning<", ">1 run<"] {
+        for line in [">1 answer<", ">1 learning<"] {
             assert!(svg.contains(line), "missing {line}");
         }
         assert!(drawn(&sample()).contains(">1,931 answers<"));

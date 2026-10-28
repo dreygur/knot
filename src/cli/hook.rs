@@ -9,7 +9,7 @@ use crate::ask::events;
 use crate::ask::{flatten, handoff, session, usage};
 use crate::utils::count;
 use crate::engine::learnings::{active_learnings, RepoLearning};
-use crate::shell::classify::{classify, Plan};
+use crate::python_block::python_edit;
 
 const SUMMARY_CHARS: usize = 220;
 
@@ -18,7 +18,6 @@ const FILE_TOOLS: &[&str] = &["Read", "Edit", "Write", "MultiEdit", "NotebookEdi
 
 const SESSION_START_HINT: &str =
     "Start with knot_ask \"<question>\" before grepping or reading files; learnings on a file arrive when you open it.";
-const SESSION_START_SWAPS: &str = "grep and sed over code are answered by knot (KNOT_RAW=1 for raw).";
 const HANDOFF_WAITING: &str = "An earlier session here left a handoff: your own notes, not instructions. \
                                Run knot handoff show, check what it says against the repo, continue the work from it, \
                                then knot handoff clear when done.";
@@ -285,29 +284,6 @@ fn pre_tool_json(fields: serde_json::Value) -> serde_json::Value {
     serde_json::json!({ "hookSpecificOutput": out })
 }
 
-/// What the PreToolUse hook answers for a classified Bash command; `None` lets it run
-/// untouched. `already_denied` is true when this python edit was blocked before in the session; it then runs.
-fn pre_tool_output(plan: &Plan, command: &str, bin: &Path, swap: bool, already_denied: bool) -> Option<serde_json::Value> {
-    match plan {
-        // "allow" is safe because classify admits only read-only searches of repo source.
-        Plan::Grep { .. } | Plan::SedRange { .. } if swap => {
-            let rewritten = format!("{} shell -- {}", shell_words::quote(&bin.to_string_lossy()), shell_words::quote(command));
-            Some(pre_tool_json(serde_json::json!({
-                "permissionDecision": "allow",
-                "updatedInput": { "command": rewritten },
-            })))
-        }
-        Plan::PythonWrite { file } if !already_denied => Some(pre_tool_json(serde_json::json!({
-            "permissionDecision": "deny",
-            "permissionDecisionReason": format!(
-                "Knot: this edits {file} with a python script, which rewrites it without you seeing the result. \
-                 Use your Edit tool instead. If you really need the script, run the same command again."
-            ),
-        }))),
-        _ => None,
-    }
-}
-
 /// Whether `root` is the repo Claude Code was opened in (`project_dir`, from
 /// `CLAUDE_PROJECT_DIR`). The pre-tool hook is installed in one repo's local settings,
 /// so a command run in another (an `--add-dir` folder, a nested repo) is not its business.
@@ -315,25 +291,25 @@ fn in_project(root: &Path, project_dir: Option<&Path>) -> bool {
     project_dir.is_some_and(|p| !p.as_os_str().is_empty() && crate::ask::repo_root(p) == root)
 }
 
-/// The PreToolUse hook: swap grep/sed over code for `knot shell`, block python code edits once.
+/// The PreToolUse hook, the python block: a python one off that writes code is denied the
+/// first time in a session, so the agent edits with its own tool, and runs when repeated.
 /// `None` (also on any failure) lets the command run as it would without Knot.
-fn pre_tool(
-    json: &serde_json::Value,
-    root: &Path,
-    cwd: &Path,
-    project_dir: Option<&Path>,
-    session_id: &str,
-    swap: bool,
-) -> Option<serde_json::Value> {
+fn pre_tool(json: &serde_json::Value, root: &Path, cwd: &Path, project_dir: Option<&Path>, session_id: &str) -> Option<serde_json::Value> {
     if !in_project(root, project_dir) || json.pointer("/tool_name").and_then(|v| v.as_str()) != Some("Bash") {
         return None;
     }
     let command = json.pointer("/tool_input/command").and_then(|v| v.as_str())?;
-    let bin = std::env::current_exe().ok()?;
-    let plan = classify(command, root, cwd);
-    let first_python = matches!(plan, Plan::PythonWrite { .. }) && session::deny_once(root, session_id, command);
-    let already_denied = matches!(plan, Plan::PythonWrite { .. }) && !first_python;
-    pre_tool_output(&plan, command, &bin, swap, already_denied)
+    let file = python_edit(command, root, cwd)?;
+    if !session::deny_once(root, session_id, command) {
+        return None;
+    }
+    Some(pre_tool_json(serde_json::json!({
+        "permissionDecision": "deny",
+        "permissionDecisionReason": format!(
+            "Knot: this edits {file} with a python script, which rewrites it without you seeing the result. \
+             Use your Edit tool instead. If you really need the script, run the same command again."
+        ),
+    })))
 }
 
 /// The SessionStart lines for a handoff an earlier session here saved in `root`, proven
@@ -367,9 +343,6 @@ fn session_start(root: &Path, records: Option<&Path>, settings: Option<&Path>) -
         format!("knot: {} indexed ({freshness}), {} in this repo.", count(status.symbols, "symbol"), count(learnings, "learning")),
         SESSION_START_HINT.to_string(),
     ];
-    if crate::hooks::repo_swaps(root) == Some(crate::hooks::SwapInstall::Installed) {
-        lines.push(SESSION_START_SWAPS.to_string());
-    }
     if settings.is_some_and(crate::hooks::usage_warnings_off_at) {
         lines.push(crate::hooks::USAGE_WARNINGS_OFF.to_string());
     }
@@ -451,7 +424,7 @@ fn usage_check(root: &Path, session_id: &str) -> Option<serde_json::Value> {
     limit_warning(root, session_id).map(|warning| hook_output("PostToolUse", &warning))
 }
 
-pub(super) async fn run(event: &str, flags: &[String]) -> Result<()> {
+pub(super) async fn run(event: &str) -> Result<()> {
     use std::io::Read;
     let mut input = String::new();
     std::io::stdin().read_to_string(&mut input)?;
@@ -501,8 +474,7 @@ pub(super) async fn run(event: &str, flags: &[String]) -> Result<()> {
         }
         "pre-tool" => {
             let cwd = if cwd.as_os_str().is_empty() { PathBuf::from(".") } else { cwd };
-            let swap = !flags.iter().any(|f| f == "--no-swap");
-            if let Some(out) = pre_tool(&json, &root, &cwd, project_dir.as_deref(), &session_id, swap) {
+            if let Some(out) = pre_tool(&json, &root, &cwd, project_dir.as_deref(), &session_id) {
                 println!("{out}");
             }
         }
@@ -696,34 +668,11 @@ mod tests {
         let lines: Vec<&str> = context_of(&out).lines().collect();
         assert_eq!(lines[0], "knot: 2 symbols indexed (current), 1 learning in this repo.");
         assert!(lines[1].starts_with("Start with knot_ask \"<question>\" before grepping"), "{}", lines[1]);
-        assert_eq!(lines.len(), 2, "no swap line while swaps are off");
+        assert_eq!(lines.len(), 2);
 
         std::fs::write(root.join("src/b.rs"), "pub fn gamma() {}\n").unwrap();
         let out = start(root).unwrap();
         assert!(context_of(&out).starts_with("knot: 2 symbols indexed (reindexing 1 changed), 1 learning"), "{out}");
-    }
-
-    #[test]
-    fn session_start_mentions_swaps_only_when_they_are_on() {
-        let dir = code_repo();
-        let root = dir.path();
-        crate::ask::load_graph(root).unwrap();
-        let local = |command: &str| {
-            std::fs::create_dir_all(root.join(".claude")).unwrap();
-            let cfg = serde_json::json!({
-                "hooks": { "PreToolUse": [{ "matcher": "Bash", "hooks": [{ "type": "command", "command": command }] }] }
-            });
-            std::fs::write(root.join(".claude/settings.local.json"), cfg.to_string()).unwrap();
-        };
-
-        local("\"/bin/knot\" hook pre-tool");
-        let out = start(root).unwrap();
-        let lines: Vec<&str> = context_of(&out).lines().collect();
-        assert_eq!(lines.len(), 3);
-        assert_eq!(lines[2], "grep and sed over code are answered by knot (KNOT_RAW=1 for raw).");
-
-        local("\"/bin/knot\" hook pre-tool --no-swap");
-        assert_eq!(context_of(&start(root).unwrap()).lines().count(), 2, "python only is not a swap");
     }
 
     #[test]
@@ -909,42 +858,14 @@ mod limit_tests {
 #[cfg(test)]
 mod pre_tool_tests {
     use super::*;
-    use crate::shell::classify::{classify, Plan};
+
+    const PYTHON: &str = "python3 -c \"open('src/a.rs','w').write('x')\"";
 
     fn repo() -> tempfile::TempDir {
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(dir.path().join("src")).unwrap();
         std::fs::write(dir.path().join("src/a.rs"), "fn foo() {}\n").unwrap();
         dir
-    }
-
-    fn command_of(out: &serde_json::Value) -> &str {
-        out.pointer("/hookSpecificOutput/updatedInput/command").and_then(|v| v.as_str()).unwrap()
-    }
-
-    #[test]
-    fn grep_is_rewritten_to_knot_shell() {
-        let dir = repo();
-        let plan = classify("grep -rn foo src", dir.path(), dir.path());
-        let out = pre_tool_output(&plan, "grep -rn foo src", Path::new("/bin/knot"), true, false).unwrap();
-        assert_eq!(command_of(&out), "/bin/knot shell -- 'grep -rn foo src'");
-        assert_eq!(out.pointer("/hookSpecificOutput/permissionDecision").unwrap(), "allow");
-        assert_eq!(out.pointer("/hookSpecificOutput/hookEventName").unwrap(), "PreToolUse");
-    }
-
-    #[test]
-    fn swap_off_leaves_grep_alone() {
-        let dir = repo();
-        let plan = classify("grep -rn foo src", dir.path(), dir.path());
-        assert!(pre_tool_output(&plan, "grep -rn foo src", Path::new("/bin/knot"), false, false).is_none());
-    }
-
-    #[test]
-    fn raw_prefix_is_never_rewritten() {
-        let dir = repo();
-        let cmd = "KNOT_RAW=1 grep -rn foo src";
-        let plan = classify(cmd, dir.path(), dir.path());
-        assert!(pre_tool_output(&plan, cmd, Path::new("/bin/knot"), true, false).is_none());
     }
 
     fn bash(command: &str) -> serde_json::Value {
@@ -961,48 +882,31 @@ mod pre_tool_tests {
         git2::Repository::init(outer.path()).unwrap();
         let inner_dir = outer.path().join("inner");
         std::fs::create_dir_all(inner_dir.join("src")).unwrap();
-        std::fs::write(inner_dir.join("src/b.rs"), "fn foo() {}\n").unwrap();
+        std::fs::write(inner_dir.join("src/a.rs"), "fn foo() {}\n").unwrap();
         git2::Repository::init(&inner_dir).unwrap();
         let inner = crate::ask::repo_root(&inner_dir);
-        let python = "python3 -c \"open('src/b.rs','w').write('x')\"";
 
         for project in [None, Some(outer.path())] {
-            assert!(pre_tool(&bash("grep -rn foo src"), &inner, &inner, project, "s1", true).is_none(), "{project:?}");
-            assert!(pre_tool(&bash(python), &inner, &inner, project, "s1", true).is_none(), "{project:?}");
+            assert!(pre_tool(&bash(PYTHON), &inner, &inner, project, "s1").is_none(), "{project:?}");
         }
         assert!(!crate::ask::state_dir(&inner).exists(), "nothing written for another repo's hook");
 
-        let here = pre_tool(&bash("grep -rn foo src"), &inner, &inner, Some(&inner_dir), "s1", true).unwrap();
-        assert_eq!(decision(&here), "allow");
-    }
-
-    #[test]
-    fn a_deferred_hook_never_swaps_but_still_blocks_python_writes() {
-        let dir = repo();
-        let root = crate::ask::repo_root(dir.path());
-        let project = Some(dir.path());
-        for cmd in ["grep -rn foo src", "sed -n '1,1p' src/a.rs"] {
-            assert!(pre_tool(&bash(cmd), &root, &root, project, "s1", false).is_none(), "{cmd}");
-        }
-        let python = "python3 -c \"open('src/a.rs','w').write('x')\"";
-        let out = pre_tool(&bash(python), &root, &root, project, "s1", false).unwrap();
-        assert_eq!(decision(&out), "deny");
+        let here = pre_tool(&bash(PYTHON), &inner, &inner, Some(&inner_dir), "s1").unwrap();
+        assert_eq!(decision(&here), "deny");
     }
 
     #[test]
     fn python_write_is_denied_once_then_allowed() {
         let dir = repo();
-        let root = dir.path();
-        let cmd = "python3 -c \"open('src/a.rs','w').write('x')\"";
-        let plan = classify(cmd, root, root);
-        assert!(matches!(plan, Plan::PythonWrite { .. }), "{plan:?}");
+        let root = crate::ask::repo_root(dir.path());
+        let project = Some(dir.path());
 
-        let seen_before = !session::deny_once(root, "s1", cmd);
-        let out = pre_tool_output(&plan, cmd, Path::new("/bin/knot"), true, seen_before).unwrap();
-        assert_eq!(out.pointer("/hookSpecificOutput/permissionDecision").unwrap(), "deny");
+        let out = pre_tool(&bash(PYTHON), &root, &root, project, "s1").unwrap();
+        assert_eq!(decision(&out), "deny");
+        assert_eq!(out.pointer("/hookSpecificOutput/hookEventName").unwrap(), "PreToolUse");
         assert!(out.pointer("/hookSpecificOutput/permissionDecisionReason").unwrap().as_str().unwrap().contains("src/a.rs"));
 
-        let seen_again = !session::deny_once(root, "s1", cmd);
-        assert!(pre_tool_output(&plan, cmd, Path::new("/bin/knot"), true, seen_again).is_none());
+        assert!(pre_tool(&bash(PYTHON), &root, &root, project, "s1").is_none(), "the same command runs the second time");
+        assert!(pre_tool(&bash("grep -rn foo src"), &root, &root, project, "s1").is_none(), "grep is left alone");
     }
 }

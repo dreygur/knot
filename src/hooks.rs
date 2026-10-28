@@ -141,24 +141,12 @@ fn merge_settings(settings: &Path, bin: &str) -> Result<bool> {
     Ok(true)
 }
 
-/// What `register_repo` left in a repo's `.claude/settings.local.json`.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SwapInstall {
-    /// Knot's hook rewrites grep and sed over code and stops python code edits.
-    Installed,
-    /// Another hook already rewrites Bash, so Knot's only stops python code edits.
-    Deferred { to: String },
-}
-
 const LOCAL_SETTINGS: &str = ".claude/settings.local.json";
 
-/// Install the `PreToolUse` Bash hook for this repo only, in `<repo>/.claude/settings.local.json`.
-/// Another tool's Bash hook anywhere it could apply makes Knot's stop at the python block.
-pub fn register_repo(repo_root: &Path, bin_path: &Path) -> Result<SwapInstall> {
-    register_repo_in(repo_root, bin_path, &home_dir()?)
-}
-
-fn register_repo_in(repo_root: &Path, bin_path: &Path, home: &Path) -> Result<SwapInstall> {
+/// Install the python block, a `PreToolUse` Bash hook, for this repo only, in
+/// `<repo>/.claude/settings.local.json`. It only ever denies a command, so it
+/// runs beside any other Bash hook.
+pub fn register_repo(repo_root: &Path, bin_path: &Path) -> Result<()> {
     let local = repo_root.join(LOCAL_SETTINGS);
     // A hostile clone can commit `.claude` or the settings file as a symlink
     refuse_symlink(&repo_root.join(".claude"))?;
@@ -166,20 +154,7 @@ fn register_repo_in(repo_root: &Path, bin_path: &Path, home: &Path) -> Result<Sw
     let mut cfg = read_settings(&local)?;
     let before = cfg.clone();
 
-    let mut rival = None;
-    for path in [local.clone(), repo_root.join(".claude/settings.json"), home.join(".claude/settings.json")] {
-        let found = if path == local { other_bash_hook(&cfg) } else { other_bash_hook(&read_settings(&path)?) };
-        if found.is_some() {
-            rival = found;
-            break;
-        }
-    }
-    let bin = format!("\"{}\"", bin_path.to_string_lossy());
-    let (command, result) = match rival {
-        Some(to) => (format!("{bin} hook pre-tool --no-swap"), SwapInstall::Deferred { to }),
-        None => (format!("{bin} hook pre-tool"), SwapInstall::Installed),
-    };
-
+    let command = format!("\"{}\" hook pre-tool", bin_path.to_string_lossy());
     if !cfg.get("hooks").is_some_and(|h| h.is_object()) {
         cfg["hooks"] = json!({});
     }
@@ -201,8 +176,7 @@ fn register_repo_in(repo_root: &Path, bin_path: &Path, home: &Path) -> Result<Sw
         content.push('\n');
         write_atomic(&local, &content)?;
     }
-    ignore_in_git(repo_root)?;
-    Ok(result)
+    ignore_in_git(repo_root)
 }
 
 /// A missing file is `{}`; one that cannot be read or is not a JSON object is an error
@@ -217,22 +191,6 @@ pub(crate) fn read_settings(path: &Path) -> Result<serde_json::Value> {
         Ok(v) if v.is_object() => Ok(v),
         Ok(_) => anyhow::bail!("{} is not a JSON object; Knot leaves it alone until it is fixed", path.display()),
         Err(e) => anyhow::bail!("{} is not valid JSON ({e}); Knot leaves it alone until it is fixed", path.display()),
-    }
-}
-
-/// The command of the first `PreToolUse` hook in `cfg` that is not Knot's and runs for Bash.
-fn other_bash_hook(cfg: &serde_json::Value) -> Option<String> {
-    let entries = cfg.pointer("/hooks/PreToolUse")?.as_array()?;
-    entries.iter().filter(|e| !is_knot_entry(e) && matches_bash(e)).find_map(|e| {
-        e.get("hooks")?.as_array()?.iter().find_map(|h| h.get("command")?.as_str().map(String::from))
-    })
-}
-
-/// A matcher is a `|` list of tool names; none, empty or `*` means every tool.
-fn matches_bash(entry: &serde_json::Value) -> bool {
-    match entry.get("matcher").and_then(|m| m.as_str()) {
-        None | Some("") | Some("*") => true,
-        Some(m) => m.split('|').any(|name| name.trim() == "Bash"),
     }
 }
 
@@ -262,20 +220,12 @@ fn ignore_in_git(repo_root: &Path) -> Result<()> {
     write_atomic(&exclude, &content)
 }
 
-/// What `register_repo` installed here, for `knot status`; `None` when nothing is.
-pub fn repo_swaps(repo_root: &Path) -> Option<SwapInstall> {
-    let cfg = read_settings(&repo_root.join(LOCAL_SETTINGS)).ok()?;
-    let ours = cfg.pointer("/hooks/PreToolUse")?.as_array()?.iter().find(|e| is_knot_entry(e))?;
-    let command = ours.pointer("/hooks/0/command")?.as_str()?;
-    if !command.ends_with("--no-swap") {
-        return Some(SwapInstall::Installed);
-    }
-    // The rival is whatever the settings files show now; it may have gone since
-    let to = other_bash_hook(&cfg)
-        .or_else(|| other_bash_hook(&read_settings(&repo_root.join(".claude/settings.json")).ok()?))
-        .or_else(|| home_dir().ok().and_then(|h| other_bash_hook(&read_settings(&h.join(".claude/settings.json")).ok()?)))
-        .unwrap_or_default();
-    Some(SwapInstall::Deferred { to })
+/// Whether `register_repo` installed the python block here, for `knot status`.
+pub fn repo_python_block(repo_root: &Path) -> bool {
+    read_settings(&repo_root.join(LOCAL_SETTINGS))
+        .ok()
+        .and_then(|cfg| Some(cfg.pointer("/hooks/PreToolUse")?.as_array()?.iter().any(is_knot_entry)))
+        .unwrap_or(false)
 }
 
 #[cfg(test)]
@@ -284,40 +234,22 @@ mod tests {
 
     const BIN: &str = "/bin/knot";
 
-    fn project_with_bash_hook(command: &str) -> tempfile::TempDir {
-        let repo = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(repo.path().join(".claude")).unwrap();
-        std::fs::write(
-            repo.path().join(".claude/settings.json"),
-            json!({"hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": [{"type": "command", "command": command}]}]}})
-                .to_string(),
-        )
-        .unwrap();
-        repo
-    }
-
     #[test]
     fn register_repo_writes_only_the_local_settings() {
         let repo = tempfile::tempdir().unwrap();
-        let home = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(home.path().join(".claude")).unwrap();
-        std::fs::write(home.path().join(".claude/settings.json"), "{\"theme\":\"dark\"}\n").unwrap();
 
-        let got = register_repo_in(repo.path(), Path::new(BIN), home.path()).unwrap();
+        register_repo(repo.path(), Path::new(BIN)).unwrap();
 
-        assert_eq!(got, SwapInstall::Installed);
         let cfg = read(&repo.path().join(".claude/settings.local.json"));
         assert_eq!(commands(&cfg, "PreToolUse"), vec!["\"/bin/knot\" hook pre-tool"]);
         assert_eq!(cfg.pointer("/hooks/PreToolUse/0/matcher").unwrap(), "Bash");
-        assert_eq!(std::fs::read_to_string(home.path().join(".claude/settings.json")).unwrap(), "{\"theme\":\"dark\"}\n");
         assert!(!repo.path().join(".claude/settings.json").exists());
-        assert_eq!(repo_swaps(repo.path()), Some(SwapInstall::Installed));
+        assert!(repo_python_block(repo.path()));
     }
 
     #[test]
     fn rerun_keeps_one_knot_entry() {
         let repo = tempfile::tempdir().unwrap();
-        let home = tempfile::tempdir().unwrap();
         let local = repo.path().join(".claude/settings.local.json");
         std::fs::create_dir_all(repo.path().join(".claude")).unwrap();
         std::fs::write(
@@ -327,40 +259,26 @@ mod tests {
         )
         .unwrap();
 
-        register_repo_in(repo.path(), Path::new("/old/knot"), home.path()).unwrap();
-        register_repo_in(repo.path(), Path::new(BIN), home.path()).unwrap();
+        register_repo(repo.path(), Path::new("/old/knot")).unwrap();
+        register_repo(repo.path(), Path::new(BIN)).unwrap();
 
         // The user's own hook is theirs to decide about; ours is replaced, not doubled
         let cmds = commands(&read(&local), "PreToolUse");
         assert_eq!(cmds.iter().filter(|c| c.contains("hook pre-tool")).count(), 1, "{cmds:?}");
-        assert!(cmds.contains(&"\"/bin/knot\" hook pre-tool --no-swap".to_string()), "{cmds:?}");
+        assert!(cmds.contains(&"\"/bin/knot\" hook pre-tool".to_string()), "{cmds:?}");
         assert!(cmds.contains(&"mine --check".to_string()));
-    }
-
-    #[test]
-    fn swap_skipped_when_another_bash_rewriter_exists() {
-        let repo = project_with_bash_hook("rtk hook pre-tool");
-        let home = tempfile::tempdir().unwrap();
-
-        let got = register_repo_in(repo.path(), Path::new(BIN), home.path()).unwrap();
-
-        assert_eq!(got, SwapInstall::Deferred { to: "rtk hook pre-tool".to_string() });
-        let cmds = commands(&read(&repo.path().join(".claude/settings.local.json")), "PreToolUse");
-        assert_eq!(cmds, vec!["\"/bin/knot\" hook pre-tool --no-swap"]);
-        assert_eq!(repo_swaps(repo.path()), Some(got));
     }
 
     #[test]
     fn local_settings_are_git_ignored() {
         let repo = tempfile::tempdir().unwrap();
-        let home = tempfile::tempdir().unwrap();
         let git = git2::Repository::init(repo.path()).unwrap();
 
-        register_repo_in(repo.path(), Path::new(BIN), home.path()).unwrap();
+        register_repo(repo.path(), Path::new(BIN)).unwrap();
         assert!(git.status_should_ignore(Path::new(".claude/settings.local.json")).unwrap());
 
         // A second run does not list it twice (none at all when a global ignore already covers it)
-        register_repo_in(repo.path(), Path::new(BIN), home.path()).unwrap();
+        register_repo(repo.path(), Path::new(BIN)).unwrap();
         let exclude = std::fs::read_to_string(repo.path().join(".git/info/exclude")).unwrap();
         assert!(exclude.matches(".claude/settings.local.json").count() <= 1, "{exclude}");
     }
@@ -376,7 +294,6 @@ mod tests {
     #[test]
     fn local_settings_are_git_ignored_in_a_linked_worktree() {
         let main = tempfile::tempdir().unwrap();
-        let home = tempfile::tempdir().unwrap();
         let git = git2::Repository::init(main.path()).unwrap();
         let sig = git2::Signature::now("Maya", "m@x").unwrap();
         let tree = git.find_tree(git.index().unwrap().write_tree().unwrap()).unwrap();
@@ -387,7 +304,7 @@ mod tests {
         without_global_ignore(&git, main.path());
         assert!(!git2::Repository::open(&wt_path).unwrap().status_should_ignore(Path::new(LOCAL_SETTINGS)).unwrap());
 
-        register_repo_in(&wt_path, Path::new(BIN), home.path()).unwrap();
+        register_repo(&wt_path, Path::new(BIN)).unwrap();
 
         let wt = git2::Repository::open(&wt_path).unwrap();
         assert!(wt.status_should_ignore(Path::new(LOCAL_SETTINGS)).unwrap());
@@ -400,7 +317,6 @@ mod tests {
     fn an_unreadable_git_exclude_is_an_error_not_wiped() {
         use std::os::unix::fs::PermissionsExt;
         let repo = tempfile::tempdir().unwrap();
-        let home = tempfile::tempdir().unwrap();
         let git = git2::Repository::init(repo.path()).unwrap();
         without_global_ignore(&git, repo.path());
         let exclude = repo.path().join(".git/info/exclude");
@@ -408,7 +324,7 @@ mod tests {
         std::fs::write(&exclude, "keep-me/\n").unwrap();
         std::fs::set_permissions(&exclude, std::fs::Permissions::from_mode(0o000)).unwrap();
 
-        let result = register_repo_in(repo.path(), Path::new(BIN), home.path());
+        let result = register_repo(repo.path(), Path::new(BIN));
 
         std::fs::set_permissions(&exclude, std::fs::Permissions::from_mode(0o644)).unwrap();
         let err = result.unwrap_err().to_string();
@@ -432,37 +348,25 @@ mod tests {
     #[test]
     fn malformed_local_settings_are_an_error_and_left_alone() {
         let repo = tempfile::tempdir().unwrap();
-        let home = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(repo.path().join(".claude")).unwrap();
         let local = repo.path().join(".claude/settings.local.json");
         let broken = "{\"permissions\": {\"allow\": [\"x\"],},}\n";
         std::fs::write(&local, broken).unwrap();
 
-        let err = register_repo_in(repo.path(), Path::new(BIN), home.path()).unwrap_err().to_string();
+        let err = register_repo(repo.path(), Path::new(BIN)).unwrap_err().to_string();
 
         assert!(err.contains("settings.local.json"), "{err}");
         assert_eq!(std::fs::read_to_string(&local).unwrap(), broken);
     }
 
     #[test]
-    fn a_broken_rival_file_is_an_error_not_no_rival() {
-        let repo = project_with_bash_hook("rtk hook pre-tool");
-        std::fs::write(repo.path().join(".claude/settings.json"), "{ nope").unwrap();
-        let home = tempfile::tempdir().unwrap();
-        let err = register_repo_in(repo.path(), Path::new(BIN), home.path()).unwrap_err().to_string();
-        assert!(err.contains("settings.json"), "{err}");
-        assert!(!repo.path().join(".claude/settings.local.json").exists());
-    }
-
-    #[test]
     fn a_non_object_top_level_is_an_error_not_a_panic() {
         let repo = tempfile::tempdir().unwrap();
-        let home = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(repo.path().join(".claude")).unwrap();
         let local = repo.path().join(".claude/settings.local.json");
         std::fs::write(&local, "[]").unwrap();
 
-        let err = register_repo_in(repo.path(), Path::new(BIN), home.path()).unwrap_err().to_string();
+        let err = register_repo(repo.path(), Path::new(BIN)).unwrap_err().to_string();
 
         assert!(err.contains("not a JSON object"), "{err}");
         assert_eq!(std::fs::read_to_string(&local).unwrap(), "[]");
@@ -472,12 +376,11 @@ mod tests {
     #[test]
     fn symlinked_claude_folder_or_settings_file_is_refused() {
         let outside = tempfile::tempdir().unwrap();
-        let home = tempfile::tempdir().unwrap();
 
         // `.claude` itself a link to a folder elsewhere
         let repo = tempfile::tempdir().unwrap();
         std::os::unix::fs::symlink(outside.path(), repo.path().join(".claude")).unwrap();
-        let err = register_repo_in(repo.path(), Path::new(BIN), home.path()).unwrap_err().to_string();
+        let err = register_repo(repo.path(), Path::new(BIN)).unwrap_err().to_string();
         assert!(err.contains("symlink"), "{err}");
         assert_eq!(std::fs::read_dir(outside.path()).unwrap().count(), 0, "nothing written through the link");
 
@@ -487,7 +390,7 @@ mod tests {
         let target = outside.path().join("victim");
         std::fs::write(&target, "keep me").unwrap();
         std::os::unix::fs::symlink(&target, repo.path().join(".claude/settings.local.json")).unwrap();
-        let err = register_repo_in(repo.path(), Path::new(BIN), home.path()).unwrap_err().to_string();
+        let err = register_repo(repo.path(), Path::new(BIN)).unwrap_err().to_string();
         assert!(err.contains("symlink"), "{err}");
         assert_eq!(std::fs::read_to_string(&target).unwrap(), "keep me");
     }
@@ -496,7 +399,6 @@ mod tests {
     #[test]
     fn a_symlinked_git_exclude_is_not_written_through() {
         let outside = tempfile::tempdir().unwrap();
-        let home = tempfile::tempdir().unwrap();
         let repo = tempfile::tempdir().unwrap();
         git2::Repository::init(repo.path()).unwrap();
         let target = outside.path().join("victim");
@@ -509,7 +411,7 @@ mod tests {
         let git = git2::Repository::open(repo.path()).unwrap();
         // Only meaningful where the global ignore does not already cover the file
         if !git.status_should_ignore(Path::new(".claude/settings.local.json")).unwrap() {
-            assert!(register_repo_in(repo.path(), Path::new(BIN), home.path()).is_err());
+            assert!(register_repo(repo.path(), Path::new(BIN)).is_err());
         }
         assert_eq!(std::fs::read_to_string(&target).unwrap(), "keep me");
     }

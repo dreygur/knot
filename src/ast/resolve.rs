@@ -17,9 +17,8 @@ pub(crate) const ALWAYS_SKIPPED_DIRS: &[&str] = &[
 /// names that would crowd out the repo's own code.
 const ALWAYS_SKIPPED_SUFFIXES: &[&str] = &[".min.js"];
 
-/// Whether the index leaves out a file by its name alone, wherever it sits. The shell
-/// swap asks too, so it never answers a grep that would have matched in such a file.
-pub(crate) fn is_skipped_file(name: &str) -> bool {
+/// Whether the index leaves out a file by its name alone, wherever it sits.
+fn is_skipped_file(name: &str) -> bool {
     ALWAYS_SKIPPED_SUFFIXES.iter().any(|s| name.ends_with(s))
 }
 

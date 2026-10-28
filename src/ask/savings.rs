@@ -57,7 +57,6 @@ pub fn record(root: &Path, tool: &str, files: &[String], output: &str) {
             session: events::current_session(root),
             kind: events::EventKind::Answer,
             tool: tool.to_string(),
-            command: None,
             bytes_before,
             bytes_after: output.len() as u64,
             saved_tokens: saved,

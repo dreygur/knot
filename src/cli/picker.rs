@@ -84,13 +84,6 @@ impl Picker {
         Outcome::Picking
     }
 
-    /// Start row `i` unchecked even though it was found here.
-    pub fn uncheck(&mut self, i: usize) {
-        if let Some(c) = self.checked.get_mut(i) {
-            *c = false;
-        }
-    }
-
     /// Indexes of the checked rows, in row order.
     pub fn picked(&self) -> Vec<usize> {
         self.checked.iter().enumerate().filter(|(_, c)| **c).map(|(i, _)| i).collect()

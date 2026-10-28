@@ -24,20 +24,15 @@
   {{trend}}
 
   <g font-family="{{mono}}" font-size="22">
-    <rect x="57" y="292" width="347.3" height="146" rx="16" fill="#bfd99b" fill-opacity="0.06" stroke="#393f27" stroke-width="2"/>
+    <rect x="57" y="292" width="532" height="146" rx="16" fill="#bfd99b" fill-opacity="0.06" stroke="#393f27" stroke-width="2"/>
     <text x="78" y="333.5" fill="#8b97a8">answers from the graph</text>
     <text x="78" y="382.4" font-size="30" fill="#bfd99b">{{graph_tokens}}</text>
     <text x="78" y="413.1" fill="#8b97a8">{{graph_count}}</text>
 
-    <rect x="426.3" y="292" width="347.3" height="146" rx="16" fill="#bfd99b" fill-opacity="0.06" stroke="#393f27" stroke-width="2"/>
-    <text x="447.3" y="333.5" fill="#8b97a8">learnings reused</text>
-    <text x="447.3" y="382.4" font-size="30" fill="#bfd99b">{{learning_tokens}}</text>
-    <text x="447.3" y="413.1" fill="#8b97a8">{{learning_count}}</text>
-
-    <rect x="795.7" y="292" width="347.3" height="146" rx="16" fill="none" stroke="#1d2632" stroke-width="2"/>
-    <text x="816.7" y="333.5" fill="#8b97a8">grep/sed swaps</text>
-    <text x="816.7" y="382.4" font-size="30" fill="#bfd99b">{{swap_tokens}}</text>
-    <text x="816.7" y="413.1" fill="#8b97a8">{{swap_count}}</text>
+    <rect x="611" y="292" width="532" height="146" rx="16" fill="#bfd99b" fill-opacity="0.06" stroke="#393f27" stroke-width="2"/>
+    <text x="632" y="333.5" fill="#8b97a8">learnings reused</text>
+    <text x="632" y="382.4" font-size="30" fill="#bfd99b">{{learning_tokens}}</text>
+    <text x="632" y="413.1" fill="#8b97a8">{{learning_count}}</text>
   </g>
 
   {{chips}}

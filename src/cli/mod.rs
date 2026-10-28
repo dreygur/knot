@@ -134,7 +134,7 @@ fn usage_exit(usage: &str) -> ! {
 }
 
 const COMMANDS: &[&str] = &[
-    "recall", "commit", "callers", "callees", "blast", "ask", "grep", "shell", "map", "note", "handoff", "skeleton", "index", "statusline", "check",
+    "recall", "commit", "callers", "callees", "blast", "ask", "grep", "map", "note", "handoff", "skeleton", "index", "statusline", "check",
     "explore", "viz", "status", "logs", "init", "card", "help", "version",
 ];
 
@@ -734,36 +734,6 @@ fn cli_grep(opts: &crate::ask::grep::GrepOptions, json: bool) -> Result<()> {
     Ok(())
 }
 
-/// Print what Knot answers for a swapped command. A command Knot does not answer runs
-/// in the shell unchanged, so a stale rewrite still works.
-fn cli_shell(command: &str) -> Result<()> {
-    let here = std::env::current_dir()?;
-    let root = crate::ask::repo_root(&here);
-    let raw = |cmd: &str| -> Result<i32> { Ok(std::process::Command::new("sh").arg("-c").arg(cmd).status()?.code().unwrap_or(1)) };
-    match swap_or_raw(command, &root, &here, &mut std::io::stdout(), raw)? {
-        Some(code) => std::process::exit(code),
-        None => Ok(()),
-    }
-}
-
-/// Print Knot's answer for `command` to `out`. Anything that goes wrong on the Knot path
-/// runs the original command with `raw` instead; its exit code is returned.
-fn swap_or_raw(
-    command: &str,
-    root: &Path,
-    here: &Path,
-    out: &mut impl std::io::Write,
-    raw: impl FnOnce(&str) -> Result<i32>,
-) -> Result<Option<i32>> {
-    match crate::shell::run::run(command, root, here) {
-        Ok(text) => {
-            out.write_all(text.as_bytes())?;
-            Ok(None)
-        }
-        Err(_) => raw(command).map(Some),
-    }
-}
-
 fn cli_map(max_dirs: usize, json: bool) -> Result<()> {
     let cwd = crate::ask::current_repo_root()?;
     let map = crate::ask::map::map(&cwd, Some(&crate::ask::index_root(&cwd)), max_dirs)?;
@@ -1100,7 +1070,6 @@ pub fn print_help() {
     println!("  knot map [--max-dirs N] [--json]        Orientation: directories, hubs, most central code");
     println!("  knot grep <pattern> [-i] [--fixed] [--in <path>] [--json]");
     println!("                                          Every match in indexed code, grouped by symbol");
-    println!("  knot shell -- <command>                 Run a grep or sed range the way Knot answers it (used by the hook)");
     println!("  knot index [--quiet]                    Refresh the code index (graph commands also do this)");
     println!("  knot statusline                         Claude Code's status line (index, learnings, savings, context)");
     println!("                                          (tokens saved are estimated: files an answer names, read");
@@ -1188,19 +1157,11 @@ pub async fn run() -> Result<()> {
             }
             cli_grep(&opts, json)
         }
-        Some("shell") => {
-            let command = args.skip_while(|a| a == "--").collect::<Vec<_>>().join(" ");
-            if command.trim().is_empty() {
-                usage_exit("knot shell -- <command>");
-            }
-            cli_shell(&command)
-        }
         Some("note") => cli_note(args),
         Some("handoff") => cli_handoff(&args.next().unwrap_or_default()),
         Some("hook") => {
-            let event = args.next().unwrap_or_default();
-            let flags: Vec<String> = args.collect();
-            hook::run(&event, &flags).await
+            // Older installs pass `--no-swap` after the event; nothing reads it now
+            hook::run(&args.next().unwrap_or_default()).await
         }
         Some("map") => {
             let mut max_dirs = crate::ask::map::DEFAULT_MAX_DIRS;
@@ -1275,33 +1236,6 @@ mod tests {
         let home = tempfile::tempdir().unwrap();
         let data = home.path().join(".knot");
         assert_eq!(records_in(&data.to_string_lossy()), Some(data.join(crate::ask::handoff::RECORDS_FILE)));
-    }
-
-    #[test]
-    fn knot_shell_runs_the_original_only_when_knot_has_no_answer() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(dir.path().join("src")).unwrap();
-        std::fs::write(dir.path().join("src/a.rs"), "fn alpha() {}\n").unwrap();
-        let body: String = (0..40).map(|i| format!("    let alpha_{i} = \"alpha value with a longer tail of text\";\n")).collect();
-        std::fs::write(dir.path().join("src/big.rs"), format!("fn big() {{\n{body}}}\n")).unwrap();
-        let root = dir.path();
-
-        let mut out = Vec::new();
-        let code = swap_or_raw("grep -rn alpha src", root, root, &mut out, |cmd| panic!("ran {cmd}")).unwrap();
-        assert_eq!(code, None);
-        assert!(String::from_utf8(out).unwrap().starts_with("[knot] ran `knot grep`"));
-
-        for cmd in ["echo hi", "grep -rn alpha src/a.rs", "sed -n '1,1p' src/a.rs"] {
-            let mut out = Vec::new();
-            let mut ran = None;
-            let code = swap_or_raw(cmd, root, root, &mut out, |c| {
-                ran = Some(c.to_string());
-                Ok(3)
-            })
-            .unwrap();
-            assert_eq!((code, ran.as_deref()), (Some(3), Some(cmd)), "{cmd}");
-            assert!(out.is_empty(), "{cmd}");
-        }
     }
 
     #[test]

@@ -113,7 +113,6 @@ mod tests {
             session: "s1".to_string(),
             kind: EventKind::Answer,
             tool: "ask".to_string(),
-            command: None,
             bytes_before: 4000,
             bytes_after: 400,
             saved_tokens: saved,

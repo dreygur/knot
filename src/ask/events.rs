@@ -1,4 +1,4 @@
-//! A per-session log of what Knot saved: one JSON line per answer or swapped command,
+//! A per-session log of what Knot saved: one JSON line per answer or learning shown,
 //! so the status line and later reports can total it by Claude Code session.
 
 use serde::{Deserialize, Serialize};
@@ -13,7 +13,6 @@ const EVENTS_TAIL_BYTES: u64 = 2 * 1024 * 1024;
 #[serde(rename_all = "snake_case")]
 pub enum EventKind {
     Answer,
-    Swap,
     Learning,
 }
 
@@ -23,8 +22,6 @@ pub struct Event {
     pub session: String,
     pub kind: EventKind,
     pub tool: String,
-    #[serde(default)]
-    pub command: Option<String>,
     #[serde(default)]
     pub bytes_before: u64,
     #[serde(default)]
@@ -82,7 +79,6 @@ pub fn learning_shown(root: &Path, session: &str, file: &Path, cost_minutes: Opt
             session: session.to_string(),
             kind: EventKind::Learning,
             tool: "learning".to_string(),
-            command: None,
             bytes_before: 0,
             bytes_after: 0,
             saved_tokens: 0,
@@ -162,7 +158,6 @@ mod tests {
             session: session.to_string(),
             kind: EventKind::Answer,
             tool: "knot_ask".to_string(),
-            command: None,
             bytes_before: 0,
             bytes_after: 0,
             saved_tokens,
@@ -188,17 +183,17 @@ mod tests {
     #[test]
     fn appends_and_reads_back_events() {
         let dir = tempfile::tempdir().unwrap();
-        let mut swap = event("a", 2, 7);
-        swap.kind = EventKind::Swap;
-        swap.command = Some("git status".to_string());
+        let mut shown = event("a", 2, 7);
+        shown.kind = EventKind::Learning;
+        shown.learning = Some("2026-10-09_keep".to_string());
         append(dir.path(), &event("a", 1, 5));
-        append(dir.path(), &swap);
+        append(dir.path(), &shown);
 
         let events = recent(dir.path());
         assert_eq!(events.len(), 2);
         assert_eq!(events[0].saved_tokens, 5);
-        assert_eq!(events[1].kind, EventKind::Swap);
-        assert_eq!(events[1].command.as_deref(), Some("git status"));
+        assert_eq!(events[1].kind, EventKind::Learning);
+        assert_eq!(events[1].learning.as_deref(), Some("2026-10-09_keep"));
     }
 
     #[test]
