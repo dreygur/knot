@@ -96,7 +96,7 @@ fn usage_exit(usage: &str) -> ! {
 
 const COMMANDS: &[&str] = &[
     "recall", "commit", "callers", "callees", "blast", "ask", "grep", "shell", "map", "note", "skeleton", "index", "statusline", "check",
-    "explore", "viz", "status", "logs", "init", "help", "version",
+    "explore", "viz", "status", "logs", "init", "card", "help", "version",
 ];
 
 const SUPPORTED_LANGUAGES: &str = "Rust, Python, TypeScript/JavaScript, Go, Java, PHP, Ruby, C";
@@ -1157,6 +1157,7 @@ pub fn print_help() {
     println!("  knot logs [--follow|-f]                 View activity log");
     println!("  knot init [--agents <ids>] [-y|--yes]   Pick agents, write their instructions, index this repo");
     println!("                                          (agents: claude, codex, opencode, gemini, antigravity, cursor)");
+    println!("  knot card [--repo] [--out <path>]       Save and copy a picture of what Knot saved (all repos, or this one)");
     println!("  knot --version                          Print the version");
     println!();
     println!("Code commands read {SUPPORTED_LANGUAGES} across the git repository you are in.");
@@ -1185,6 +1186,7 @@ pub async fn run() -> Result<()> {
             cli_logs(follow).await
         }
         Some("init") => init::run(args),
+        Some("card") => crate::card::run(args),
         Some("callers") => {
             let symbol = args.next().unwrap_or_default();
             if symbol.is_empty() {

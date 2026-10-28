@@ -42,6 +42,15 @@ fn has_command(dir: &Path, name: &str) -> bool {
     cfg!(windows) && ["exe", "cmd", "bat"].iter().any(|ext| dir.join(format!("{name}.{ext}")).is_file())
 }
 
+/// Whether a Codex `config.toml` has a `[mcp_servers.knot]` table (or one nested under it).
+fn toml_has_knot(path: &Path) -> bool {
+    let Ok(text) = std::fs::read_to_string(path) else { return false };
+    text.lines().any(|line| {
+        let Some(rest) = line.trim().strip_prefix("[mcp_servers.knot") else { return false };
+        rest.starts_with(']') || rest.starts_with('.')
+    })
+}
+
 impl Agent {
     /// Picker and output order.
     pub const ALL: [Agent; 6] = [
@@ -61,6 +70,18 @@ impl Agent {
             Agent::Gemini => "gemini",
             Agent::Antigravity => "antigravity",
             Agent::Cursor => "cursor",
+        }
+    }
+
+    /// The name the person knows it by, as the share card shows it.
+    pub fn display(self) -> &'static str {
+        match self {
+            Agent::Claude => "Claude Code",
+            Agent::Codex => "Codex",
+            Agent::OpenCode => "OpenCode",
+            Agent::Gemini => "Gemini CLI",
+            Agent::Antigravity => "Antigravity",
+            Agent::Cursor => "Cursor",
         }
     }
 
@@ -102,6 +123,20 @@ impl Agent {
         }
     }
 
+    /// Whether this agent's user config under `home` has a `knot` MCP entry. A missing or
+    /// unreadable file counts as not wired.
+    pub fn knot_wired(self, home: &Path) -> bool {
+        let (file, key) = match self {
+            Agent::Claude => (".claude.json", "mcpServers"),
+            Agent::Codex => return toml_has_knot(&home.join(".codex/config.toml")),
+            Agent::Gemini | Agent::Antigravity => (".gemini/settings.json", "mcpServers"),
+            Agent::Cursor => (".cursor/mcp.json", "mcpServers"),
+            Agent::OpenCode => (".config/opencode/opencode.json", "mcp"),
+        };
+        let Ok(text) = std::fs::read_to_string(home.join(file)) else { return false };
+        serde_json::from_str::<serde_json::Value>(&text).is_ok_and(|json| json.get(key).and_then(|s| s.get("knot")).is_some())
+    }
+
     /// Whether this agent looks installed: its folder under `home`, or its command on
     /// `path` (the `PATH` value, passed in so tests do not depend on the machine).
     pub fn detected(self, home: &Path, path: Option<&OsStr>) -> bool {
@@ -140,6 +175,41 @@ mod tests {
         assert!(!Agent::Antigravity.detected(home.path(), Some(&path)));
         std::fs::write(bin.path().join("agy"), "").unwrap();
         assert!(Agent::Antigravity.detected(home.path(), Some(&path)));
+    }
+
+    fn put(home: &Path, rel: &str, text: &str) {
+        let file = home.join(rel);
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(file, text).unwrap();
+    }
+
+    fn wired(home: &Path) -> Vec<Agent> {
+        Agent::ALL.into_iter().filter(|a| a.knot_wired(home)).collect()
+    }
+
+    #[test]
+    fn knot_wired_reads_each_agents_config() {
+        let home = tempfile::tempdir().unwrap();
+        assert!(wired(home.path()).is_empty());
+
+        put(home.path(), ".cursor/mcp.json", r#"{"mcpServers":{"knot":{"command":"knot"}}}"#);
+        assert_eq!(wired(home.path()), vec![Agent::Cursor]);
+
+        put(home.path(), ".claude.json", r#"{"mcpServers":{"knot":{}}}"#);
+        put(home.path(), ".gemini/settings.json", r#"{"mcpServers":{"knot":{}}}"#);
+        put(home.path(), ".config/opencode/opencode.json", r#"{"mcp":{"knot":{}}}"#);
+        put(home.path(), ".codex/config.toml", "[mcp_servers.knot]\ncommand = \"knot\"\n");
+        assert_eq!(wired(home.path()), Agent::ALL.to_vec());
+    }
+
+    #[test]
+    fn knot_wired_ignores_other_servers_and_broken_files() {
+        let home = tempfile::tempdir().unwrap();
+        put(home.path(), ".cursor/mcp.json", r#"{"mcpServers":{"other":{}}}"#);
+        put(home.path(), ".claude.json", "{ not json");
+        put(home.path(), ".config/opencode/opencode.json", r#"{"mcp":{"knot-ish":{}}}"#);
+        put(home.path(), ".codex/config.toml", "[mcp_servers.knotty]\n# [mcp_servers.knot]\n");
+        assert!(wired(home.path()).is_empty());
     }
 
     #[test]

@@ -33,6 +33,7 @@ account: everything runs locally and learnings travel through git.
 - [Finding code](#finding-code)
 - [Team learnings](#team-learnings)
 - [Status line](#status-line)
+- [Share what Knot saved](#share-what-knot-saved)
 - [Memory vault and Jit-V](#memory-vault-and-jit-v)
 - [Skills](#skills)
 - [Command reference](#command-reference)
@@ -312,6 +313,25 @@ otherwise have been read whole, and are not directly comparable with other tools
 
 ---
 
+## Share what Knot saved
+
+`knot card` draws a 1200×675 PNG of the tokens Knot saved: graph answers, learnings reused and
+`grep`/`sed` swaps, totalled across every repo it has worked in. It saves the file to
+`~/Downloads/knot-card-YYYY-MM-DD.png` (the current folder if there is no Downloads) and puts the
+image on the clipboard, so you can paste it straight into a post.
+
+```
+knot card                      # every repo Knot has worked in
+knot card --repo               # only this repo, with its name on the card
+knot card --out ~/card.png     # choose where the file goes
+```
+
+Clipboard copying uses `osascript` on macOS, `wl-copy` or `xclip` on Linux and PowerShell on
+Windows. If none works the file is still saved and the command says so. Every figure is an
+estimate; Knot never makes one up, and it makes no network calls.
+
+---
+
 ## Memory vault and Jit-V
 
 Agents can also keep personal and project memory across sessions:
@@ -379,6 +399,7 @@ execute_skill(skill_name="format-module", variables=[{key:"file_path", value:"sr
 | `knot explore [query]` | Terminal UI for browsing the code graph |
 | `knot viz` | Interactive HTML graph visualiser |
 | `knot status` / `knot logs [-f]` | Vault health plus this repo's index and learnings; activity log |
+| `knot card [--repo] [--out <path>]` | Save and copy a picture of what Knot saved |
 | `knot --version` | Version |
 
 ---
