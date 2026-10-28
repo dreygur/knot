@@ -807,12 +807,14 @@ fn count_repo_learnings(dir: &Path) -> usize {
 }
 
 /// Tokens Knot saved since the last prompt and since the session began, from the
-/// transcript Claude Code names in its status line JSON.
+/// transcript Claude Code names in its status line JSON. Without a session id there is
+/// nothing to attribute events to, so nothing is shown.
 fn statusline_savings(input: &str, root: &Path) -> Option<(usize, usize)> {
     let json: serde_json::Value = serde_json::from_str(input).ok()?;
+    let session_id = json.get("session_id")?.as_str().filter(|s| !s.is_empty())?;
     let transcript = json.get("transcript_path")?.as_str()?;
     let (session_start, last_prompt) = crate::ask::savings::transcript_window(Path::new(transcript))?;
-    match crate::ask::savings::saved_since(root, &[last_prompt, session_start])[..] {
+    match crate::ask::events::saved_since(root, session_id, &[last_prompt, session_start])[..] {
         [reply, session] => Some((reply, session)),
         _ => None,
     }

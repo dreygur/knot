@@ -426,7 +426,7 @@ Files ignored by `.gitignore` are skipped, and so are these directories wherever
 | `~/.knot/activity.log` | Activity log (`knot logs`) |
 | `<repo>/.knot/learnings/` | Team learnings, committed to git |
 | `<repo>/.knot/cache/index.json` | Parse cache, keyed by file size and mtime |
-| `<repo>/.knot/cache/savings.jsonl` | Estimated tokens saved per answer, for the status line |
+| `<repo>/.knot/cache/events.jsonl` | What Knot did and saved, per agent session |
 | `<repo>/.knot/cache/session.json`, `shown-*.txt` | The agent session working here, and which learnings it was shown |
 | `<repo>/.knot/cache/last_edit` | The file the agent last edited, for the status line |
 
