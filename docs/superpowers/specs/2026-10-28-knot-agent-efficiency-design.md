@@ -159,6 +159,14 @@ hook is present, Knot does not install its swap hook, and `knot init`/`knot stat
 so, naming the other hook. The python-edit block is a deny, not a rewrite, so it is still
 installed.
 
+Decided (owner, after the first build): Knot must not conflict with other Bash tools.
+The rule above stays: any other `PreToolUse` Bash hook means Knot stands down on swaps,
+and Knot does not try to guess whether that hook only observes. Swap coverage
+is not widened past bare `grep`/`rg`/`sed -n`. Pipes such as `grep … | head` are not
+reinterpreted, and the flag whitelist does not grow. The first measurement (one session)
+swapped no greps and saved nothing, so the card in part 5 leads with graph answers and
+learnings, not swaps.
+
 ## Part 2 — Question gate
 
 **Free filter, on `UserPromptSubmit`.** Knot checks the prompt against the code index,
@@ -277,6 +285,115 @@ What changes from prototype to product:
 - **Not yet verified:** phone-width layout. The prototype has a mobile rule (the inspector
   becomes a bottom sheet), but it was never seen at that size.
 
+## Part 5 — Share card
+
+Separate from parts 2–4; it needs only the event log (part 0).
+
+**Why.** The owner wants people on X and other social media to see at a glance what Knot
+saves, as RTK does with `rtk gain`. The audience scrolls past a picture in a feed and
+never clicks through, so the card has to read in a second.
+
+**What it is.** `knot card` writes a PNG and copies it to the clipboard, so the owner can
+paste it straight into a post. Nothing is hosted, there is no link and no sign-up.
+
+Decided (owner):
+- **A picture, not a link.** It is saved as a file and copied to the clipboard.
+- **The stacked layout** from the mockups (`.superpowers/brainstorm/`, card-stacked-v3):
+  - **Top row:** the whole Knot logo on the left (`assets/logo-light.png`, never the mark
+    beside a text label) and the time label on the right.
+  - **Main row:** two big numbers, tokens saved and "less for the agent to read" as a
+    percentage, with a trend line beside them.
+  - **Tiles:** three, in this order: answers from the code graph, learnings reused, then
+    grep/sed swaps.
+  - **Bottom row:** the agents Knot runs in, and the repo link.
+- **The core leads.** Graph answers and learnings are Knot's core and come first. Swaps
+  are a side tile. Python edits blocked are never shown on the card.
+- **New users still get a card.** It is always made, even on day one with one session.
+- **Time label.** Under 30 days of history the label reads "since Oct 21 · 7 days",
+  taken from the first event. After that it reads "last 30 days".
+- **Scope.** By default the card adds up every repo the user has run Knot in. A flag
+  (`--repo`) limits it to the current repo.
+
+Designer's calls (the owner approved the description they are in):
+- **Command and output.** `knot card` prints the saved path, by default
+  `~/Downloads/knot-card-YYYY-MM-DD.png` (or the current directory if there is no
+  Downloads folder), then `✓ copied to clipboard`. `--out <path>` overrides the path.
+- **Clipboard.**
+  - macOS: the system pasteboard as an image.
+  - Linux: `wl-copy`, then `xclip`, when installed.
+  - Windows: PowerShell.
+  - If none of these works, the file is still written and Knot says copying failed. A
+    clipboard failure never fails the command.
+- **Combining repos.**
+  - Each repo keeps its own log in `.knot/cache/events.jsonl` (part 0).
+  - Knot adds one small list in `~/.knot`: the repo roots it has written events in. This
+    keeps `~/.knot` nearly empty. `knot card` reads each listed repo's log and skips
+    repos that are gone.
+  - The combined card shows no repo names, so private project names never reach a post.
+  - With `--repo`, the repo's folder name appears in the top row.
+- **Numbers.**
+  - Totals are "since you started" (or the last 30 days once there is more history),
+    from recorded events only.
+  - The card marks them as estimates (a small "≈ estimated" note), as the status line
+    does; see the anti-goal on claimed savings.
+  - "Less for the agent to read" is 1 − Σafter / Σbefore over the same events.
+- **Trend line.** It needs at least 3 days with events. Below that, its space shows
+  "≈ N tokens saved per session".
+- **Learnings tile.**
+  - Knot starts logging an event each time it shows a learning to an agent (the
+    post-read hook, `knot ask`, the MCP recall).
+  - The tile shows the count of learnings reused. When a learning records how long it
+    took to work out, the tile also shows that time, summed. Otherwise it shows the count
+    only and never invents a time.
+- **Learning reuse is counted by distinct learning.**
+  - The new event carries the learning's id (its file).
+  - The tile counts distinct learnings shown in the period, not showings.
+  - The time comes from each learning's recorded `cost_minutes` (src/ask/learnings.rs).
+    It is summed once per distinct learning, never per showing.
+- **Headline number.**
+  - Decided (owner): "Tokens saved" includes the recorded token cost of learnings that
+    were reused.
+  - It is the sum of three things:
+    - `saved_tokens` over `answer` events;
+    - `saved_tokens` over `swap` events;
+    - each distinct reused learning's `cost_tokens`, once per learning, never per showing.
+  - The headline therefore equals the sum of the three tiles. The learnings tile shows
+    its tokens next to its count and time.
+  - A learning with no recorded `cost_tokens` adds nothing; Knot never invents a figure.
+  - The card's "≈ estimated" note covers the whole headline.
+  - "Less to read" stays 1 − Σafter / Σbefore over `answer` and `swap` events only.
+    Learnings have no bytes read, so they are left out of the percentage rather than
+    stretched into it.
+  - Blocks and flags add nothing to either figure.
+- **No events yet.** The card is still made. The label reads "first day", the numbers
+  show 0, and tiles at zero show "0" rather than disappearing, so the layout never shifts.
+- **"Runs in" chips.**
+  - These are detected at card time by checking each agent's config on disk for Knot's
+    entry, the way `knot init` wires them. No new state is stored.
+  - The list is the same with `--repo`, because agents are set up per machine.
+  - If no agent is detected, the chips row is hidden.
+- **Repo list upkeep.**
+  - A repo is added the first time an event is written in it, and also by `knot init`,
+    so repos with older history get listed.
+  - Entries are keyed by the canonical `.knot/cache` path, so worktrees that share one
+    cache are counted once.
+- **Rendering.**
+  - The picture is 1200×675, X's preview shape, dark only.
+  - It is drawn inside Knot with no browser and no network. The logo and the fonts
+    (IBM Plex, subset) are built into the binary.
+
+Left to the builder:
+- The rendering library (for example an SVG template rasterised with resvg).
+- Exact type sizes and spacing within the mockup.
+- The clipboard crate or commands.
+- The trend line's bucket size.
+
+Not in this part:
+- A light card.
+- Other picture sizes.
+- Hosted links.
+- Posting to X directly.
+
 ## Success
 
 - On a recorded session of ordinary work, shell swaps cut tokens from grep/sed calls by a
@@ -285,3 +402,6 @@ What changes from prototype to product:
 - On the labelled prompt set, the gate flags most unclear prompts and almost no clear
   ones; the builder reports both rates.
 - `knot dash` shows numbers that match the event log exactly.
+- `knot card` makes a card on a machine with one session of history and on one with
+  months of it. Its numbers match the event logs exactly, and pasting into an X post
+  after running it shows the picture.
