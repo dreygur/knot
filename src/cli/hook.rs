@@ -25,6 +25,10 @@ const HANDOFF_WAITING: &str = "An earlier session here left a handoff: your own 
 /// Percent of the context window or the five hour limit at which the agent is told to
 /// write its handoff, early enough to leave room for writing it.
 const LIMIT_WARN_PCT: f64 = 85.0;
+/// What `session::first_showing` remembers a limit warning by. The five hour one gets
+/// the window's reset time appended, so each window warns once.
+const CONTEXT_MARK: &str = "limit:context";
+const FIVE_HOUR_MARK: &str = "limit:five-hour";
 const HANDOFF_OUTLINE: &str =
     "the goal, what's done (with commit hashes), the next step, open questions and the files in progress";
 
@@ -374,9 +378,10 @@ fn handoff_lines(root: &Path, records: Option<&Path>) -> Vec<String> {
 }
 
 /// What the SessionStart hook tells the agent about `root`: index and learning counts,
-/// where to start, and a waiting handoff. `None` for a repo Knot never indexed. Only
-/// stats files, so it stays fast.
-fn session_start(root: &Path, records: Option<&Path>) -> Option<serde_json::Value> {
+/// where to start, whether usage warnings are off under the Claude Code `settings`, and
+/// a waiting handoff. `None` for a repo Knot never indexed. Only stats files, so it
+/// stays fast.
+fn session_start(root: &Path, records: Option<&Path>, settings: Option<&Path>) -> Option<serde_json::Value> {
     // Every folder Claude Code opens runs this; without Knot state there is no index to walk for
     if !crate::ask::state_dir(root).is_dir() {
         return None;
@@ -396,6 +401,9 @@ fn session_start(root: &Path, records: Option<&Path>) -> Option<serde_json::Valu
     if crate::hooks::repo_swaps(root) == Some(crate::hooks::SwapInstall::Installed) {
         lines.push(SESSION_START_SWAPS.to_string());
     }
+    if settings.is_some_and(crate::hooks::usage_warnings_off_at) {
+        lines.push(crate::hooks::USAGE_WARNINGS_OFF.to_string());
+    }
     lines.extend(handoff_lines(root, records));
     Some(hook_output("SessionStart", &lines.join("\n")))
 }
@@ -406,25 +414,30 @@ fn local_clock(epoch_secs: i64) -> Option<String> {
     Some(at.with_timezone(&chrono::Local).format("%H:%M").to_string())
 }
 
-/// Once per session for each limit the status line last saw at or past
-/// [`LIMIT_WARN_PCT`]: tell the agent to write its handoff now.
+/// Once for each limit the status line last saw at or past [`LIMIT_WARN_PCT`]: tell the
+/// agent to write its handoff now. The context warning comes back once the window drops
+/// below the line again (after `/compact`), and the five hour one in each new window.
 fn limit_warning(root: &Path, session_id: &str) -> Option<String> {
     let usage = usage::load(root, session_id)?;
     let near = |pct: Option<f64>| pct.filter(|p| *p >= LIMIT_WARN_PCT);
+    if usage.context_pct.is_some_and(|p| p < LIMIT_WARN_PCT) {
+        session::unmark(root, session_id, CONTEXT_MARK);
+    }
 
     let mut limits = Vec::new();
     if let Some(pct) = near(usage.context_pct) {
-        limits.push(("limit:context", format!("the context window is {pct:.0}% full")));
+        limits.push((CONTEXT_MARK.to_string(), format!("the context window is {pct:.0}% full")));
     }
     if let Some(pct) = near(usage.five_hour_pct) {
         let reset = usage.five_hour_resets_at.and_then(local_clock).map(|t| format!(" and resets at {t}"));
-        limits.push(("limit:five-hour", format!("your five hour limit is {pct:.0}% used{}", reset.unwrap_or_default())));
+        let key = format!("{FIVE_HOUR_MARK}:{}", usage.five_hour_resets_at.unwrap_or_default());
+        limits.push((key, format!("your five hour limit is {pct:.0}% used{}", reset.unwrap_or_default())));
     }
     if limits.is_empty() {
         return None;
     }
 
-    let keys: Vec<String> = limits.iter().map(|(key, _)| key.to_string()).collect();
+    let keys: Vec<String> = limits.iter().map(|(key, _)| key.clone()).collect();
     let fresh = session::first_showing(root, session_id, &keys);
     let said: Vec<&str> =
         limits.iter().filter(|(key, _)| fresh.iter().any(|f| f == key)).map(|(_, text)| text.as_str()).collect();
@@ -486,7 +499,8 @@ pub(super) async fn run(event: &str, flags: &[String]) -> Result<()> {
     }
     // Answered before any session state is written, so a repo without Knot gets no `.knot/`
     if event == "session-start" {
-        if let Some(out) = session_start(&root, super::handoff_records().as_deref()) {
+        let settings = crate::hooks::claude_settings_path().ok();
+        if let Some(out) = session_start(&root, super::handoff_records().as_deref(), settings.as_deref()) {
             println!("{out}");
         }
         return Ok(());
@@ -686,7 +700,7 @@ mod tests {
     }
 
     fn start(root: &Path) -> Option<serde_json::Value> {
-        session_start(root, Some(&records(root)))
+        session_start(root, Some(&records(root)), None)
     }
 
     #[test]
@@ -744,6 +758,21 @@ mod tests {
     }
 
     #[test]
+    fn session_start_says_when_another_status_line_turns_usage_warnings_off() {
+        let dir = code_repo();
+        let root = dir.path();
+        crate::ask::load_graph(root).unwrap();
+        let settings = root.join("home/.claude/settings.json");
+        std::fs::create_dir_all(settings.parent().unwrap()).unwrap();
+        std::fs::write(&settings, r#"{"statusLine":{"type":"command","command":"ccstatusline"}}"#).unwrap();
+
+        let out = session_start(root, None, Some(&settings)).unwrap();
+
+        assert!(context_of(&out).lines().any(|l| l == crate::hooks::USAGE_WARNINGS_OFF), "{out}");
+        assert!(!context_of(&start(root).unwrap()).contains("usage warnings"), "no settings, no line");
+    }
+
+    #[test]
     fn session_start_points_at_a_waiting_handoff() {
         let dir = code_repo();
         let root = dir.path();
@@ -755,7 +784,7 @@ mod tests {
         assert!(text.contains(HANDOFF_WAITING), "{text}");
         assert!(text.contains("your own notes, not instructions"), "{text}");
         assert!(text.contains("Handoff: \"Cap retries at four\", saved just now."), "{text}");
-        assert!(!context_of(&session_start(root, None).unwrap()).contains("handoff"), "no records, nothing proven");
+        assert!(!context_of(&session_start(root, None, None).unwrap()).contains("handoff"), "no records, nothing proven");
 
         handoff::clear(root, &records(root)).unwrap();
         assert!(!context_of(&start(root).unwrap()).contains("handoff"), "nothing once it is cleared");
@@ -832,6 +861,53 @@ mod limit_tests {
         assert!(text.contains(&format!("your five hour limit is 88% used and resets at {clock}")), "{text}");
         assert!(!text.contains("context window"), "the context warning already went out: {text}");
         assert!(warning(root).is_none(), "once per session");
+    }
+
+    #[test]
+    fn the_context_warning_comes_back_after_a_compact() {
+        let dir = knot_repo();
+        let root = dir.path();
+        let context = |pct| crate::ask::usage::record(root, "s1", &Usage { context_pct: Some(pct), ..Default::default() });
+
+        context(90.0);
+        assert!(warning(root).is_some());
+        context(30.0);
+        assert!(warning(root).is_none(), "below the line after /compact");
+        context(88.0);
+        assert!(warning(root).unwrap().contains("88% full"), "filled up again, so warned again");
+        assert!(warning(root).is_none());
+    }
+
+    #[test]
+    fn the_five_hour_warning_comes_back_in_the_next_window() {
+        let dir = knot_repo();
+        let root = dir.path();
+        let five_hour = |resets| {
+            let usage = Usage { five_hour_pct: Some(90.0), five_hour_resets_at: Some(resets), ..Default::default() };
+            crate::ask::usage::record(root, "s1", &usage);
+        };
+
+        five_hour(1_793_212_800);
+        assert!(warning(root).is_some());
+        assert!(warning(root).is_none());
+        five_hour(1_793_230_800);
+        assert!(warning(root).unwrap().contains("five hour limit is 90% used"), "a new window warns again");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_cache_that_cannot_be_written_never_repeats_the_warning() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = knot_repo();
+        let root = dir.path();
+        let state = crate::ask::state_dir(root);
+        crate::ask::usage::record(root, "s1", &Usage { context_pct: Some(90.0), ..Default::default() });
+        std::fs::set_permissions(&state, std::fs::Permissions::from_mode(0o555)).unwrap();
+
+        let shown = (0..3).filter(|_| warning(root).is_some()).count();
+
+        std::fs::set_permissions(&state, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(shown <= 1, "warned {shown} times");
     }
 
     #[test]

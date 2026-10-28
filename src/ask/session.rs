@@ -116,6 +116,8 @@ fn shown_path(dir: &Path, session_id: &str) -> PathBuf {
 }
 
 /// Of `ids`, the ones `session_id` has not been shown in `root` yet; those are marked shown.
+/// One whose mark cannot be written is left out: shown unmarked, it would come back on
+/// every call.
 pub fn first_showing(root: &Path, session_id: &str, ids: &[String]) -> Vec<String> {
     first_showing_in(&super::state_dir(root), session_id, ids)
 }
@@ -125,16 +127,39 @@ fn first_showing_in(dir: &Path, session_id: &str, ids: &[String]) -> Vec<String>
     let seen: HashSet<String> = std::fs::read_to_string(&path)
         .map(|s| s.lines().map(str::to_string).collect())
         .unwrap_or_default();
-    let fresh: Vec<String> = ids.iter().filter(|id| !seen.contains(*id)).cloned().collect();
-    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-    if let (false, Ok(path)) = (fresh.is_empty(), super::state_file(dir, &name)) {
-        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
-            for id in &fresh {
-                let _ = writeln!(f, "{id}");
-            }
-        }
+    let fresh: Vec<&String> = ids.iter().filter(|id| !seen.contains(*id)).collect();
+    if fresh.is_empty() {
+        return Vec::new();
     }
-    fresh
+    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let Ok(path) = super::state_file(dir, &name) else {
+        return Vec::new();
+    };
+    let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) else {
+        return Vec::new();
+    };
+    fresh.into_iter().filter(|id| writeln!(f, "{id}").is_ok()).cloned().collect()
+}
+
+/// Forget that `session_id` was shown `id` in `root`, so it can be shown again. Writes
+/// only when the mark is there, since it runs after every tool call.
+pub fn unmark(root: &Path, session_id: &str, id: &str) {
+    let dir = super::state_dir(root);
+    let path = shown_path(&dir, session_id);
+    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    if !super::state_file_readable(&dir, &name) {
+        return;
+    }
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        return;
+    };
+    if !text.lines().any(|line| line == id) {
+        return;
+    }
+    if let Ok(path) = super::state_file(&dir, &name) {
+        let kept: String = text.lines().filter(|line| *line != id).map(|line| format!("{line}\n")).collect();
+        let _ = std::fs::write(path, kept);
+    }
 }
 
 /// True the first time `session_id` runs this exact `command` in `root`, false after.
@@ -258,6 +283,19 @@ mod tests {
         assert!(first_showing_in(dir.path(), "s1", &ids).is_empty());
         assert_eq!(first_showing_in(dir.path(), "s2", &ids[..1]), vec!["a".to_string()]);
         assert_eq!(first_showing_in(dir.path(), "../evil", &ids).len(), 2, "ids are made file-safe");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_id_that_cannot_be_marked_is_not_shown() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o555)).unwrap();
+
+        let fresh = first_showing_in(dir.path(), "s1", &["a".to_string()]);
+
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(fresh.is_empty(), "shown without a mark, it would show again on every call: {fresh:?}");
     }
 }
 

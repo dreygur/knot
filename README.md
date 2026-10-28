@@ -334,6 +334,16 @@ savings are an estimate and an upper bound: the size of the files each answer po
 (at about 4 bytes per token), minus the answer itself. They assume those files would
 otherwise have been read whole, and are not directly comparable with other tools' figures.
 
+The status line is also where Knot records context and plan usage, since hooks never see
+those numbers, so the warning to write the handoff before a limit needs it. If you already
+have a status line, Knot leaves it in place, and `knot status` and the session start say
+`usage warnings off`. To keep both, chain them in `statusLine.command` in
+`~/.claude/settings.json`, with your own script in place of `~/.claude/statusline.sh`:
+
+```bash
+input=$(cat); printf '%s' "$input" | knot statusline >/dev/null; printf '%s' "$input" | ~/.claude/statusline.sh
+```
+
 ---
 
 ## Share what Knot saved
@@ -416,6 +426,7 @@ execute_skill(skill_name="format-module", variables=[{key:"file_path", value:"sr
 | `knot check [--base <ref>] [--remote]` | Check the diff against learnings (exit 1 on conflict); `--remote` adds branch clashes |
 | `knot index [--quiet]` | Bring the index up to date ahead of time |
 | `knot statusline` | Claude Code's status line: index, learnings, savings, context use, last edit |
+| `knot handoff save\|show\|clear` | The note a session leaves for the next (`save` reads it on stdin) |
 | `knot hook <post-tool\|stop>` | What Knot's Claude Code hooks run |
 | `knot recall <query> [--limit N]` | Search the memory vault |
 | `knot commit <session_id> <project_id>` | Promote a session's memories to a project |
@@ -486,11 +497,14 @@ Files ignored by `.gitignore` are skipped, and so are these directories wherever
 | `~/.knot/knot.db` | Memory vault (SQLite), shared across repos |
 | `~/.knot/activity.log` | Activity log (`knot logs`) |
 | `~/.knot/repos.txt` | The repos Knot has worked in, one `.knot/cache` path per line, so `knot card` can total them |
+| `~/.knot/handoffs.txt` | The hash of each repo's saved handoff, so a note Knot did not save is never shown |
 | `<repo>/.knot/learnings/` | Team learnings, committed to git |
 | `<repo>/.knot/cache/index.json` | Parse cache, keyed by file size and mtime |
 | `<repo>/.knot/cache/events.jsonl` | What Knot did and saved, per agent session |
 | `<repo>/.knot/cache/session.json`, `shown-*.txt` | The agent session working here, and which learnings it was shown |
 | `<repo>/.knot/cache/last_edit` | The file the agent last edited, for the status line |
+| `<repo>/.knot/cache/usage-*.json` | Context and plan usage per session, as the status line last saw it |
+| `<repo>/.knot/cache/handoff.md` | The handoff note `knot handoff save` wrote |
 
 `.knot/cache/` carries its own `.gitignore`, so nothing in it is ever committed. Knot
 writes anything else into a repository only when you run `knot init` (agent instruction

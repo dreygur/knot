@@ -342,6 +342,9 @@ async fn cli_status() -> Result<()> {
     let status = engine.knot_status().await?;
     print!("{}", format_status_cli(&status));
     print!("{}", crate::ask::repo_summary(&crate::ask::current_repo_root()?));
+    if hooks::usage_warnings_off() {
+        println!("[KNOT] {}", hooks::USAGE_WARNINGS_OFF);
+    }
     Ok(())
 }
 

@@ -19,6 +19,14 @@ const KNOT_HOOK_MARKERS: &[&str] = &[
     "knot.exe\" hook usage",
 ];
 
+/// Parts of a status line command that run `knot statusline`, bare, quoted or chained
+/// from the person's own line.
+const KNOT_STATUSLINE_MARKERS: &[&str] = &["knot statusline", "knot\" statusline", "knot.exe\" statusline"];
+
+/// Said by `knot status` and at session start when Claude Code runs another status
+/// line: only `knot statusline` records the usage the limit warning reads.
+pub const USAGE_WARNINGS_OFF: &str = "usage warnings off: another status line is set; see README";
+
 /// Register Claude Code hooks and, when none is set, the status line. Returns `Ok(true)`
 /// when settings changed, `Ok(false)` when already in place (safe on every server start).
 pub fn register(_data_dir: &str, bin_path: &Path) -> Result<bool> {
@@ -37,8 +45,22 @@ fn home_dir() -> Result<PathBuf> {
     Ok(PathBuf::from(home))
 }
 
-fn claude_settings_path() -> Result<PathBuf> {
+pub(crate) fn claude_settings_path() -> Result<PathBuf> {
     Ok(home_dir()?.join(".claude").join("settings.json"))
+}
+
+/// Whether the Claude Code `settings` set a status line that never runs `knot
+/// statusline`, so no usage is recorded and no limit warning can fire.
+pub(crate) fn usage_warnings_off_at(settings: &Path) -> bool {
+    let Ok(cfg) = read_settings(settings) else { return false };
+    let Some(line) = cfg.get("statusLine") else { return false };
+    let command = line.get("command").and_then(|c| c.as_str()).unwrap_or_default();
+    !KNOT_STATUSLINE_MARKERS.iter().any(|m| command.contains(m))
+}
+
+/// [`usage_warnings_off_at`] for this user's Claude Code settings.
+pub fn usage_warnings_off() -> bool {
+    claude_settings_path().is_ok_and(|settings| usage_warnings_off_at(&settings))
 }
 
 fn is_knot_entry(entry: &serde_json::Value) -> bool {
@@ -611,6 +633,21 @@ mod tests {
             vec!["\"/moved/knot\" hook post-tool", "\"/moved/knot\" hook usage"]
         );
         assert_eq!(commands(&read(&settings), "SessionStart"), vec!["\"/moved/knot\" hook session-start"]);
+    }
+
+    #[test]
+    fn usage_warnings_are_off_only_under_another_status_line() {
+        let dir = tempfile::tempdir().unwrap();
+        let settings = dir.path().join("settings.json");
+        let set = |command: &str| std::fs::write(&settings, json!({"statusLine": {"type": "command", "command": command}}).to_string()).unwrap();
+
+        assert!(!usage_warnings_off_at(&settings), "no settings file");
+        set("\"/opt/knot/knot\" statusline");
+        assert!(!usage_warnings_off_at(&settings));
+        set("sh -c 'input=$(cat); echo \"$input\" | knot statusline >/dev/null; echo mine'");
+        assert!(!usage_warnings_off_at(&settings), "chained, so usage is still recorded");
+        set("ccstatusline");
+        assert!(usage_warnings_off_at(&settings));
     }
 
     #[test]
