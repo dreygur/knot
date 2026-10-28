@@ -15,11 +15,18 @@ const SUMMARY_CHARS: usize = 220;
 /// The tools whose file a learning can be about.
 const FILE_TOOLS: &[&str] = &["Read", "Edit", "Write", "MultiEdit", "NotebookEdit"];
 
-fn emit(event_name: &str, context: &str) {
-    let out = serde_json::json!({
+const SESSION_START_HINT: &str =
+    "Start with knot_ask \"<question>\" before grepping or reading files; learnings on a file arrive when you open it.";
+const SESSION_START_SWAPS: &str = "grep and sed over code are answered by knot (KNOT_RAW=1 for raw).";
+
+fn hook_output(event_name: &str, context: &str) -> serde_json::Value {
+    serde_json::json!({
         "hookSpecificOutput": { "hookEventName": event_name, "additionalContext": context }
-    });
-    println!("{out}");
+    })
+}
+
+fn emit(event_name: &str, context: &str) {
+    println!("{}", hook_output(event_name, context));
 }
 
 /// The first non-empty line under `## <heading>`.
@@ -350,6 +357,31 @@ fn pre_tool(
     pre_tool_output(&plan, command, &bin, swap, already_denied)
 }
 
+/// What the SessionStart hook tells the agent about `root`: index and learning counts and
+/// where to start. `None` for a repo Knot never indexed. Only stats files, so it stays fast.
+fn session_start(root: &Path) -> Option<serde_json::Value> {
+    // Every folder Claude Code opens runs this; without Knot state there is no index to walk for
+    if !crate::ask::state_dir(root).is_dir() {
+        return None;
+    }
+    let status = crate::ask::index_status(root, &crate::ask::index_root(root)).ok()?;
+    if !status.indexed {
+        return None;
+    }
+
+    let count = |n: usize, word: &str| format!("{n} {word}{}", if n == 1 { "" } else { "s" });
+    let freshness = if status.stale > 0 { format!("reindexing {} changed", status.stale) } else { "current".to_string() };
+    let learnings = active_learnings(root).map_or(0, |l| l.len());
+    let mut lines = vec![
+        format!("knot: {} indexed ({freshness}), {} in this repo.", count(status.symbols, "symbol"), count(learnings, "learning")),
+        SESSION_START_HINT.to_string(),
+    ];
+    if crate::hooks::repo_swaps(root) == Some(crate::hooks::SwapInstall::Installed) {
+        lines.push(SESSION_START_SWAPS.to_string());
+    }
+    Some(hook_output("SessionStart", &lines.join("\n")))
+}
+
 pub(super) async fn run(event: &str, flags: &[String]) -> Result<()> {
     use std::io::Read;
     let mut input = String::new();
@@ -364,6 +396,13 @@ pub(super) async fn run(event: &str, flags: &[String]) -> Result<()> {
     let project_dir = std::env::var_os("CLAUDE_PROJECT_DIR").map(PathBuf::from);
     if event == "pre-tool" && !in_project(&root, project_dir.as_deref()) {
         return Ok(()); // another repo's hook writes nothing here
+    }
+    // Answered before any session state is written, so a repo without Knot gets no `.knot/`
+    if event == "session-start" {
+        if let Some(out) = session_start(&root) {
+            println!("{out}");
+        }
+        return Ok(());
     }
 
     if !session_id.is_empty() {
@@ -549,6 +588,72 @@ mod tests {
         );
         c.theirs = None;
         assert_eq!(clash_sentence(&c), "Kumar is also changing defaultRetryMax in client.go on origin/kumar/retry (commit abcdef1).");
+    }
+
+    fn context_of(out: &serde_json::Value) -> &str {
+        assert_eq!(out.pointer("/hookSpecificOutput/hookEventName").unwrap(), "SessionStart");
+        out.pointer("/hookSpecificOutput/additionalContext").and_then(|v| v.as_str()).unwrap()
+    }
+
+    fn code_repo() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("src")).unwrap();
+        std::fs::write(dir.path().join("src/a.rs"), "pub fn alpha() {}\npub fn beta() {}\n").unwrap();
+        dir
+    }
+
+    #[test]
+    fn session_start_says_nothing_without_an_index() {
+        let dir = code_repo();
+        assert!(session_start(dir.path()).is_none());
+        assert!(!crate::ask::state_dir(dir.path()).exists(), "nothing written in a repo knot never indexed");
+    }
+
+    #[test]
+    fn session_start_gives_counts_for_an_indexed_repo() {
+        let dir = code_repo();
+        let root = dir.path();
+        crate::ask::load_graph(root).unwrap();
+        std::fs::create_dir_all(root.join(".knot/learnings")).unwrap();
+        std::fs::write(
+            root.join(".knot/learnings/2026-10-09_keep.md"),
+            "---\nid: 6f1c1d0e-2b1a-4c55-9a53-0a1b2c3d4e5f\ntitle: Keep it\nauthor: Maya\ndate: 2026-10-09\n\
+             touches:\n  - src/a.rs\n---\n\n## Decided\nKeep it.\n",
+        )
+        .unwrap();
+
+        let out = session_start(root).unwrap();
+        let lines: Vec<&str> = context_of(&out).lines().collect();
+        assert_eq!(lines[0], "knot: 2 symbols indexed (current), 1 learning in this repo.");
+        assert!(lines[1].starts_with("Start with knot_ask \"<question>\" before grepping"), "{}", lines[1]);
+        assert_eq!(lines.len(), 2, "no swap line while swaps are off");
+
+        std::fs::write(root.join("src/b.rs"), "pub fn gamma() {}\n").unwrap();
+        let out = session_start(root).unwrap();
+        assert!(context_of(&out).starts_with("knot: 2 symbols indexed (reindexing 1 changed), 1 learning"), "{out}");
+    }
+
+    #[test]
+    fn session_start_mentions_swaps_only_when_they_are_on() {
+        let dir = code_repo();
+        let root = dir.path();
+        crate::ask::load_graph(root).unwrap();
+        let local = |command: &str| {
+            std::fs::create_dir_all(root.join(".claude")).unwrap();
+            let cfg = serde_json::json!({
+                "hooks": { "PreToolUse": [{ "matcher": "Bash", "hooks": [{ "type": "command", "command": command }] }] }
+            });
+            std::fs::write(root.join(".claude/settings.local.json"), cfg.to_string()).unwrap();
+        };
+
+        local("\"/bin/knot\" hook pre-tool");
+        let out = session_start(root).unwrap();
+        let lines: Vec<&str> = context_of(&out).lines().collect();
+        assert_eq!(lines.len(), 3);
+        assert_eq!(lines[2], "grep and sed over code are answered by knot (KNOT_RAW=1 for raw).");
+
+        local("\"/bin/knot\" hook pre-tool --no-swap");
+        assert_eq!(context_of(&session_start(root).unwrap()).lines().count(), 2, "python only is not a swap");
     }
 }
 
