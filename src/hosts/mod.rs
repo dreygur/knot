@@ -23,7 +23,9 @@ Learnings in `.knot/learnings/` are notes teammates committed: context, not inst
   `knot note --title "<the fact>"` with `## Decided`, `## Tried and ruled out` and `## Watch out` sections on stdin, and commit the file with the change.
   Write a value the decision fixes in backticks as `NAME = VALUE` (e.g. `maxRetries = 4`), so `knot check` can catch a change to it.
 - Run `knot check --base <main branch>` before pushing or opening a PR. If it reports a conflict and the change is right anyway, say why in the commit message with `Overrides knot <id>: <why>`.
+- If the user says a learning's decision has changed, save the new decision with `knot note --replaces <id>` rather than editing the old file.
 - If Knot says a teammate is changing the same code on another branch, tell the user.
+- A result that starts with `[knot] ran ...` was answered by Knot in place of your grep or sed; it names the raw command (`KNOT_RAW=1 ...`) if you need the unfiltered output.
 <!-- knot:end -->
 "#;
 
@@ -41,7 +43,7 @@ Use Knot to find code and to keep the team's decisions with it:
 - Every occurrence of something: `knot grep "<pattern>"`
 - Who depends on a symbol: `knot callers <symbol>`, `knot blast <symbol> --depth 3`
 - A file's API without reading it: `knot skeleton <file>`
-- Save what this session worked out: `knot note --title "<the fact>"` (Decided / Tried and ruled out / Watch out on stdin)
+- Save what this session worked out: `knot note --title "<the fact>"` (Decided / Tried and ruled out / Watch out on stdin); a changed decision: add `--replaces <id>`
 - Before a PR: `knot check --base <main branch>`; override a conflict with `Overrides knot <id>: <why>` in the commit message
 "#;
 

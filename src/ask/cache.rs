@@ -139,6 +139,12 @@ pub fn state_file(dir: &Path, name: &str) -> std::io::Result<PathBuf> {
     Ok(path)
 }
 
+/// Whether `dir/name` may be read: the rule [`state_file`] applies to writes, without
+/// creating anything. A linked `.knot`, state folder or file is never read through.
+pub fn state_file_readable(dir: &Path, name: &str) -> bool {
+    !(dir.parent().is_some_and(is_symlink) || is_symlink(dir) || is_symlink(&dir.join(name)))
+}
+
 /// [`state_file`] for a path already joined, as the cache's own files are.
 fn writable(path: &Path) -> std::io::Result<PathBuf> {
     let (Some(dir), Some(name)) = (path.parent(), path.file_name()) else {

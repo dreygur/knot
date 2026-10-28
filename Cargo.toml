@@ -16,6 +16,9 @@ name = "knot"
 path = "src/lib.rs"
 
 [dependencies]
+# Tokenising Bash commands the hooks inspect
+shell-words = "1.1"
+
 # MCP transport
 rmcp = { version = "0.1", features = ["server", "transport-io"] }
 schemars = "0.8"
@@ -75,6 +78,11 @@ git2 = { version = "0.20", default-features = false }
 # Terminal UI
 ratatui = { version = "0.29", default-features = false, features = ["crossterm"] }
 crossterm = "0.28"
+
+# Share card: SVG to PNG with embedded fonts only (no system fonts, same output everywhere)
+resvg = { version = "0.48.1", default-features = false, features = ["text", "raster-images"] }
+skrifa = "0.44"
+base64 = "0.22"
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.52"

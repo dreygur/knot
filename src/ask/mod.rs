@@ -1,4 +1,5 @@
 mod cache;
+pub mod events;
 pub mod grep;
 mod index;
 mod learnings;
@@ -8,7 +9,7 @@ pub mod session;
 mod tokenize;
 
 pub use cache::{
-    claim_reindex, index_status, state_file, load_corpus, release_reindex, Corpus, IndexStatus, LoadStats,
+    claim_reindex, index_status, state_file, state_file_readable, load_corpus, release_reindex, Corpus, IndexStatus, LoadStats,
 };
 pub use index::LexicalIndex;
 pub use learnings::{flatten, related_learnings, LearningHit};
@@ -154,6 +155,28 @@ pub fn current_repo_root() -> std::io::Result<std::path::PathBuf> {
     Ok(repo_root(&std::env::current_dir()?))
 }
 
+/// The code index and learnings of `root`, for status output. The vault counts beside
+/// it are memories, not code, so without this line an empty vault reads as "nothing indexed".
+pub fn repo_summary(root: &Path) -> String {
+    let count = |n: usize, word: &str| format!("{n} {word}{}", if n == 1 { "" } else { "s" });
+    let index = match index_status(root, &index_root(root)) {
+        Err(e) => format!("unreadable ({e})"),
+        Ok(s) if s.files == 0 && !s.indexed => "no supported code files here".to_string(),
+        Ok(s) if !s.indexed => format!("not built yet, {}; any code command builds it", count(s.files, "file")),
+        Ok(s) if s.stale > 0 => {
+            format!("{}, {} reindex on the next code command", count(s.symbols, "symbol"), count(s.stale, "changed file"))
+        }
+        Ok(s) => format!("{}, current", count(s.symbols, "symbol")),
+    };
+    let learnings = crate::engine::learnings::active_learnings(root).map_or(0, |l| l.len());
+    let swaps = match crate::hooks::repo_swaps(root) {
+        Some(crate::hooks::SwapInstall::Installed) => "on",
+        Some(crate::hooks::SwapInstall::Deferred { .. }) => "python-only",
+        None => "off",
+    };
+    format!("[KNOT] repo    {}\n        index={index}  learnings={learnings}\n        swaps={swaps}\n", root.display())
+}
+
 /// The code graph for `root`, reparsing only files changed since the last load, so
 /// every caller sees the working tree as it is without a separate build step.
 pub fn load_graph(root: &Path) -> anyhow::Result<crate::ast::CodeGraph> {
@@ -213,5 +236,21 @@ mod tests {
         write(dir.path(), "src/a.rs", "pub fn alpha() {}\n");
         assert!(ask(dir.path(), None, "zzzz qqqq", 5, Ranking::Hybrid).unwrap().is_empty());
         assert!(ask(dir.path(), None, "", 5, Ranking::LexicalOnly).unwrap().is_empty());
+    }
+
+    #[test]
+    fn repo_summary_says_whether_the_code_is_indexed() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(repo_summary(dir.path()).contains("no supported code files"));
+
+        write(dir.path(), "src/a.rs", "pub fn alpha() {}\npub fn beta() {}\n");
+        assert!(repo_summary(dir.path()).contains("not built yet, 1 file;"));
+
+        load_graph(dir.path()).unwrap();
+        let summary = repo_summary(dir.path());
+        assert!(summary.contains("index=2 symbols, current") && summary.contains("learnings=0") && summary.contains("swaps=off"), "{summary}");
+
+        write(dir.path(), "src/b.rs", "pub fn gamma() {}\n");
+        assert!(repo_summary(dir.path()).contains("1 changed file reindex"));
     }
 }

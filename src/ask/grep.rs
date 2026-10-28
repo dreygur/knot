@@ -15,7 +15,7 @@ use crate::ast::CodeGraph;
 /// Matched lines longer than this are cut, so one minified line cannot flood the output.
 const MAX_LINE_CHARS: usize = 200;
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct GrepOptions {
     pub pattern: String,
     pub ignore_case: bool,
@@ -170,7 +170,14 @@ pub fn format_report(report: &GrepReport) -> String {
         report.files_matched,
         report.files_searched
     );
-    for g in &report.groups {
+    out.push_str(&format_groups(&report.groups));
+    out
+}
+
+/// Each group's heading and matching lines, as `format_report` prints them.
+pub fn format_groups(groups: &[GrepGroup]) -> String {
+    let mut out = String::new();
+    for g in groups {
         out.push('\n');
         match (&g.symbol, &g.kind, g.span) {
             (Some(name), Some(kind), Some((start, end))) => {

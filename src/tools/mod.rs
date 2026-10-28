@@ -95,6 +95,12 @@ fn ask_text(
     let limit = input.limit.unwrap_or(DEFAULT_ASK_LIMIT).min(MAX_ASK_LIMIT);
     let hits = crate::ask::ask(root, cache_root, &input.question, limit, crate::ask::Ranking::Hybrid)?;
     let learnings = crate::ask::related_learnings(root, &input.question, &hits);
+    if !learnings.is_empty() {
+        let session = crate::ask::events::current_session(root);
+        for l in &learnings {
+            crate::ask::events::learning_shown(root, &session, std::path::Path::new(&l.file), l.cost_minutes, l.cost_tokens);
+        }
+    }
 
     let mut out = String::new();
     if !learnings.is_empty() {
@@ -531,11 +537,15 @@ impl KnotServer {
         ))]))
     }
 
-    #[tool(description = "Health check: node count by level, skill count, and database status.")]
+    #[tool(description = "Health check: memory vault counts by level, skills, database status, and this repo's code index and learnings.")]
     async fn knot_status(&self) -> Result<CallToolResult, McpError> {
         let engine = self.engine.lock().await;
         let status = engine.knot_status().await.map_err(mcp_err)?;
         let mut text = format_status_report(&status);
+        if let Ok(root) = crate::ask::current_repo_root() {
+            text.push('\n');
+            text.push_str(&crate::ask::repo_summary(&root));
+        }
         // Status always lists current collisions, not only ones not yet reported.
         if let Some(monitor) = &self.branch_monitor {
             let current = monitor.get_collisions();
@@ -1129,7 +1139,7 @@ fn format_status_report(r: &StatusReport) -> String {
         format!("│ Ghosts       : {:>4}\n", r.ghost_count)
     };
     format!(
-        "KNOT STATUS\n\
+        "KNOT STATUS · memory vault (memories, not code)\n\
          ──────────\n\
          │ L1 (Session)  : {:>4}\n\
          │ L2 (Project)  : {:>4}\n\

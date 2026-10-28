@@ -23,3 +23,9 @@ reference/
 .vscode/
 *.swp
 *.swo
+.superpowers/
+
+# Trail and graft (local tooling, not part of the project)
+.trail/
+Trail-Code/
+.graft*

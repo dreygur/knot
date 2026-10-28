@@ -1,5 +1,6 @@
 pub mod ask;
 pub mod ast;
+pub mod card;
 pub mod check;
 pub mod cli;
 pub mod engine;
@@ -8,6 +9,7 @@ pub mod hosts;
 pub mod jitv;
 pub mod logging;
 pub mod memory;
+pub mod shell;
 pub mod skills;
 pub mod tools;
 pub mod ui;
