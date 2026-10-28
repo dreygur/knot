@@ -85,7 +85,7 @@ skrifa = "0.44"
 base64 = "0.23"
 
 [target.'cfg(windows)'.dependencies]
-winreg = "0.52"
+winreg = "0.56"
 
 # Path of an open file descriptor, so Jit-V checks the file it actually read
 [target.'cfg(unix)'.dependencies]
