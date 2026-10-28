@@ -1,12 +1,14 @@
 mod cache;
 pub mod events;
 pub mod grep;
+pub mod handoff;
 mod index;
 mod learnings;
 pub mod map;
 pub mod savings;
 pub mod session;
 mod tokenize;
+pub mod usage;
 
 pub use cache::{
     claim_reindex, index_status, state_file, state_file_readable, load_corpus, release_reindex, Corpus, IndexStatus, LoadStats,

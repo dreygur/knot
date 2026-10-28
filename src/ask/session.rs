@@ -20,7 +20,7 @@ pub struct SessionRef {
 }
 
 /// Session ids come from hook input; keep them to a safe file name.
-fn safe_id(session_id: &str) -> String {
+pub(super) fn safe_id(session_id: &str) -> String {
     session_id.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '-').take(64).collect()
 }
 

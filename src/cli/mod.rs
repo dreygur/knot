@@ -95,7 +95,7 @@ fn usage_exit(usage: &str) -> ! {
 }
 
 const COMMANDS: &[&str] = &[
-    "recall", "commit", "callers", "callees", "blast", "ask", "grep", "shell", "map", "note", "skeleton", "index", "statusline", "check",
+    "recall", "commit", "callers", "callees", "blast", "ask", "grep", "shell", "map", "note", "handoff", "skeleton", "index", "statusline", "check",
     "explore", "viz", "status", "logs", "init", "card", "help", "version",
 ];
 
@@ -540,6 +540,43 @@ fn cli_note(mut args: impl Iterator<Item = String>) -> Result<()> {
     Ok(())
 }
 
+/// `knot handoff save|show|clear`: the note a session leaves for the next one, kept in
+/// the repo's git-ignored `.knot/cache/handoff.md`. `save` reads the note on stdin.
+fn cli_handoff(action: &str) -> Result<()> {
+    use std::io::{IsTerminal, Read};
+    const USAGE: &str = "knot handoff save|show|clear  (save reads the note on stdin)";
+    let root = crate::ask::repo_root(&std::env::current_dir()?);
+    match action {
+        "save" => {
+            let mut body = String::new();
+            if !std::io::stdin().is_terminal() {
+                std::io::stdin().read_to_string(&mut body)?;
+            }
+            if body.trim().is_empty() {
+                anyhow::bail!(
+                    "The handoff needs a note on stdin: the goal, what's done (with commit hashes), the next step, \
+                     open questions and the files in progress."
+                );
+            }
+            let path = crate::ask::handoff::save(&root, &body)?;
+            println!("[KNOT] ✓ Saved the handoff · {}", path.strip_prefix(&root).unwrap_or(&path).display());
+        }
+        "show" => match crate::ask::handoff::load(&root) {
+            Some(note) => print!("{}", note.body),
+            None => println!("[KNOT] No handoff waiting in this repo."),
+        },
+        "clear" => {
+            if crate::ask::handoff::clear(&root)? {
+                println!("[KNOT] ✓ Cleared the handoff.");
+            } else {
+                println!("[KNOT] No handoff to clear.");
+            }
+        }
+        _ => usage_exit(USAGE),
+    }
+    Ok(())
+}
+
 /// Print a code answer and record the tokens it saved over reading `files` whole.
 fn answer(root: &Path, tool: &str, files: &[String], out: &str) {
     print!("{out}");
@@ -963,6 +1000,8 @@ fn cli_statusline() -> Result<()> {
     }
 
     let json: serde_json::Value = serde_json::from_str(&input).unwrap_or_default();
+    // Hooks never see these numbers; the PostToolUse hook reads them back from here
+    crate::ask::usage::record_statusline(&dir, &json, chrono::Utc::now().timestamp_millis());
     let line = StatusLine {
         index: status,
         learnings: count_repo_learnings(&dir),
@@ -1162,6 +1201,7 @@ pub fn print_help() {
     println!("                                          whole at 4 bytes per token, minus the answer; an upper bound)");
     println!("  knot note --title \"<fact>\" [--touches f#sym] [--replaces <id>]");
     println!("                                          Save a team learning (body on stdin); --replaces retires an older one");
+    println!("  knot handoff save|show|clear            The note a session leaves for the next (save reads stdin)");
     println!("  knot check [--base <ref>] [--remote]    Audit git diff against repo learnings");
     println!("  knot explore [query]                    Interactive terminal TUI code graph explorer");
     println!("  knot viz                                Launch interactive code graph visualizer");
@@ -1250,6 +1290,7 @@ pub async fn run() -> Result<()> {
             cli_shell(&command)
         }
         Some("note") => cli_note(args),
+        Some("handoff") => cli_handoff(&args.next().unwrap_or_default()),
         Some("hook") => {
             let event = args.next().unwrap_or_default();
             let flags: Vec<String> = args.collect();

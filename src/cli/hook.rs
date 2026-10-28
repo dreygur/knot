@@ -6,7 +6,7 @@ use anyhow::Result;
 use std::path::{Path, PathBuf};
 
 use crate::ask::events::{self, Event, EventKind};
-use crate::ask::{flatten, session};
+use crate::ask::{flatten, handoff, session, usage};
 use crate::engine::learnings::{active_learnings, RepoLearning};
 use crate::shell::classify::{classify, Plan};
 
@@ -18,15 +18,19 @@ const FILE_TOOLS: &[&str] = &["Read", "Edit", "Write", "MultiEdit", "NotebookEdi
 const SESSION_START_HINT: &str =
     "Start with knot_ask \"<question>\" before grepping or reading files; learnings on a file arrive when you open it.";
 const SESSION_START_SWAPS: &str = "grep and sed over code are answered by knot (KNOT_RAW=1 for raw).";
+const HANDOFF_WAITING: &str = "A handoff from an earlier session is waiting: run knot handoff show and continue from it, \
+                               then knot handoff clear when done.";
+
+/// Percent of the context window or the 5-hour limit at which the agent is told to
+/// write its handoff, early enough to leave room for writing it.
+const LIMIT_WARN_PCT: f64 = 85.0;
+const HANDOFF_OUTLINE: &str =
+    "the goal, what's done (with commit hashes), the next step, open questions and the files in progress";
 
 fn hook_output(event_name: &str, context: &str) -> serde_json::Value {
     serde_json::json!({
         "hookSpecificOutput": { "hookEventName": event_name, "additionalContext": context }
     })
-}
-
-fn emit(event_name: &str, context: &str) {
-    println!("{}", hook_output(event_name, context));
 }
 
 /// The first non-empty line under `## <heading>`.
@@ -357,8 +361,19 @@ fn pre_tool(
     pre_tool_output(&plan, command, &bin, swap, already_denied)
 }
 
-/// What the SessionStart hook tells the agent about `root`: index and learning counts and
-/// where to start. `None` for a repo Knot never indexed. Only stats files, so it stays fast.
+/// The SessionStart lines for a handoff an earlier session left in `root`.
+fn handoff_lines(root: &Path) -> Vec<String> {
+    let Some(note) = handoff::load(root) else {
+        return Vec::new();
+    };
+    let title = flatten(handoff::title(&note.body).unwrap_or_default(), 120);
+    let age = handoff::age(note.saved, std::time::SystemTime::now());
+    vec![HANDOFF_WAITING.to_string(), format!("Handoff: \"{title}\", saved {age}.")]
+}
+
+/// What the SessionStart hook tells the agent about `root`: index and learning counts,
+/// where to start, and a waiting handoff. `None` for a repo Knot never indexed. Only
+/// stats files, so it stays fast.
 fn session_start(root: &Path) -> Option<serde_json::Value> {
     // Every folder Claude Code opens runs this; without Knot state there is no index to walk for
     if !crate::ask::state_dir(root).is_dir() {
@@ -379,7 +394,72 @@ fn session_start(root: &Path) -> Option<serde_json::Value> {
     if crate::hooks::repo_swaps(root) == Some(crate::hooks::SwapInstall::Installed) {
         lines.push(SESSION_START_SWAPS.to_string());
     }
+    lines.extend(handoff_lines(root));
     Some(hook_output("SessionStart", &lines.join("\n")))
+}
+
+/// "16:40": a reset time from the status line, in local time.
+fn local_clock(epoch_secs: i64) -> Option<String> {
+    let at = chrono::DateTime::from_timestamp(epoch_secs, 0)?;
+    Some(at.with_timezone(&chrono::Local).format("%H:%M").to_string())
+}
+
+/// Once per session for each limit the status line last saw at or past
+/// [`LIMIT_WARN_PCT`]: tell the agent to write its handoff now.
+fn limit_warning(root: &Path, session_id: &str) -> Option<String> {
+    let usage = usage::load(root, session_id)?;
+    let near = |pct: Option<f64>| pct.filter(|p| *p >= LIMIT_WARN_PCT);
+
+    let mut limits = Vec::new();
+    if let Some(pct) = near(usage.context_pct) {
+        limits.push(("limit:context", format!("the context window is {pct:.0}% full")));
+    }
+    if let Some(pct) = near(usage.five_hour_pct) {
+        let reset = usage.five_hour_resets_at.and_then(local_clock).map(|t| format!(" and resets at {t}"));
+        limits.push(("limit:five-hour", format!("your 5-hour limit is {pct:.0}% used{}", reset.unwrap_or_default())));
+    }
+    if limits.is_empty() {
+        return None;
+    }
+
+    let keys: Vec<String> = limits.iter().map(|(key, _)| key.to_string()).collect();
+    let fresh = session::first_showing(root, session_id, &keys);
+    let said: Vec<&str> =
+        limits.iter().filter(|(key, _)| fresh.iter().any(|f| f == key)).map(|(_, text)| text.as_str()).collect();
+    (!said.is_empty()).then(|| {
+        format!(
+            "[knot] Near a limit: {}. Write the handoff note now, so a new session can continue from it: \
+             pipe {HANDOFF_OUTLINE} to `knot handoff save`.",
+            said.join("; ")
+        )
+    })
+}
+
+/// Learnings and teammates' clashes on the file a Read or edit just touched.
+fn file_context(root: &Path, session_id: &str, tool: &str, file: &str) -> Vec<String> {
+    if !FILE_TOOLS.contains(&tool) || file.is_empty() {
+        return Vec::new();
+    }
+    let file = std::fs::canonicalize(file).unwrap_or_else(|_| PathBuf::from(file));
+    if tool != "Read" {
+        if let Ok(rel) = file.strip_prefix(root) {
+            session::note_edit(root, &rel.to_string_lossy().replace('\\', "/"));
+        }
+    }
+    let mut context = Vec::new();
+    context.extend(learnings_for_file(root, &file, session_id));
+    if tool != "Read" {
+        context.extend(clash_for_file(root, &file, session_id));
+    }
+    context
+}
+
+/// What the PostToolUse hook adds to the agent's context: a limit warning, then what
+/// Knot knows about the file the tool used.
+fn post_tool(root: &Path, session_id: &str, tool: &str, file: &str) -> Option<serde_json::Value> {
+    let mut context: Vec<String> = limit_warning(root, session_id).into_iter().collect();
+    context.extend(file_context(root, session_id, tool, file));
+    (!context.is_empty()).then(|| hook_output("PostToolUse", &context.join("\n\n")))
 }
 
 pub(super) async fn run(event: &str, flags: &[String]) -> Result<()> {
@@ -418,24 +498,8 @@ pub(super) async fn run(event: &str, flags: &[String]) -> Result<()> {
 
     match event {
         "post-tool" => {
-            let tool = text("/tool_name");
-            let file = text("/tool_input/file_path");
-            if !FILE_TOOLS.contains(&tool.as_str()) || file.is_empty() {
-                return Ok(());
-            }
-            let file = std::fs::canonicalize(&file).unwrap_or_else(|_| PathBuf::from(&file));
-            if tool != "Read" {
-                if let Ok(rel) = file.strip_prefix(&root) {
-                    session::note_edit(&root, &rel.to_string_lossy().replace('\\', "/"));
-                }
-            }
-            let mut context = Vec::new();
-            context.extend(learnings_for_file(&root, &file, &session_id));
-            if tool != "Read" {
-                context.extend(clash_for_file(&root, &file, &session_id));
-            }
-            if !context.is_empty() {
-                emit("PostToolUse", &context.join("\n\n"));
+            if let Some(out) = post_tool(&root, &session_id, &text("/tool_name"), &text("/tool_input/file_path")) {
+                println!("{out}");
             }
         }
         "pre-tool" => {
@@ -654,6 +718,92 @@ mod tests {
 
         local("\"/bin/knot\" hook pre-tool --no-swap");
         assert_eq!(context_of(&session_start(root).unwrap()).lines().count(), 2, "python only is not a swap");
+    }
+
+    #[test]
+    fn session_start_points_at_a_waiting_handoff() {
+        let dir = code_repo();
+        let root = dir.path();
+        crate::ask::load_graph(root).unwrap();
+        crate::ask::handoff::save(root, "# Cap retries at four\n\n## Next step\nWire the test.\n").unwrap();
+
+        let out = session_start(root).unwrap();
+        let text = context_of(&out);
+        assert!(text.contains(HANDOFF_WAITING), "{text}");
+        assert!(text.contains("Handoff: \"Cap retries at four\", saved just now."), "{text}");
+
+        crate::ask::handoff::clear(root).unwrap();
+        assert!(!context_of(&session_start(root).unwrap()).contains("handoff"), "nothing once it is cleared");
+    }
+
+    #[test]
+    fn a_handoff_without_an_index_says_nothing() {
+        let dir = code_repo();
+        crate::ask::handoff::save(dir.path(), "# Cap retries at four\n").unwrap();
+        assert!(session_start(dir.path()).is_none());
+    }
+}
+
+#[cfg(test)]
+mod limit_tests {
+    use super::*;
+    use crate::ask::usage::Usage;
+
+    fn knot_repo() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(crate::ask::state_dir(dir.path())).unwrap();
+        dir
+    }
+
+    fn warning(root: &Path) -> Option<String> {
+        let out = post_tool(root, "s1", "Bash", "")?;
+        assert_eq!(out.pointer("/hookSpecificOutput/hookEventName").unwrap(), "PostToolUse");
+        out.pointer("/hookSpecificOutput/additionalContext").and_then(|v| v.as_str()).map(str::to_string)
+    }
+
+    #[test]
+    fn warns_once_when_the_context_window_is_nearly_full() {
+        let dir = knot_repo();
+        let root = dir.path();
+        let context = |pct| crate::ask::usage::record(root, "s1", &Usage { context_pct: Some(pct), ..Default::default() });
+
+        context(84.0);
+        assert!(warning(root).is_none(), "84% is not near yet");
+
+        context(85.0);
+        let text = warning(root).unwrap();
+        assert!(text.contains("the context window is 85% full"), "{text}");
+        assert!(text.contains("`knot handoff save`") && text.contains("(with commit hashes)"), "{text}");
+
+        context(93.0);
+        assert!(warning(root).is_none(), "once per session");
+    }
+
+    #[test]
+    fn the_five_hour_limit_warns_on_its_own_with_its_reset_time() {
+        let dir = knot_repo();
+        let root = dir.path();
+        let resets = 1_793_212_800;
+        crate::ask::usage::record(root, "s1", &Usage { context_pct: Some(90.0), ..Default::default() });
+        assert!(warning(root).is_some());
+
+        crate::ask::usage::record(
+            root,
+            "s1",
+            &Usage { context_pct: Some(90.0), five_hour_pct: Some(88.4), five_hour_resets_at: Some(resets), ..Default::default() },
+        );
+        let text = warning(root).unwrap();
+        let clock = chrono::DateTime::from_timestamp(resets, 0).unwrap().with_timezone(&chrono::Local).format("%H:%M");
+        assert!(text.contains(&format!("your 5-hour limit is 88% used and resets at {clock}")), "{text}");
+        assert!(!text.contains("context window"), "the context warning already went out: {text}");
+        assert!(warning(root).is_none(), "once per session");
+    }
+
+    #[test]
+    fn no_usage_no_warning() {
+        let dir = knot_repo();
+        assert!(warning(dir.path()).is_none());
+        assert!(post_tool(dir.path(), "", "Bash", "").is_none());
     }
 }
 

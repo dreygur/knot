@@ -50,10 +50,10 @@ Commit the new file with the change. If a decision changed, add `--replaces <id>
 
 Never take a package version from memory; it is usually out of date. Before adding or changing a dependency, look up its latest stable version with the ecosystem's tool (`cargo search <name>` or crates.io, `npm view <name> version`, `pip index versions <name>`, `go list -m -versions <module>`) and use it unless the user asks for another. When you touch a dependency manifest, point out dependencies behind their latest major and suggest upgrading them; don't upgrade unasked.
 
-## Notices
+## Handoff
 
-A tool result that starts with `[knot] ran ... in place of ...` means Knot answered your grep or sed over code with grouped results. Prefix the command with `KNOT_RAW=1` when you need the raw output.
+Keep a handoff note so a new session can pick up where this one stops. Save it at checkpoints: after each finished step, before a long task, and when the user says they're stopping. When Knot warns that the context window or the 5-hour limit is near, write it right away. Pipe it to `knot handoff save`; it lands in the repo's git-ignored `.knot/cache/handoff.md` and replaces the last one. Give the goal, what's done with commit hashes, the next step, open questions and the files in progress. A new session is told when one is waiting: `knot handoff show` prints it, and `knot handoff clear` removes it once the work is picked up.
 
-## Is the index current
+## Notices and index state
 
-`knot status` (or the `knot_status` tool) shows the symbol count, whether files changed since the last index, the learning count and whether swaps are on. Code tools reindex changed files on their own, so a stale index only costs a moment on the next call.
+A tool result that starts with `[knot] ran ... in place of ...` means Knot answered your grep or sed over code with grouped results. Prefix the command with `KNOT_RAW=1` when you need the raw output. `knot status` (or the `knot_status` tool) shows the symbol count, whether files changed since the last index, the learning count and whether swaps are on. Code tools reindex changed files on their own, so a stale index only costs a moment on the next call.
