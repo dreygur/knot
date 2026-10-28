@@ -41,6 +41,8 @@ pub enum Trend {
     Daily(Vec<u64>),
     /// Tokens saved per session, for a user without enough days of history.
     PerSession(u64),
+    /// Tokens saved in all, when savings were logged outside any known session.
+    Total(u64),
 }
 
 /// Total the event logs of `repos` (repo roots). Missing repos and logs are skipped.
@@ -70,6 +72,9 @@ pub fn collect(repos: &[PathBuf], now: DateTime<Local>) -> CardStats {
     let mut learnings: HashMap<&str, &Event> = HashMap::new();
 
     for e in &all {
+        if !e.session.is_empty() {
+            sessions.insert(&e.session);
+        }
         let tile = match e.kind {
             EventKind::Answer => &mut graph,
             EventKind::Swap => &mut swaps,
@@ -80,26 +85,24 @@ pub fn collect(repos: &[PathBuf], now: DateTime<Local>) -> CardStats {
                 continue;
             }
         };
-        tile.tokens += e.saved_tokens as u64;
-        tile.count += 1;
-        before += e.bytes_before;
-        after += e.bytes_after;
-        if !e.session.is_empty() {
-            sessions.insert(&e.session);
-        }
-        *per_day.entry(day_of(e.ts_ms)).or_default() += e.saved_tokens as u64;
+        let saved = e.saved_tokens as u64;
+        tile.tokens = tile.tokens.saturating_add(saved);
+        tile.count = tile.count.saturating_add(1);
+        before = before.saturating_add(e.bytes_before);
+        after = after.saturating_add(e.bytes_after);
+        add(per_day.entry(day_of(e.ts_ms)).or_default(), saved);
     }
 
     let mut learned = LearningTile::default();
     for e in learnings.values() {
         let tokens = e.cost_tokens.unwrap_or(0);
         learned.count += 1;
-        learned.tokens += tokens;
-        learned.minutes += e.cost_minutes.unwrap_or(0);
-        *per_day.entry(day_of(e.ts_ms)).or_default() += tokens;
+        learned.tokens = learned.tokens.saturating_add(tokens);
+        learned.minutes = learned.minutes.saturating_add(e.cost_minutes.unwrap_or(0));
+        add(per_day.entry(day_of(e.ts_ms)).or_default(), tokens);
     }
 
-    let tokens_saved = graph.tokens + swaps.tokens + learned.tokens;
+    let tokens_saved = graph.tokens.saturating_add(swaps.tokens).saturating_add(learned.tokens);
     let today = now.date_naive();
     let first_day = all.first().map(|e| day_of(e.ts_ms));
     let trend = match first_day {
@@ -108,9 +111,13 @@ pub fn collect(repos: &[PathBuf], now: DateTime<Local>) -> CardStats {
             let series_start = day.max(today - Duration::days(WINDOW_DAYS - 1));
             let days = (today - series_start).num_days().max(0);
             let mut series: Vec<u64> = (0..=days).map(|i| per_day.get(&(series_start + Duration::days(i))).copied().unwrap_or(0)).collect();
-            series[0] += per_day.iter().filter(|(d, _)| **d < series_start).map(|(_, t)| t).sum::<u64>();
+            for (_, tokens) in per_day.iter().filter(|(d, _)| **d < series_start) {
+                add(&mut series[0], *tokens);
+            }
             Trend::Daily(series)
         }
+        // Savings logged without a session would read as "0 per session"; show the total
+        _ if sessions.is_empty() && tokens_saved > 0 => Trend::Total(tokens_saved),
         _ => Trend::PerSession(if sessions.is_empty() { 0 } else { tokens_saved / sessions.len() as u64 }),
     };
 
@@ -125,6 +132,10 @@ pub fn collect(repos: &[PathBuf], now: DateTime<Local>) -> CardStats {
     }
 }
 
+fn add(total: &mut u64, tokens: u64) {
+    *total = total.saturating_add(tokens);
+}
+
 fn per_day_with_events(events: &[Event]) -> usize {
     events.iter().map(|e| day_of(e.ts_ms)).collect::<HashSet<_>>().len()
 }
@@ -133,10 +144,12 @@ fn day_of(ts_ms: i64) -> NaiveDate {
     Local.timestamp_millis_opt(ts_ms).earliest().map_or(NaiveDate::MIN, |t| t.date_naive())
 }
 
+/// `capped` wins over `first_day`: history older than the window reads "last 30 days"
+/// even when nothing falls inside it.
 fn label(capped: bool, first_day: Option<NaiveDate>, today: NaiveDate) -> String {
     match first_day {
+        _ if capped => format!("last {WINDOW_DAYS} days"),
         None => "first day".to_string(),
-        Some(_) if capped => format!("last {WINDOW_DAYS} days"),
         Some(day) => {
             let days = (today - day).num_days().max(1);
             format!("since {} · {days} {}", day.format("%b %-d"), if days == 1 { "day" } else { "days" })
@@ -352,6 +365,50 @@ mod tests {
         let stats = collect(&[a.path().to_path_buf(), b.path().to_path_buf()], now());
         assert_eq!(stats.learnings.count, 1);
         assert_eq!(stats.learnings.tokens, 700);
+    }
+
+    #[test]
+    fn sessions_with_only_learnings_count_toward_per_session() {
+        let mut other = learning("a", 1, Some(1_000));
+        other.session = "s2".to_string();
+        let repo = repo_with(&[event(EventKind::Answer, 1, 200), other]);
+        assert_eq!(collect(&[repo.path().to_path_buf()], now()).trend, Trend::PerSession(600));
+    }
+
+    #[test]
+    fn savings_with_no_session_show_the_total() {
+        let mut answer = event(EventKind::Answer, 1, 300);
+        answer.session = String::new();
+        let mut shown = learning("a", 1, Some(700));
+        shown.session = String::new();
+        let repo = repo_with(&[answer, shown]);
+        let stats = collect(&[repo.path().to_path_buf()], now());
+        assert_eq!(stats.tokens_saved, 1_000);
+        assert_eq!(stats.trend, Trend::Total(1_000));
+    }
+
+    #[test]
+    fn history_all_older_than_the_window_still_reads_last_30_days() {
+        let repo = repo_with(&[event(EventKind::Answer, 40, 1_000), event(EventKind::Answer, 35, 10)]);
+        let stats = collect(&[repo.path().to_path_buf()], now());
+        assert_eq!(stats.label, "last 30 days");
+        assert_eq!(stats.tokens_saved, 0);
+    }
+
+    #[test]
+    fn huge_figures_saturate_instead_of_overflowing() {
+        let repo = repo_with(&[
+            event(EventKind::Answer, 4, usize::MAX - 1),
+            event(EventKind::Answer, 2, 10),
+            event(EventKind::Swap, 0, usize::MAX),
+            learning("a", 0, Some(u64::MAX)),
+        ]);
+        let stats = collect(&[repo.path().to_path_buf()], now());
+        assert_eq!(stats.tokens_saved, u64::MAX);
+        assert_eq!(stats.graph.tokens, u64::MAX);
+        assert!(matches!(&stats.trend, Trend::Daily(_)));
+        let view = crate::card::render::CardView { stats, repo_name: None, agents: vec![] };
+        crate::card::render::render_png(&view).unwrap();
     }
 
     #[test]

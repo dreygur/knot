@@ -172,18 +172,14 @@ fn trend(trend: &Trend) -> String {
     let (x0, y0, w, h) = (RIGHT - 360.0, 151.0, 360.0, 100.0);
     let days = match trend {
         Trend::Daily(days) => days,
-        Trend::PerSession(tokens) => {
-            return format!(
-                "<text x=\"{RIGHT}\" y=\"244.6\" text-anchor=\"end\" font-family=\"{SANS_FAMILY}\" font-size=\"24\" fill=\"#8b97a8\">≈ <tspan font-weight=\"600\" fill=\"#e6edf3\">{}</tspan> tokens saved per session</text>",
-                short(*tokens)
-            );
-        }
+        Trend::PerSession(tokens) => return figure(*tokens, " per session"),
+        Trend::Total(tokens) => return figure(*tokens, ""),
     };
     let mut total = 0u64;
     let mut running: Vec<u64> = days
         .iter()
         .map(|d| {
-            total += d;
+            total = total.saturating_add(*d);
             total
         })
         .collect();
@@ -229,6 +225,14 @@ fn trend(trend: &Trend) -> String {
     let bottom = y0 + h;
     format!(
         "<path d=\"{line} L{RIGHT} {bottom} L{x0} {bottom}Z\" fill=\"url(#area)\"/>\n  <path d=\"{line}\" fill=\"none\" stroke=\"{GREEN}\" stroke-width=\"4\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/>"
+    )
+}
+
+/// "≈ 2k tokens saved{suffix}", in the trend's space.
+fn figure(tokens: u64, suffix: &str) -> String {
+    format!(
+        "<text x=\"{RIGHT}\" y=\"244.6\" text-anchor=\"end\" font-family=\"{SANS_FAMILY}\" font-size=\"24\" fill=\"#8b97a8\">≈ <tspan font-weight=\"600\" fill=\"#e6edf3\">{}</tspan> tokens saved{suffix}</text>",
+        short(tokens)
     )
 }
 
@@ -490,5 +494,18 @@ mod tests {
         assert!(drawn(&view).contains("\u{2212}68%"));
         view.stats.less_to_read = None;
         assert!(drawn(&view).contains("\u{2014}"));
+    }
+
+    #[test]
+    fn savings_without_a_session_show_the_total_not_zero_per_session() {
+        let mut view = sample();
+        view.stats.trend = Trend::Total(4_100_000);
+        let svg = drawn(&view);
+        assert!(svg.contains(">4.1M</tspan> tokens saved</text>"), "{svg}");
+        assert!(!svg.contains("per session"));
+        render_png(&view).unwrap();
+
+        view.stats.trend = Trend::PerSession(2_000);
+        assert!(drawn(&view).contains(">2k</tspan> tokens saved per session</text>"));
     }
 }
