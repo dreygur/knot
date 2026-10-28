@@ -7,7 +7,7 @@ use super::picker::{self, Picker, Row};
 use super::{count, register_path, PathChange, SUPPORTED_LANGUAGES};
 use crate::hosts::{Agent, Target};
 
-const USAGE: &str = "knot init [--agents <id,id...>] [-y|--yes]";
+const USAGE: &str = "knot init [--agents <id,id...>] [--swaps] [-y|--yes]";
 const PICKER_TITLE: &str = "knot init · pick the agents you use:";
 const LABEL_WIDTH: usize = 12;
 const DONE: char = '✓';
@@ -47,14 +47,20 @@ fn parse_ids(value: &str, into: &mut Vec<Agent>) -> Result<()> {
     Ok(())
 }
 
-fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Selection> {
+/// The agent selection and whether `--swaps` was given.
+fn parse_args(args: impl IntoIterator<Item = String>) -> Result<(Selection, bool)> {
     let mut args = args.into_iter().peekable();
     let mut named: Option<Vec<Agent>> = None;
     let mut yes = false;
+    let mut swaps = false;
 
     while let Some(arg) = args.next() {
         if arg == "-y" || arg == "--yes" {
             yes = true;
+            continue;
+        }
+        if arg == "--swaps" {
+            swaps = true;
             continue;
         }
         // `--agents claude,codex`, `--agents claude codex` and `--agents=claude` all work
@@ -76,11 +82,12 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Selection> {
         }
     }
 
-    Ok(match (named, yes) {
+    let selection = match (named, yes) {
         (Some(list), _) => Selection::Named(list),
         (None, true) => Selection::Detected,
         (None, false) => Selection::Ask,
-    })
+    };
+    Ok((selection, swaps))
 }
 
 /// What wiring `agent` writes: repo files first, then anything under `~`.
@@ -107,16 +114,58 @@ fn picker_rows(found: &[(Agent, bool)]) -> Vec<Row> {
         .collect()
 }
 
-/// The agents to wire, or `None` when the person cancelled the picker.
-fn choose(selection: Selection, found: &[(Agent, bool)], terminal: Terminal) -> Result<Option<Vec<Agent>>> {
+/// The extra picker row for per-repo shell swaps; it starts unchecked unless `--swaps` was given.
+fn swaps_row() -> Row {
+    Row {
+        label: "swaps".to_string(),
+        detected: true,
+        summary: "Claude Code only · grep and sed over code answered by knot, python code edits stopped · .claude/settings.local.json".to_string(),
+        machine_wide: false,
+    }
+}
+
+/// The agents to wire and whether to turn swaps on, or `None` when the person cancelled the picker.
+fn choose(
+    selection: Selection,
+    swaps: bool,
+    found: &[(Agent, bool)],
+    terminal: Terminal,
+) -> Result<Option<(Vec<Agent>, bool)>> {
     let detected = || found.iter().filter(|(_, d)| *d).map(|(a, _)| *a).collect();
     match (selection, terminal) {
-        (Selection::Named(list), _) => Ok(Some(list)),
-        (Selection::Detected, _) | (Selection::Ask, Terminal::Piped) => Ok(Some(detected())),
+        (Selection::Named(list), _) => Ok(Some((list, swaps))),
+        (Selection::Detected, _) | (Selection::Ask, Terminal::Piped) => Ok(Some((detected(), swaps))),
         (Selection::Ask, Terminal::Interactive) => {
-            let picked = picker::run(Picker::new(PICKER_TITLE, picker_rows(found)))?;
-            Ok(picked.map(|rows| rows.into_iter().map(|i| found[i].0).collect()))
+            let mut rows = picker_rows(found);
+            rows.push(swaps_row());
+            let mut picker = Picker::new(PICKER_TITLE, rows);
+            if !swaps {
+                picker.uncheck(found.len());
+            }
+            Ok(picker::run(picker)?.map(|rows| {
+                let on = rows.contains(&found.len());
+                (rows.into_iter().filter(|&i| i < found.len()).map(|i| found[i].0).collect(), on)
+            }))
         }
+    }
+}
+
+/// Turn the swap hook on for this repo, as one report line. It needs Claude Code, the one
+/// agent whose hooks Knot writes.
+fn swaps_line(root: &Path, agents: &[Agent], bin: &Path) -> String {
+    if !agents.contains(&Agent::Claude) {
+        return line(NOTE, "swaps", "needs Claude Code; pick claude to turn them on");
+    }
+    match crate::hooks::register_repo(root, bin) {
+        Ok(crate::hooks::SwapInstall::Installed) => line(
+            DONE,
+            "swaps",
+            "grep and sed over code answered by knot, python code edits stopped · this repo only",
+        ),
+        Ok(crate::hooks::SwapInstall::Deferred { to }) => {
+            line(NOTE, "swaps", &format!("another hook already rewrites Bash ({to}); python code edits stopped only"))
+        }
+        Err(e) => line(FAILED, "swaps", &format!("{e}")),
     }
 }
 
@@ -170,7 +219,7 @@ fn next_steps(agents: &[Agent]) -> Vec<String> {
 /// `knot init`: pick agents, then add knot to PATH, write only those agents'
 /// instructions, and index the repo into `.knot/cache/`. Cancelling writes nothing.
 pub(super) fn run(args: impl IntoIterator<Item = String>) -> Result<()> {
-    let selection = parse_args(args)?;
+    let (selection, swaps) = parse_args(args)?;
     let home = dirs::home_dir().ok_or_else(|| anyhow::anyhow!("cannot determine the home directory"))?;
     let path = std::env::var_os("PATH");
     let found: Vec<(Agent, bool)> = Agent::ALL.into_iter().map(|a| (a, a.detected(&home, path.as_deref()))).collect();
@@ -180,7 +229,7 @@ pub(super) fn run(args: impl IntoIterator<Item = String>) -> Result<()> {
         Terminal::Piped
     };
 
-    let Some(agents) = choose(selection, &found, terminal)? else {
+    let Some((agents, swaps)) = choose(selection, swaps, &found, terminal)? else {
         eprintln!("{NOTE} cancelled, nothing written");
         return Ok(());
     };
@@ -192,7 +241,12 @@ pub(super) fn run(args: impl IntoIterator<Item = String>) -> Result<()> {
     }
 
     let root = crate::ask::current_repo_root()?;
-    for l in wire(&root, &home, &agents)?.into_iter().chain(next_steps(&agents)) {
+    let mut lines = wire(&root, &home, &agents)?;
+    if swaps {
+        // After the agent lines, before the index line
+        lines.insert(agents.len().max(1), swaps_line(&root, &agents, &bin));
+    }
+    for l in lines.into_iter().chain(next_steps(&agents)) {
         println!("{l}");
     }
     Ok(())
@@ -208,9 +262,9 @@ mod tests {
 
     #[test]
     fn parses_agent_lists_in_every_spelling() {
-        assert_eq!(parse_args(args(&[])).unwrap(), Selection::Ask);
-        assert_eq!(parse_args(args(&["-y"])).unwrap(), Selection::Detected);
-        let both = Selection::Named(vec![Agent::Claude, Agent::Codex]);
+        assert_eq!(parse_args(args(&[])).unwrap(), (Selection::Ask, false));
+        assert_eq!(parse_args(args(&["-y", "--swaps"])).unwrap(), (Selection::Detected, true));
+        let both = (Selection::Named(vec![Agent::Claude, Agent::Codex]), false);
         assert_eq!(parse_args(args(&["--agents", "claude,codex"])).unwrap(), both);
         assert_eq!(parse_args(args(&["--agents", "claude", "codex", "--yes"])).unwrap(), both);
         assert_eq!(parse_args(args(&["--agents=claude,claude,codex"])).unwrap(), both);
@@ -227,10 +281,10 @@ mod tests {
     #[test]
     fn without_a_terminal_only_detected_agents_are_wired() {
         let found = [(Agent::Claude, true), (Agent::Codex, false), (Agent::Cursor, true)];
-        assert_eq!(choose(Selection::Ask, &found, Terminal::Piped).unwrap(), Some(vec![Agent::Claude, Agent::Cursor]));
-        assert_eq!(choose(Selection::Detected, &found, Terminal::Interactive).unwrap(), Some(vec![Agent::Claude, Agent::Cursor]));
+        assert_eq!(choose(Selection::Ask, false, &found, Terminal::Piped).unwrap(), Some((vec![Agent::Claude, Agent::Cursor], false)));
+        assert_eq!(choose(Selection::Detected, true, &found, Terminal::Interactive).unwrap(), Some((vec![Agent::Claude, Agent::Cursor], true)));
         let named = Selection::Named(vec![Agent::Codex]);
-        assert_eq!(choose(named, &found, Terminal::Interactive).unwrap(), Some(vec![Agent::Codex]));
+        assert_eq!(choose(named, false, &found, Terminal::Interactive).unwrap(), Some((vec![Agent::Codex], false)));
     }
 
     #[test]

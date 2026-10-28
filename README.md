@@ -127,6 +127,16 @@ of each file alone.
 
 Commit the instruction files and `.knot/learnings/` so teammates and their agents get them.
 
+### Shell swaps (Claude Code, opt-in per repo)
+
+`knot init --swaps` (or the `swaps` row in the picker, unchecked by default) adds a
+`PreToolUse` Bash hook to `.claude/settings.local.json` in this repo only, and keeps that file
+out of git. With it on, a `grep` or `sed -n` range over indexed code is answered by
+`knot shell`, and the result starts with a `[knot] ran ...` line naming what ran and how to get
+the raw output (`KNOT_RAW=1 <your command>`). Python scripts that edit code are stopped and
+pointed at the edit tools. If another Bash hook (such as rtk) is already set up, Knot only stops
+the python edits. `knot status` shows `swaps=on|off|python-only`.
+
 ---
 
 ## Agent support
@@ -352,7 +362,7 @@ execute_skill(skill_name="format-module", variables=[{key:"file_path", value:"sr
 | Command | What it does |
 |---|---|
 | `knot` | Start the MCP server (stdio) |
-| `knot init [--agents <ids>] [-y\|--yes]` | Pick agents, write their instructions, add Knot to `PATH`, index the repo |
+| `knot init [--agents <ids>] [--swaps] [-y\|--yes]` | Pick agents, write their instructions, add Knot to `PATH`, index the repo |
 | `knot map [--max-dirs N] [--json]` | Directory clusters, hubs and the most central code |
 | `knot ask <question> [--source] [--json] [-n N]` | Ranked code answers with `file:line` spans, plus related learnings |
 | `knot grep <pattern> [-i] [--fixed] [--in <path>] [--json]` | Every match in indexed code, grouped by enclosing symbol |
