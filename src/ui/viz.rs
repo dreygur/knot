@@ -13,10 +13,6 @@ const PAGE_FILE: &str = "graph.html";
 const OPEN_GRACE: Duration = Duration::from_secs(2);
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 const OPEN_POLL: Duration = Duration::from_millis(50);
-/// `start` reads its first quoted argument as the window title, and a path with a
-/// space gets quoted, so an empty title goes first.
-#[cfg(any(target_os = "windows", test))]
-const WINDOWS_START: [&str; 3] = ["/C", "start", ""];
 
 /// Replace each `{{NAME}}` in `template` with `value(NAME)`, in one pass, so text that
 /// was inserted is never scanned for slots. Unknown names are left as they are.
@@ -89,17 +85,24 @@ fn run_opener(opener: &str, path: &Path) -> Result<()> {
     Ok(())
 }
 
+/// The Windows opener. Never `cmd /C start`: cmd.exe reads `&`, `|`, `^` and `%` in a
+/// repo folder name as its own syntax and would run what follows. explorer.exe takes
+/// the path as one argument and opens it in the default browser.
+#[cfg(any(target_os = "windows", test))]
+fn windows_opener(path: &Path) -> std::process::Command {
+    let mut cmd = std::process::Command::new("explorer.exe");
+    cmd.arg(path);
+    cmd
+}
+
 fn open_browser(path: &Path) -> Result<()> {
     #[cfg(target_os = "macos")]
     run_opener("open", path)?;
     #[cfg(target_os = "linux")]
     run_opener("xdg-open", path)?;
+    // explorer.exe exits with 1 even when it opened the file, so only a failed spawn counts.
     #[cfg(target_os = "windows")]
-    std::process::Command::new("cmd")
-        .args(WINDOWS_START)
-        .arg(path)
-        .spawn()
-        .context("could not run start")?;
+    windows_opener(path).spawn().context("could not run explorer.exe")?;
     Ok(())
 }
 
@@ -194,8 +197,12 @@ mod tests {
     }
 
     #[test]
-    fn windows_start_gets_an_empty_title() {
-        assert_eq!(WINDOWS_START, ["/C", "start", ""]);
+    fn windows_opener_never_goes_through_cmd() {
+        let path = Path::new(r"C:\repos\a&calc|x^%PATH%\.knot\cache\graph.html");
+        let cmd = windows_opener(path);
+        assert_eq!(cmd.get_program(), "explorer.exe");
+        let args: Vec<_> = cmd.get_args().collect();
+        assert_eq!(args, [path.as_os_str()], "the path is one argument and nothing else");
     }
 
     #[test]
