@@ -143,6 +143,9 @@ fn classify_grep(prog: &str, args: &[&str], root: &Path, cwd: &Path) -> Option<P
     if path.is_none() && !is_rg && !recursive {
         return None; // grep with no path reads stdin
     }
+    if path.is_some_and(|p| p.starts_with('-')) {
+        return None; // `-` is stdin; anything else dashed is an option after `--`
+    }
     let (full, rel) = resolve(path.unwrap_or("."), root, cwd)?;
     if full.is_dir() {
         // Plain grep refuses directories; and a tree with no source has nothing for Knot to search.
@@ -158,6 +161,9 @@ fn classify_grep(prog: &str, args: &[&str], root: &Path, cwd: &Path) -> Option<P
 
 fn classify_sed(args: &[&str], root: &Path, cwd: &Path) -> Option<Plan> {
     let ["-n", range, file] = args else { return None };
+    if file.starts_with('-') {
+        return None; // `-fx.rs` is an option to sed, not a file
+    }
     let (start, end) = range.strip_suffix('p')?.split_once(',')?;
     let digits = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
     if !digits(start) || !digits(end) {
@@ -193,24 +199,40 @@ fn classify_heredoc(command: &str, at: usize, root: &Path, cwd: &Path) -> Option
     None // never closed
 }
 
-/// The first source file the script opens for writing, or writes with `Path(..).write_text`.
+/// The first source file the script writes: via `open(.., mode)` or `Path(..).write_text`.
+/// Every candidate is checked, so a write to a log file does not hide one to code.
 fn python_write(script: &str, root: &Path, cwd: &Path) -> Option<Plan> {
-    let from_open = script.match_indices("open(").find_map(|(i, m)| {
+    let opens = script.match_indices("open(").filter_map(|(i, m)| {
         let (path, after) = string_literal(&script[i + m.len()..])?;
-        let (mode, _) = string_literal(after.trim_start().strip_prefix(',')?)?;
-        mode.contains(['w', 'a', '+']).then_some(path)
+        let after = after.trim_start().strip_prefix(',')?.trim_start();
+        let after = after.strip_prefix("mode").map_or(after, |r| r.trim_start().strip_prefix('=').unwrap_or(after));
+        let (mode, _) = string_literal(after)?;
+        mode.contains(['w', 'a', 'x', '+']).then_some(path)
     });
-    let from_path = [".write_text(", ".write_bytes("].iter().find_map(|call| {
-        script.match_indices(call).find_map(|(i, _)| {
+    let path_writes = [".write_text(", ".write_bytes("].into_iter().flat_map(|call| script.match_indices(call)).filter_map(
+        |(i, _)| {
             let before = script[..i].strip_suffix(')')?;
             let quote = before.chars().last().filter(|c| matches!(c, '\'' | '"'))?;
             let inner = &before[..before.len() - 1];
             let start = inner.rfind(quote)?;
             inner[..start].ends_with('(').then(|| inner[start + 1..].to_string())
-        })
-    });
-    let path = from_open.or(from_path)?;
-    Some(Plan::PythonWrite { file: source_file(&path, root, cwd)? })
+        },
+    );
+    let file = opens.chain(path_writes).find_map(|p| writable_source(&p, root, cwd))?;
+    Some(Plan::PythonWrite { file })
+}
+
+/// Like `source_file`, but the file may not exist yet: a write can create it.
+fn writable_source(path: &str, root: &Path, cwd: &Path) -> Option<String> {
+    let full = cwd.join(path);
+    let name = full.file_name()?;
+    let parent = full.parent()?.canonicalize().ok()?;
+    let target = parent.join(name);
+    if target.is_dir() || SupportedLang::from_path(&target).is_none() {
+        return None;
+    }
+    let rel = target.strip_prefix(root.canonicalize().ok()?).ok()?;
+    Some(rel.components().map(|c| c.as_os_str().to_string_lossy()).collect::<Vec<_>>().join("/"))
 }
 
 /// Parse a leading `'..'` or `".."` literal (no escapes); returns it and the rest.
@@ -287,6 +309,22 @@ mod tests {
         let heredoc = "python3 - <<'PY'\nfrom pathlib import Path\nPath('src/a.rs').write_text('x')\nPY";
         assert_eq!(plan(&dir, heredoc), write);
         assert_eq!(plan(&dir, "python3 <<EOF\nopen('src/a.rs', 'a').write('x')\nEOF\n"), write);
+        assert_eq!(plan(&dir, "python3 -c \"open('app.log','w'); open('src/a.rs','w')\""), write);
+        assert_eq!(plan(&dir, "python3 -c \"open('src/a.rs','w'); open('app.log','w')\""), write);
+        assert_eq!(
+            plan(&dir, "python3 -c \"from pathlib import Path; Path('app.log').write_text('x'); open('src/a.rs','w')\""),
+            write
+        );
+        assert_eq!(
+            plan(&dir, "python3 -c \"open('app.log','w'); Path('src/a.rs').write_text('x')\""),
+            write
+        );
+        let new = Plan::PythonWrite { file: "src/new.rs".into() };
+        assert_eq!(plan(&dir, "python3 -c \"open('src/new.rs','w').write('x')\""), new);
+        assert_eq!(plan(&dir, "python3 -c \"open('src/a.rs', mode='w')\""), write);
+        assert_eq!(plan(&dir, "python3 -c \"open('src/a.rs','x')\""), write);
+        assert_eq!(plan(&dir, "python3 -c \"open('nodir/new.rs','w')\""), Plan::PassThrough);
+        assert_eq!(plan(&dir, "python3 -c \"open('../new.rs','w')\""), Plan::PassThrough);
         // Writing a non-code file is none of our business; neither is a heredoc left open or followed by more.
         assert_eq!(plan(&dir, "python3 -c \"open('app.log','w')\""), Plan::PassThrough);
         assert_eq!(plan(&dir, "python3 <<EOF\nopen('src/a.rs','w')"), Plan::PassThrough);
@@ -309,6 +347,9 @@ mod tests {
             "python3 tests.py",
             "grep foo src",                  // directory without -r
             "grep foo",                      // stdin
+            "grep -r foo -",
+            "grep -r -- foo -x.rs",
+            "sed -n 1,5p -fx.rs",
             "grep -rn foo src; rm -rf x",
             "grep -rn foo src > out.txt",
             "grep -rn \"$(whoami)\" src",
