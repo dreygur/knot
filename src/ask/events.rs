@@ -90,8 +90,14 @@ pub fn learning_shown(root: &Path, session: &str, id: &str, cost_minutes: Option
 }
 
 /// Every event in the log, oldest first; lines that do not parse are skipped.
+/// A symlinked `.knot`, `.knot/cache` or log is not read, so a cloned repo cannot point
+/// the card at someone else's history.
 pub fn all(root: &Path) -> Vec<Event> {
-    let path = super::state_dir(root).join(EVENTS_FILE);
+    let dir = super::state_dir(root);
+    if !super::state_file_readable(&dir, EVENTS_FILE) {
+        return Vec::new();
+    }
+    let path = dir.join(EVENTS_FILE);
     let Ok(text) = std::fs::read_to_string(path) else { return Vec::new() };
     text.lines().filter_map(|l| serde_json::from_str(l).ok()).collect()
 }
@@ -190,6 +196,28 @@ mod tests {
 
         assert_eq!(saved_since(dir.path(), "a", &[0]), vec![100]);
         assert_eq!(saved_since(dir.path(), "b", &[0, 11]), vec![40, 0]);
+    }
+
+    #[test]
+    fn a_symlinked_state_dir_is_not_read() {
+        let outside = tempfile::tempdir().unwrap();
+        append(outside.path(), &event("a", 1, 5));
+        let real_cache = super::super::state_dir(outside.path());
+        assert_eq!(all(outside.path()).len(), 1);
+
+        let linked_cache = tempfile::tempdir().unwrap();
+        std::fs::create_dir(linked_cache.path().join(".knot")).unwrap();
+        std::os::unix::fs::symlink(&real_cache, linked_cache.path().join(".knot/cache")).unwrap();
+        assert!(all(linked_cache.path()).is_empty());
+
+        let linked_knot = tempfile::tempdir().unwrap();
+        std::os::unix::fs::symlink(real_cache.parent().unwrap(), linked_knot.path().join(".knot")).unwrap();
+        assert!(all(linked_knot.path()).is_empty());
+
+        let linked_log = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(linked_log.path().join(".knot/cache")).unwrap();
+        std::os::unix::fs::symlink(real_cache.join(EVENTS_FILE), linked_log.path().join(".knot/cache").join(EVENTS_FILE)).unwrap();
+        assert!(all(linked_log.path()).is_empty());
     }
 
     #[test]

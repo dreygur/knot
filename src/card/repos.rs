@@ -29,7 +29,13 @@ pub fn list(home: &Path) -> Vec<PathBuf> {
 }
 
 fn try_register(home: &Path, repo_root: &Path) -> Result<()> {
-    let cache = std::fs::canonicalize(crate::ask::state_dir(repo_root))?;
+    let state = crate::ask::state_dir(repo_root);
+    // A symlinked `.knot` or `.knot/cache` would list its target, wherever that is
+    if let Some(knot) = state.parent() {
+        refuse_symlink(knot)?;
+    }
+    refuse_symlink(&state)?;
+    let cache = std::fs::canonicalize(state)?;
     let entry = cache.to_string_lossy().into_owned();
     let dir = home.join(LIST_DIR);
     let path = dir.join(LIST_FILE);
@@ -114,6 +120,24 @@ mod tests {
             }
         });
         assert_eq!(list(home.path()).len(), 16);
+    }
+
+    #[test]
+    fn a_repo_with_a_symlinked_state_dir_is_not_listed() {
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(outside.path().join("cache")).unwrap();
+        for link in [".knot", ".knot/cache"] {
+            let home = tempfile::tempdir().unwrap();
+            let repo = tempfile::tempdir().unwrap();
+            if link == ".knot/cache" {
+                std::fs::create_dir(repo.path().join(".knot")).unwrap();
+                std::os::unix::fs::symlink(outside.path().join("cache"), repo.path().join(link)).unwrap();
+            } else {
+                std::os::unix::fs::symlink(outside.path(), repo.path().join(link)).unwrap();
+            }
+            register(home.path(), repo.path());
+            assert!(list(home.path()).is_empty(), "{link} was followed");
+        }
     }
 
     #[test]
