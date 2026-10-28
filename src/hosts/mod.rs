@@ -28,9 +28,15 @@ fn skill_body() -> &'static str {
         .trim()
 }
 
+/// The skill body one heading level down, so the block sits under the H1 of the file it
+/// lands in. SKILL.md has no code fences, so every line that opens with `#` is a heading.
+fn block_body() -> String {
+    skill_body().lines().map(|l| if l.starts_with('#') { format!("#{l}") } else { l.to_string() }).collect::<Vec<_>>().join("\n")
+}
+
 /// The skill body between the markers a re-run finds and replaces.
 fn protocol_block() -> String {
-    format!("{START_MARKER}\n{}\n{END_MARKER}", skill_body())
+    format!("{START_MARKER}\n{}\n{END_MARKER}", block_body())
 }
 
 /// The file to write for the instruction file at `path`. A cloned repo can commit it as
@@ -173,7 +179,8 @@ mod tests {
         assert!(body.starts_with("# Knot") && !body.contains("name: knot"), "frontmatter left out: {body}");
         for file in ["CLAUDE.md", "AGENTS.md", "GEMINI.md", ".cursor/rules/knot.mdc"] {
             let content = fs::read_to_string(repo.path().join(file))?;
-            assert_eq!(block_in(&content), body, "{file}");
+            assert_eq!(block_in(&content), block_body(), "{file}");
+            assert!(block_in(&content).starts_with("## Knot\n") && content.contains("\n### Which tool\n"), "{file}");
         }
         assert_eq!(fs::read_to_string(home.path().join(".gemini/skills/knot/SKILL.md"))?, SKILL_MD);
         Ok(())
@@ -206,7 +213,7 @@ mod tests {
         assert_eq!(content.matches(START_MARKER).count(), 1, "{content}");
         assert_eq!(content.matches(END_MARKER).count(), 1, "{content}");
         assert!(!content.contains("Find code before opening files."), "{content}");
-        assert_eq!(block_in(&content), skill_body());
+        assert_eq!(block_in(&content), block_body());
         assert!(content.starts_with("# House rules") && content.contains("## Footer"), "{content}");
         Ok(())
     }
@@ -222,7 +229,7 @@ mod tests {
         assert!(rule.starts_with("---\ndescription: Knot code graph and team learnings\nalwaysApply: true\n---\n"), "{rule}");
         assert_eq!(rule.matches("alwaysApply").count(), 1, "{rule}");
         assert_eq!(rule.matches(START_MARKER).count(), 1, "{rule}");
-        assert_eq!(block_in(&rule), skill_body());
+        assert_eq!(block_in(&rule), block_body());
         Ok(())
     }
 
