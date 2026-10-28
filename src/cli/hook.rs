@@ -251,7 +251,7 @@ fn commits_without_learning(root: &Path, since_ms: i64) -> Option<usize> {
         }
     }
     let statuses = repo.statuses(None).ok()?;
-    if statuses.iter().any(|s| s.path().is_some_and(|p| is_learning(Path::new(p)))) {
+    if statuses.iter().any(|s| s.path().is_ok_and(|p| is_learning(Path::new(p)))) {
         return None;
     }
     (code_commits > 0).then_some(code_commits)

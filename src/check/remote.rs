@@ -131,7 +131,7 @@ pub fn detect_remote_collisions(repo_root: &Path) -> Result<RemoteCheckReport> {
 
         let commit = repo.find_commit(branch_target)?;
         let author = commit.author().name().unwrap_or("unknown").to_string();
-        let summary = commit.summary().unwrap_or("").to_string();
+        let summary = commit.summary().ok().flatten().unwrap_or("").to_string();
         let commit_oid = branch_target.to_string();
 
         for file in local_files.intersection(&remote_files) {
