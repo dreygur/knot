@@ -1,12 +1,22 @@
 use anyhow::{Context, Result};
 use std::fs;
 use std::path::{Path, PathBuf};
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+use std::time::{Duration, Instant};
 
 use crate::ui::viz_assets::{data_uri_png, font_face_css, FA2_JS, GRAPHOLOGY_JS, LICENSES, LOGO_DARK, LOGO_LIGHT, MARK_DARK_64, MARK_LIGHT_64, SIGMA_JS};
 use crate::ui::viz_data::{viz_data, VizData};
 
 const TEMPLATE: &str = include_str!("viz.html");
 const PAGE_FILE: &str = "graph.html";
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+const OPEN_GRACE: Duration = Duration::from_secs(2);
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+const OPEN_POLL: Duration = Duration::from_millis(50);
+/// `start` reads its first quoted argument as the window title, and a path with a
+/// space gets quoted, so an empty title goes first.
+#[cfg(any(target_os = "windows", test))]
+const WINDOWS_START: [&str; 3] = ["/C", "start", ""];
 
 /// Replace each `{{NAME}}` in `template` with `value(NAME)`, in one pass, so text that
 /// was inserted is never scanned for slots. Unknown names are left as they are.
@@ -59,13 +69,22 @@ pub fn render_page(data: &VizData) -> String {
     fill(TEMPLATE, slot)
 }
 
-/// Runs `opener path` and waits: `open` and `xdg-open` hand off to the browser and
-/// return quickly, and their exit code is the only sign the page was not opened.
+/// Runs `opener path` and gives it `OPEN_GRACE` to fail. `open` and most `xdg-open`
+/// setups hand off to the browser and exit at once, so a non-zero exit is the only
+/// sign the page was not opened. On bare X, i3 or sway `xdg-open` runs the browser
+/// itself and only returns when it closes; still running counts as opened.
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 fn run_opener(opener: &str, path: &Path) -> Result<()> {
-    let status = std::process::Command::new(opener).arg(path).status().with_context(|| format!("could not run {opener}"))?;
-    if !status.success() {
-        anyhow::bail!("{opener} exited with {status}");
+    let mut child = std::process::Command::new(opener).arg(path).spawn().with_context(|| format!("could not run {opener}"))?;
+    let deadline = Instant::now() + OPEN_GRACE;
+    while Instant::now() < deadline {
+        if let Some(status) = child.try_wait().with_context(|| format!("could not wait for {opener}"))? {
+            if !status.success() {
+                anyhow::bail!("{opener} exited with {status}");
+            }
+            return Ok(());
+        }
+        std::thread::sleep(OPEN_POLL);
     }
     Ok(())
 }
@@ -76,13 +95,17 @@ fn open_browser(path: &Path) -> Result<()> {
     #[cfg(target_os = "linux")]
     run_opener("xdg-open", path)?;
     #[cfg(target_os = "windows")]
-    std::process::Command::new("cmd").args(["/C", "start", &path.to_string_lossy()]).spawn().context("could not run start")?;
+    std::process::Command::new("cmd")
+        .args(WINDOWS_START)
+        .arg(path)
+        .spawn()
+        .context("could not run start")?;
     Ok(())
 }
 
 /// Renders the page into `.knot/cache/graph.html`. The write goes through `state_file`,
 /// which refuses a symlinked `.knot`, cache folder or file.
-fn write_page(repo_root: &Path) -> Result<PathBuf> {
+pub(crate) fn write_page(repo_root: &Path) -> Result<PathBuf> {
     let graph = crate::ask::load_graph(repo_root)?;
     let learnings = crate::engine::learnings::active_learnings(repo_root).unwrap_or_else(|e| {
         tracing::warn!("knot viz: could not read learnings, showing none: {e}");
@@ -93,22 +116,20 @@ fn write_page(repo_root: &Path) -> Result<PathBuf> {
     Ok(out_path)
 }
 
-fn launch_viz(repo_root: &Path, opener: fn(&Path) -> Result<()>) -> Result<(PathBuf, bool)> {
-    let out_path = write_page(repo_root)?;
-    let opened = match opener(&out_path) {
+fn open_with(path: &Path, opener: fn(&Path) -> Result<()>) -> bool {
+    match opener(path) {
         Ok(()) => true,
         Err(e) => {
             tracing::warn!("knot viz: could not open a browser: {e}");
             false
         }
-    };
-    Ok((out_path, opened))
+    }
 }
 
-/// Writes the page and tries to open it. The bool says whether a browser opened; the
-/// page exists either way.
-pub fn render_and_launch_viz(repo_root: &Path) -> Result<(PathBuf, bool)> {
-    launch_viz(repo_root, open_browser)
+/// Tries to open the written page in a browser and says whether it did. Returns
+/// within `OPEN_GRACE` even when the browser runs in the opener's foreground.
+pub(crate) fn open_page(path: &Path) -> bool {
+    open_with(path, open_browser)
 }
 
 #[cfg(test)]
@@ -160,19 +181,21 @@ mod tests {
         std::os::unix::fs::symlink(outside.path(), repo.path().join(".knot").join("cache")).unwrap();
 
         assert!(write_page(repo.path()).is_err());
-        assert!(launch_viz(repo.path(), mock_browser).is_err());
         assert_eq!(fs::read_dir(outside.path()).unwrap().count(), 0, "nothing written through the link");
     }
 
     #[test]
     fn open_failure_is_reported_honestly() {
         let repo = tempfile::tempdir().unwrap();
-        let (path, opened) = launch_viz(repo.path(), no_browser).unwrap();
-        assert!(!opened);
+        let path = write_page(repo.path()).unwrap();
+        assert!(!open_with(&path, no_browser));
         assert!(path.exists(), "the page is still written");
+        assert!(open_with(&path, mock_browser));
+    }
 
-        let (_, opened) = launch_viz(repo.path(), mock_browser).unwrap();
-        assert!(opened);
+    #[test]
+    fn windows_start_gets_an_empty_title() {
+        assert_eq!(WINDOWS_START, ["/C", "start", ""]);
     }
 
     #[test]
@@ -183,6 +206,17 @@ mod tests {
             assert!(err.to_string().contains("knot-no-such-opener"), "{err}");
             assert!(run_opener("false", Path::new("graph.html")).is_err(), "non-zero exit is a failure");
             assert!(run_opener("true", Path::new("graph.html")).is_ok());
+        }
+    }
+
+    #[test]
+    fn opener_in_the_foreground_does_not_block() {
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
+        {
+            // Bare X, i3 and sway: xdg-open runs the browser itself and returns when it closes.
+            let started = std::time::Instant::now();
+            assert!(run_opener("sleep", Path::new("5")).is_ok(), "still running means opened");
+            assert!(started.elapsed() < std::time::Duration::from_secs(4), "{:?}", started.elapsed());
         }
     }
 

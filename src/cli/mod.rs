@@ -366,9 +366,9 @@ async fn cli_logs(follow: bool) -> Result<()> {
 
 async fn cli_viz() -> Result<()> {
     let cwd = crate::ask::current_repo_root()?;
-    let (out_path, opened) = crate::ui::viz::render_and_launch_viz(&cwd)?;
+    let out_path = crate::ui::viz::write_page(&cwd)?;
     println!("[KNOT] Code graph map: {}", out_path.display());
-    if opened {
+    if crate::ui::viz::open_page(&out_path) {
         println!("[KNOT] Opened in your browser.");
     } else {
         println!("[KNOT] Couldn't open a browser; open the file above.");
