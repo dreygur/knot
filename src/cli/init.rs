@@ -242,6 +242,7 @@ pub(super) fn run(args: impl IntoIterator<Item = String>) -> Result<()> {
 
     let root = crate::ask::current_repo_root()?;
     let mut lines = wire(&root, &home, &agents)?;
+    crate::card::repos::register(&home, &root);
     if swaps {
         // After the agent lines, before the index line
         lines.insert(agents.len().max(1), swaps_line(&root, &agents, &bin));

@@ -45,10 +45,21 @@ pub struct Event {
 /// Append one event. Failures are ignored: the log is a report, never a reason for a
 /// command to fail.
 pub fn append(root: &Path, event: &Event) {
+    // Unit tests never touch the real home
+    let home = if cfg!(test) { None } else { dirs::home_dir() };
+    append_to(root, event, home.as_deref());
+}
+
+/// [`append`], listing the repo in `home`'s repo list when this write creates the log.
+fn append_to(root: &Path, event: &Event, home: Option<&Path>) {
     let Ok(line) = serde_json::to_string(event) else { return };
     let Ok(path) = super::state_file(&super::state_dir(root), EVENTS_FILE) else { return };
-    if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+    let created = !path.exists();
+    if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
         let _ = writeln!(file, "{line}");
+        if let (true, Some(home)) = (created, home) {
+            crate::card::repos::register(home, root);
+        }
     }
 }
 
@@ -140,6 +151,19 @@ mod tests {
             cost_minutes: None,
             cost_tokens: None,
         }
+    }
+
+    #[test]
+    fn first_write_lists_the_repo_once() {
+        let home = tempfile::tempdir().unwrap();
+        let repo = tempfile::tempdir().unwrap();
+        append_to(repo.path(), &event("a", 1, 5), Some(home.path()));
+        let listed = crate::card::repos::list(home.path());
+        assert_eq!(listed, vec![std::fs::canonicalize(repo.path()).unwrap()]);
+        // Later writes do not register again, so a removed entry stays removed
+        std::fs::remove_file(home.path().join(".knot/repos.txt")).unwrap();
+        append_to(repo.path(), &event("a", 2, 5), Some(home.path()));
+        assert!(crate::card::repos::list(home.path()).is_empty());
     }
 
     #[test]
