@@ -8,7 +8,7 @@ pub use remote::{
 use anyhow::{Context, Result};
 use git2::{DiffOptions, Repository};
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use crate::engine::learnings::{scan_repo_learnings, RepoLearning};
@@ -55,6 +55,10 @@ pub struct CheckFinding {
     /// The commit whose message overrides this learning, when one does.
     #[serde(default)]
     pub overridden_by: Option<String>,
+    /// Short id of a learning added in this change that replaces this one. It retires
+    /// the old learning only once merged, so the conflict still counts here.
+    #[serde(default)]
+    pub replaced_by: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -103,6 +107,9 @@ pub fn format_report(report: &CheckReport) -> String {
         out.push_str(&format!("  .knot/learnings/{}{id}\n", flatten(&f.learning_file, 120)));
         if let Some(commit) = &f.overridden_by {
             out.push_str(&format!("  overridden in {commit}, which says why\n"));
+        }
+        if let Some(new) = &f.replaced_by {
+            out.push_str(&format!("  replaced by knot {new} in this change; that counts once it is merged\n"));
         }
     }
 
@@ -361,6 +368,7 @@ fn check_change_against_learning(
         decision: first_line(decided),
         change,
         overridden_by: None,
+        replaced_by: None,
     };
 
     // A decision that pins a value is matched exactly: a different value is a conflict.
@@ -474,18 +482,37 @@ pub fn check_git_diff(repo_root: &Path, base_ref: Option<&str>) -> Result<CheckR
 
     // A learning added in this same change records it; checking the change against it
     // would flag the decision the learning was written to explain.
-    let added_here: HashSet<std::path::PathBuf> = diff
-        .deltas()
-        .filter(|d| d.status() == git2::Delta::Added || d.status() == git2::Delta::Untracked)
-        .filter_map(|d| d.new_file().path().map(|p| work_root.join(p)))
+    let paths_where = |keep: &dyn Fn(git2::Delta) -> bool| -> HashSet<std::path::PathBuf> {
+        diff.deltas()
+            .filter(|d| keep(d.status()))
+            .filter_map(|d| d.new_file().path().map(|p| work_root.join(p)))
+            .map(|p| std::fs::canonicalize(&p).unwrap_or(p))
+            .collect()
+    };
+    let added_here = paths_where(&|s| s == git2::Delta::Added || s == git2::Delta::Untracked);
+    let changed_here = paths_where(&|_| true);
+    let canonical = |l: &RepoLearning| std::fs::canonicalize(&l.file_path).unwrap_or_else(|_| l.file_path.clone());
+    let (added, learnings): (Vec<RepoLearning>, Vec<RepoLearning>) =
+        learnings.into_iter().partition(|l| added_here.contains(&canonical(l)));
+
+    // A replacement only retires a learning once it is merged: otherwise a branch could
+    // silence the check on itself with a note, or an edit to one, that replaces the
+    // learning it breaks. So only learnings this change leaves alone can retire others.
+    let retired: HashSet<uuid::Uuid> = learnings
+        .iter()
+        .filter(|l| !changed_here.contains(&canonical(l)))
+        .filter_map(|l| l.frontmatter.replaces)
         .collect();
-    let learnings: Vec<RepoLearning> = learnings
-        .into_iter()
-        .filter(|l| {
-            let path = std::fs::canonicalize(&l.file_path).unwrap_or_else(|_| l.file_path.clone());
-            !added_here.iter().any(|a| std::fs::canonicalize(a).unwrap_or_else(|_| a.clone()) == path)
+    let pending: HashMap<String, String> = added
+        .iter()
+        .chain(learnings.iter().filter(|l| changed_here.contains(&canonical(l))))
+        .filter_map(|l| {
+            let old = l.frontmatter.replaces?.to_string()[..8].to_string();
+            Some((old, l.frontmatter.id.to_string()[..8].to_string()))
         })
         .collect();
+    let learnings: Vec<RepoLearning> =
+        learnings.into_iter().filter(|l| !retired.contains(&l.frontmatter.id)).collect();
 
     let mut checked_files = Vec::new();
     let mut findings = Vec::new();
@@ -544,6 +571,10 @@ pub fn check_git_diff(repo_root: &Path, base_ref: Option<&str>) -> Result<CheckR
                 f.overridden_by = Some(commit.clone());
             }
         }
+    }
+
+    for f in &mut findings {
+        f.replaced_by = pending.get(&f.learning_id).cloned();
     }
 
     let ok = !findings.iter().any(|f| f.kind == FindingKind::Conflict);
@@ -756,6 +787,72 @@ mod tests {
         let report = check_git_diff(root, Some(&base))?;
         assert_eq!(report.learnings_checked, 1, "only the pre-existing learning is checked");
         assert!(report.findings.iter().all(|f| f.author == "Maya"), "{:?}", report.findings);
+        Ok(())
+    }
+
+    #[test]
+    fn a_replacement_retires_the_old_learning_only_once_merged() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let root = dir.path();
+        let repo = Repository::init(root)?;
+        let sig = git2::Signature::now("Kumar", "k@example.com")?;
+        let commit_all = |msg: &str| -> Result<String> {
+            let mut index = repo.index()?;
+            index.add_all(["*"].iter(), git2::IndexAddOption::DEFAULT, None)?;
+            index.write()?;
+            let tree = repo.find_tree(index.write_tree()?)?;
+            let parents: Vec<git2::Commit> = repo.head().ok().and_then(|h| h.peel_to_commit().ok()).into_iter().collect();
+            let parent_refs: Vec<&git2::Commit> = parents.iter().collect();
+            Ok(repo.commit(Some("HEAD"), &sig, &sig, msg, &tree, &parent_refs)?.to_string())
+        };
+        let set_retries = |n: u32| std::fs::write(root.join("client.go"), format!("package r\n\nconst (\n\tdefaultRetryMax = {n}\n)\n"));
+
+        let maya = retry_learning();
+        let maya_id = maya.frontmatter.id.to_string();
+        std::fs::create_dir_all(root.join(".knot/learnings"))?;
+        std::fs::write(
+            root.join(".knot/learnings/2026-10-09_keep.md"),
+            format!("---\nid: {maya_id}\ntitle: \"{}\"\nauthor: \"Maya\"\ndate: \"2026-10-09\"\ntouches:\n  - \"client.go#defaultRetryMax\"\n---\n{}", maya.frontmatter.title, maya.body),
+        )?;
+        set_retries(4)?;
+        let base = commit_all("base")?;
+
+        // On the branch, the replacement does not yet retire Maya's learning
+        let kumar_id = uuid::Uuid::new_v4().to_string();
+        std::fs::write(
+            root.join(".knot/learnings/2026-10-28_ten.md"),
+            format!("---\nid: {kumar_id}\ntitle: \"Default retries are 10\"\nauthor: \"Kumar\"\ndate: \"2026-10-28\"\nreplaces: {maya_id}\ntouches:\n  - \"client.go#defaultRetryMax\"\n---\n\
+             ## Decided\nKeep `defaultRetryMax = 10`, because the importer runs offline.\n"),
+        )?;
+        set_retries(10)?;
+        commit_all("Raise retries")?;
+        let report = check_git_diff(root, Some(&base))?;
+        assert!(!report.ok, "{:?}", report.findings);
+        assert_eq!(report.findings[0].author, "Maya");
+        assert_eq!(report.findings[0].replaced_by.as_deref(), Some(&kumar_id[..8]));
+
+        // Once it is on the base branch, only Kumar's learning is checked
+        let merged = repo.head()?.peel_to_commit()?.id().to_string();
+        set_retries(12)?;
+        let report = check_git_diff(root, Some(&merged))?;
+        assert_eq!(report.learnings_checked, 1);
+        assert!(!report.ok);
+        assert!(report.findings.iter().all(|f| f.author == "Kumar"), "{:?}", report.findings);
+
+        // Editing a merged learning to replace another does not retire it on that branch either
+        set_retries(10)?;
+        let tightened = std::fs::read_to_string(root.join(".knot/learnings/2026-10-28_ten.md"))?
+            .replace(&format!("replaces: {maya_id}\n"), "");
+        std::fs::write(root.join(".knot/learnings/2026-10-28_ten.md"), &tightened)?;
+        commit_all("Drop the replacement")?;
+        std::fs::write(
+            root.join(".knot/learnings/2026-10-28_ten.md"),
+            tightened.replace("date: \"2026-10-28\"\n", &format!("date: \"2026-10-28\"\nreplaces: {maya_id}\n")),
+        )?;
+        set_retries(9)?;
+        let unreplaced = repo.head()?.peel_to_commit()?.id().to_string();
+        let report = check_git_diff(root, Some(&unreplaced))?;
+        assert!(report.findings.iter().any(|f| f.author == "Maya"), "{:?}", report.findings);
         Ok(())
     }
 }

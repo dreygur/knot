@@ -6,7 +6,7 @@ use anyhow::Result;
 use std::path::{Path, PathBuf};
 
 use crate::ask::{flatten, session};
-use crate::engine::learnings::{scan_repo_learnings, RepoLearning};
+use crate::engine::learnings::{active_learnings, RepoLearning};
 
 const SUMMARY_CHARS: usize = 220;
 
@@ -111,7 +111,7 @@ fn learnings_block(rel_file: &str, learnings: &[&RepoLearning], root: &Path, me:
 /// Learnings touching `file` that this session has not been shown yet.
 fn learnings_for_file(root: &Path, file: &Path, session_id: &str) -> Option<String> {
     let rel = file.strip_prefix(root).ok()?.to_string_lossy().replace('\\', "/");
-    let all = scan_repo_learnings(root).ok()?;
+    let all = active_learnings(root).ok()?;
     let matching: Vec<&RepoLearning> = all.iter().filter(|l| touches_file(l, &rel)).collect();
     if matching.is_empty() {
         return None;
@@ -297,6 +297,11 @@ pub(super) async fn run(event: &str) -> Result<()> {
                 return Ok(());
             }
             let file = std::fs::canonicalize(&file).unwrap_or_else(|_| PathBuf::from(&file));
+            if tool != "Read" {
+                if let Ok(rel) = file.strip_prefix(&root) {
+                    session::note_edit(&root, &rel.to_string_lossy().replace('\\', "/"));
+                }
+            }
             let mut context = Vec::new();
             context.extend(learnings_for_file(&root, &file, &session_id));
             if tool != "Read" {

@@ -249,6 +249,19 @@ a "Tried and ruled out" approach is matched on its backticked code or its distin
 A commit on the branch that says `Overrides knot 8a3f3e66: <why>` keeps the finding visible
 but stops it failing the check.
 
+When the decision itself has changed, save the new one with `--replaces`:
+
+```bash
+knot note --title "Default retry count is 10 for offline importers" --replaces 8a3f3e66 <<'EOF'
+...
+EOF
+```
+
+The old file stays in the repo, but `knot ask`, the hooks and recall stop showing it. `knot check`
+only stops checking against it once the replacement is on the base branch, so a branch can't
+retire the learning it breaks. Until then the finding says `replaced by knot <id> in this change`,
+and the branch still needs an `Overrides` line.
+
 **4. Clashing edits are named.** When you edit a symbol that a teammate also changes on an
 unmerged branch (remote branches are fetched in the background, at most every 5 minutes):
 
@@ -266,13 +279,16 @@ instructions, and a learning synced from one repo is only recalled inside that r
 
 ## Status line
 
-On Claude Code, `knot statusline` shows the index state and what Knot saved:
+On Claude Code, `knot statusline` shows the index state, the repo's learnings and what Knot
+saved, then the session's context use and the file it last edited:
 
 ```
-knot · 827 symbols · ≤15k saved this reply, ≤63k session (est.)
+◆ knot · 827 symbols · ✓ current · 3 learnings · ≤15k saved this reply, ≤63k session (est.)
+▸ ctx 42% · last edit: client.go
 ```
 
-When files change it shows `reindexing N changed` and re-indexes in the background. The
+Learnings that another one replaces are not counted. Colours are dropped when `NO_COLOR` is
+set. When files change it shows `reindexing N changed` and re-indexes in the background. The
 savings are an estimate and an upper bound: the size of the files each answer points into
 (at about 4 bytes per token), minus the answer itself. They assume those files would
 otherwise have been read whole, and are not directly comparable with other tools' figures.
@@ -336,16 +352,16 @@ execute_skill(skill_name="format-module", variables=[{key:"file_path", value:"sr
 | `knot callers <symbol>` / `knot callees <symbol>` | Direct call graph neighbours (and importing files) |
 | `knot blast <symbol> [--depth N]` | Transitive blast radius |
 | `knot skeleton <file>` | A file's signatures with line spans |
-| `knot note --title "<fact>" [--touches file#symbol]` | Save a team learning (body on stdin) |
+| `knot note --title "<fact>" [--touches file#symbol] [--replaces <id>]` | Save a team learning (body on stdin); `--replaces` retires an older one |
 | `knot check [--base <ref>] [--remote]` | Check the diff against learnings (exit 1 on conflict); `--remote` adds branch clashes |
 | `knot index [--quiet]` | Bring the index up to date ahead of time |
-| `knot statusline` | One line for Claude Code's status line |
+| `knot statusline` | Claude Code's status line: index, learnings, savings, context use, last edit |
 | `knot hook <post-tool\|stop>` | What Knot's Claude Code hooks run |
 | `knot recall <query> [--limit N]` | Search the memory vault |
 | `knot commit <session_id> <project_id>` | Promote a session's memories to a project |
 | `knot explore [query]` | Terminal UI for browsing the code graph |
 | `knot viz` | Interactive HTML graph visualiser |
-| `knot status` / `knot logs [-f]` | Vault health, activity log |
+| `knot status` / `knot logs [-f]` | Vault health plus this repo's index and learnings; activity log |
 | `knot --version` | Version |
 
 ---
@@ -412,6 +428,7 @@ Files ignored by `.gitignore` are skipped, and so are these directories wherever
 | `<repo>/.knot/cache/index.json` | Parse cache, keyed by file size and mtime |
 | `<repo>/.knot/cache/savings.jsonl` | Estimated tokens saved per answer, for the status line |
 | `<repo>/.knot/cache/session.json`, `shown-*.txt` | The agent session working here, and which learnings it was shown |
+| `<repo>/.knot/cache/last_edit` | The file the agent last edited, for the status line |
 
 `.knot/cache/` carries its own `.gitignore`, so nothing in it is ever committed. Knot
 writes anything else into a repository only when you run `knot init` (agent instruction

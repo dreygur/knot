@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 /// A session older than this is not credited with a new learning's cost.
 const SESSION_FRESH_MS: i64 = 12 * 60 * 60 * 1000;
 const SESSION_FILE: &str = "session.json";
+const LAST_EDIT_FILE: &str = "last_edit";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionRef {
@@ -35,6 +36,21 @@ fn remember_in(dir: &Path, session: &SessionRef) {
     if let Ok(json) = serde_json::to_vec(session) {
         let _ = std::fs::write(path, json);
     }
+}
+
+/// Note `rel_file` as the file the agent last edited in `root`, for the status line.
+pub fn note_edit(root: &Path, rel_file: &str) {
+    if let Ok(path) = super::state_file(&super::state_dir(root), LAST_EDIT_FILE) {
+        let _ = std::fs::write(path, rel_file);
+    }
+}
+
+/// The file the agent last edited in `root`. It is read from the repo's own folder, so
+/// callers print it through `flatten`.
+pub fn last_edit(root: &Path) -> Option<String> {
+    let text = std::fs::read_to_string(super::state_dir(root).join(LAST_EDIT_FILE)).ok()?;
+    let text = text.trim();
+    (!text.is_empty()).then(|| text.to_string())
 }
 
 /// Where Claude Code writes transcripts: `$CLAUDE_CONFIG_DIR/projects`, else `~/.claude/projects`.

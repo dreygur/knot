@@ -676,6 +676,19 @@ mod tests {
         let updated = engine.graph.get_node(id).await.unwrap().unwrap();
         assert!(updated.content.contains("synchronous=NORMAL"));
 
+        // A learning that replaces it takes it out of recall
+        let newer = uuid::Uuid::new_v4();
+        std::fs::write(
+            learnings.join("2026-10-28_rollback.md"),
+            format!("---\nid: {newer}\ntitle: \"Use rollback journaling\"\nauthor: \"b\"\ndate: \"2026-10-28\"\nreplaces: {id}\n---\n\n## Decided\nRollback, because the volume does not support shared memory.\n"),
+        )
+        .unwrap();
+        assert_eq!(engine.sync_repo_learnings(dir.path()).await.unwrap(), 1);
+        assert!(engine.graph.get_node(id).await.unwrap().is_none());
+        assert!(engine.graph.get_node(newer).await.unwrap().is_some());
+        std::fs::remove_file(learnings.join("2026-10-28_rollback.md")).unwrap();
+        assert_eq!(engine.sync_repo_learnings(dir.path()).await.unwrap(), 1);
+
         let repo = std::fs::canonicalize(dir.path()).unwrap();
         let results = engine.recall_in("checkpoint throughput", 5, Some(&repo)).await.unwrap();
         let hit = results.iter().find(|r| r.node.id == id).expect("learning recalled inside its repo");

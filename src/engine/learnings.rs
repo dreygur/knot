@@ -22,6 +22,10 @@ pub struct LearningFrontmatter {
     pub cost_minutes: Option<u64>,
     #[serde(default)]
     pub cost_tokens: Option<u64>,
+    /// An earlier learning this one takes over from. The old file stays in the repo
+    /// but is no longer surfaced or checked against.
+    #[serde(default)]
+    pub replaces: Option<Uuid>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -61,6 +65,9 @@ fn format_frontmatter(f: &LearningFrontmatter) -> String {
     if let Some(tokens) = f.cost_tokens {
         out.push_str(&format!("cost_tokens: {tokens}\n"));
     }
+    if let Some(old) = f.replaces {
+        out.push_str(&format!("replaces: {old}\n"));
+    }
 
     if !f.touches.is_empty() {
         out.push_str("touches:\n");
@@ -99,6 +106,7 @@ fn parse_yaml_frontmatter(content: &str) -> Option<(LearningFrontmatter, String)
     let mut tags = Vec::new();
     let mut cost_minutes = None;
     let mut cost_tokens = None;
+    let mut replaces = None;
 
     let mut in_touches = false;
     let mut in_tags = false;
@@ -151,6 +159,7 @@ fn parse_yaml_frontmatter(content: &str) -> Option<(LearningFrontmatter, String)
                 "scope" => scope = val.to_string(),
                 "cost_minutes" => cost_minutes = val.parse().ok(),
                 "cost_tokens" => cost_tokens = val.parse().ok(),
+                "replaces" => replaces = Uuid::parse_str(val).ok(),
                 _ => {}
             }
         }
@@ -166,6 +175,7 @@ fn parse_yaml_frontmatter(content: &str) -> Option<(LearningFrontmatter, String)
         scope,
         cost_minutes,
         cost_tokens,
+        replaces,
     };
 
     Some((fm, body))
@@ -314,6 +324,7 @@ pub struct NewNote<'a> {
     pub author: &'a str,
     pub cost_minutes: Option<u64>,
     pub cost_tokens: Option<u64>,
+    pub replaces: Option<Uuid>,
 }
 
 /// Write `.knot/learnings/<date>_<slug>.md` for `note`, never overwriting an existing one.
@@ -351,6 +362,7 @@ pub fn write_note(repo_root: &Path, note: &NewNote) -> Result<(PathBuf, Uuid)> {
         scope: "project".into(),
         cost_minutes: note.cost_minutes,
         cost_tokens: note.cost_tokens,
+        replaces: note.replaces,
         ..Default::default()
     };
     file.write_all(format!("{}\n{}\n", format_frontmatter(&fm), note.body.trim()).as_bytes())?;
@@ -376,6 +388,36 @@ pub fn scan_repo_learnings(repo_root: &Path) -> Result<Vec<RepoLearning>> {
 
     learnings.sort_by(|a, b| b.frontmatter.date.cmp(&a.frontmatter.date));
     Ok(learnings)
+}
+
+/// `learnings` without the ones another learning in the list replaces.
+pub fn drop_replaced(learnings: Vec<RepoLearning>) -> Vec<RepoLearning> {
+    let replaced: std::collections::HashSet<Uuid> =
+        learnings.iter().filter_map(|l| l.frontmatter.replaces).collect();
+    learnings.into_iter().filter(|l| !replaced.contains(&l.frontmatter.id)).collect()
+}
+
+/// The repo's learnings that are still in force: replaced ones are left out.
+pub fn active_learnings(repo_root: &Path) -> Result<Vec<RepoLearning>> {
+    scan_repo_learnings(repo_root).map(drop_replaced)
+}
+
+/// The one learning whose id starts with `id`, as `knot check` prints it (8 characters)
+/// or in full. An unknown or ambiguous id is an error, so a note never replaces the wrong one.
+pub fn find_learning(repo_root: &Path, id: &str) -> Result<RepoLearning> {
+    let id = id.trim().to_lowercase();
+    if id.len() < 4 {
+        anyhow::bail!("'{id}' is too short to name a learning; use the id knot check prints");
+    }
+    let mut found: Vec<RepoLearning> = scan_repo_learnings(repo_root)?
+        .into_iter()
+        .filter(|l| l.frontmatter.id.to_string().starts_with(&id))
+        .collect();
+    match found.len() {
+        1 => Ok(found.remove(0)),
+        0 => anyhow::bail!("No learning in .knot/learnings has id {id}"),
+        n => anyhow::bail!("{n} learnings have ids starting with {id}; give more of the id"),
+    }
 }
 
 #[cfg(test)]
@@ -470,7 +512,27 @@ mod tests {
             author: "Maya",
             cost_minutes: Some(12),
             cost_tokens: Some(27_000),
+            replaces: None,
         }
+    }
+
+    #[test]
+    fn a_replacing_note_retires_the_old_one_and_ids_resolve_by_prefix() -> Result<()> {
+        let dir = tempdir()?;
+        let (_, maya) = write_note(dir.path(), &note())?;
+        let found = find_learning(dir.path(), &maya.to_string()[..8])?;
+        assert_eq!(found.frontmatter.id, maya);
+        assert!(find_learning(dir.path(), "ffffffff").is_err());
+        assert!(find_learning(dir.path(), "a").is_err(), "too short to trust");
+
+        let kumar_note = NewNote { title: "Retry count is 10", replaces: Some(maya), ..note() };
+        let (path, kumar) = write_note(dir.path(), &kumar_note)?;
+        assert_eq!(read_learning_file(&path)?.frontmatter.replaces, Some(maya));
+
+        let active: Vec<Uuid> = active_learnings(dir.path())?.iter().map(|l| l.frontmatter.id).collect();
+        assert_eq!(active, vec![kumar]);
+        assert_eq!(scan_repo_learnings(dir.path())?.len(), 2, "the old file stays");
+        Ok(())
     }
 
     #[test]
