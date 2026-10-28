@@ -245,9 +245,9 @@ Separate from the token work above, and independent of it: it can be built in an
 
 The owner found the current `knot viz` (one vis-network hairball, two colours, no search,
 loaded from a CDN) below their standard. They chose the "constellation" direction and
-approved a prototype built on this repo's real graph as meeting it. The prototype sources
-are in `docs/superpowers/prototypes/knot-viz/`: `build.js` lays out an exported graph,
-and `page.html` is the page, with `__DATA__` replaced by the layout JSON.
+approved a prototype built on this repo's real graph as meeting it. It is now built as
+`src/ui/viz.html` (the page) and `src/ui/viz_data.rs` (its data); the prototype sources
+were removed in bd4c1df and stay in git history before it.
 
 What the prototype settled, to keep in the real build:
 - **Map.** Each folder settles into its own region with its name floating over the region's

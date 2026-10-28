@@ -13,7 +13,7 @@
 
 **Tech Stack:** Rust (serde_json); vendored MIT JavaScript: graphology 0.25.4, sigma 3.0.2, and the graphology ForceAtlas2 layout from a released `graphology-library` UMD bundle (same graphology major).
 
-**Spec:** docs/superpowers/specs/2026-10-28-knot-agent-efficiency-design.md, "Part 4 — `knot viz` redesign". The approved prototype is docs/superpowers/prototypes/knot-viz/ (`page.html`, `build.js`), and it is the visual reference.
+**Spec:** docs/superpowers/specs/2026-10-28-knot-agent-efficiency-design.md, "Part 4 — `knot viz` redesign". The approved prototype (`page.html`, `build.js`, removed in bd4c1df, in git history before it) is the visual reference.
 
 **Branch:** `viz-redesign`, cut from local `main` (8ad7748).
 
@@ -107,7 +107,7 @@ pub fn viz_data(graph: &CodeGraph, learnings: &[RepoLearning]) -> VizData
 ### Task 3: The page
 
 **Files:**
-- Create: `src/ui/viz.html`, the template, ported from `docs/superpowers/prototypes/knot-viz/page.html`
+- Create: `src/ui/viz.html`, the template, ported from the prototype `page.html`
 - Modify: `src/ui/viz.rs` (replace `generate_graph_html` and the vis-network export with `render_page`, and update its tests)
 
 **Interfaces:**
