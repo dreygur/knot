@@ -1,59 +1,60 @@
 use anyhow::{Context, Result};
-use serde_json::json;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::ast::pagerank::top_hubs;
-use crate::ast::resolve::CodeGraph;
+use crate::ui::viz_assets::{data_uri_png, font_face_css, FA2_JS, GRAPHOLOGY_JS, LOGO_DARK, LOGO_LIGHT, MARK_DARK_64, MARK_LIGHT_64, SIGMA_JS};
+use crate::ui::viz_data::{viz_data, VizData};
 
-fn generate_graph_html(graph_data_json: &str) -> String {
-    format!(
-        r#"<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <title>Knot Code Graph Visualizer</title>
-  <script type="text/javascript" src="https://unpkg.com/vis-network@9.1.9/standalone/umd/vis-network.min.js"></script>
-  <style>
-    body {{ margin: 0; padding: 0; background-color: #0f172a; color: #f8fafc; font-family: system-ui, sans-serif; }}
-    #header {{ padding: 12px 20px; background-color: #1e293b; border-bottom: 1px solid #334155; display: flex; justify-content: space-between; align-items: center; }}
-    #network {{ width: 100vw; height: calc(100vh - 54px); }}
-    .badge {{ background: #3b82f6; padding: 4px 8px; border-radius: 4px; font-size: 12px; font-weight: bold; }}
-  </style>
-</head>
-<body>
-  <div id="header">
-    <div style="font-weight: bold; font-size: 16px;">Knot Code Graph & Centrality Visualizer</div>
-    <div><span class="badge">Live Graph</span></div>
-  </div>
-  <div id="network"></div>
-  <script>
-    const data = {graph_data_json};
-    const container = document.getElementById('network');
-    const options = {{
-      nodes: {{
-        shape: 'dot',
-        size: 16,
-        font: {{ size: 12, color: '#f8fafc' }},
-        borderWidth: 2,
-        shadow: true
-      }},
-      edges: {{
-        width: 1.5,
-        color: {{ color: '#64748b', highlight: '#38bdf8' }},
-        arrows: {{ to: {{ enabled: true, scaleFactor: 0.6 }} }},
-        smooth: {{ type: 'continuous' }}
-      }},
-      physics: {{
-        stabilization: false,
-        barnesHut: {{ gravitationalConstant: -3000, springLength: 100 }}
-      }}
-    }};
-    new vis.Network(container, data, options);
-  </script>
-</body>
-</html>"#
-    )
+const TEMPLATE: &str = include_str!("viz.html");
+
+/// Replace each `{{NAME}}` in `template` with `value(NAME)`, in one pass, so text that
+/// was inserted is never scanned for slots. Unknown names are left as they are.
+fn fill(template: &str, value: impl Fn(&str) -> Option<String>) -> String {
+    let mut out = String::with_capacity(template.len());
+    let mut rest = template;
+    while let Some(open) = rest.find("{{") {
+        out.push_str(&rest[..open]);
+        let after = &rest[open + 2..];
+        match after.find("}}").and_then(|close| value(&after[..close]).map(|v| (close, v))) {
+            Some((close, v)) => {
+                out.push_str(&v);
+                rest = &after[close + 2..];
+            }
+            None => {
+                out.push_str("{{");
+                rest = after;
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+/// The whole `knot viz` page: one offline file with the scripts, fonts, images and
+/// data inlined.
+pub fn render_page(data: &VizData) -> String {
+    // Symbol text comes from the indexed repo; escaping <, > and & keeps a signature
+    // containing `</script>` from ending the inline script. JSON reads the escapes back.
+    let json = serde_json::to_string(data)
+        .expect("VizData holds only strings, numbers and lists, which always serialize")
+        .replace('<', "\\u003c")
+        .replace('>', "\\u003e")
+        .replace('&', "\\u0026");
+    let slot = |name: &str| -> Option<String> {
+        Some(match name {
+            "FONTS_CSS" => font_face_css(),
+            "GRAPHOLOGY" => GRAPHOLOGY_JS.to_string(),
+            "SIGMA" => SIGMA_JS.to_string(),
+            "FA2" => FA2_JS.to_string(),
+            "DATA" => json.clone(),
+            "LOGO_LIGHT" => data_uri_png(LOGO_LIGHT),
+            "LOGO_DARK" => data_uri_png(LOGO_DARK),
+            "MARK_LIGHT" => data_uri_png(MARK_LIGHT_64),
+            "MARK_DARK" => data_uri_png(MARK_DARK_64),
+            _ => return None,
+        })
+    };
+    fill(TEMPLATE, slot)
 }
 
 fn open_browser(path: &Path) -> Result<()> {
@@ -72,62 +73,14 @@ fn open_browser(path: &Path) -> Result<()> {
     Ok(())
 }
 
-pub fn export_graph_html(graph: &CodeGraph, output_path: &Path) -> Result<()> {
-    let hubs = top_hubs(graph, 10);
-    let top_hub_ids: std::collections::HashSet<&str> = hubs.iter().map(|(s, _)| s.id.as_str()).collect();
-
-    let mut nodes = Vec::new();
-    let mut edges = Vec::new();
-
-    for sym in graph.symbols.values() {
-        let is_hub = top_hub_ids.contains(sym.id.as_str());
-        let color = if is_hub { "#ef4444" } else { "#3b82f6" };
-        let size = if is_hub { 24 } else { 14 };
-
-        nodes.push(json!({
-            "id": sym.id,
-            "label": sym.name,
-            "title": format!("{} ({}:L{})", sym.signature, sym.file, sym.span.0),
-            "color": color,
-            "size": size,
-        }));
-    }
-
-    for (caller_id, callee_ids) in &graph.callees {
-        for callee_id in callee_ids {
-            edges.push(json!({
-                "from": caller_id,
-                "to": callee_id,
-            }));
-        }
-    }
-
-    let payload = json!({
-        "nodes": nodes,
-        "edges": edges,
-    });
-
-    // Symbol text comes from the indexed repo; escaping <, > and & keeps a signature
-    // containing `</script>` from ending the inline script. JSON reads the escapes back.
-    let safe_json = payload
-        .to_string()
-        .replace('<', "\\u003c")
-        .replace('>', "\\u003e")
-        .replace('&', "\\u0026");
-    let html_content = generate_graph_html(&safe_json);
-    if let Some(parent) = output_path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-
-    fs::write(output_path, html_content)?;
-    Ok(())
-}
-
 pub fn render_and_launch_viz(repo_root: &Path) -> Result<PathBuf> {
     let graph = crate::ask::load_graph(repo_root)?;
+    let learnings = crate::engine::learnings::active_learnings(repo_root).unwrap_or_default();
     let out_path = repo_root.join(".knot").join("graph.html");
-
-    export_graph_html(&graph, &out_path).context("Failed to export graph HTML")?;
+    if let Some(parent) = out_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(&out_path, render_page(&viz_data(&graph, &learnings))).context("Failed to write graph HTML")?;
     let _ = open_browser(&out_path);
     Ok(out_path)
 }
@@ -135,48 +88,97 @@ pub fn render_and_launch_viz(repo_root: &Path) -> Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::tempdir;
+    use crate::ast::resolve::CodeGraph;
+    use crate::ui::viz_assets::{data_uri_png, LOGO_LIGHT};
 
-    #[test]
-    fn test_export_graph_html() -> Result<()> {
-        let dir = tempdir()?;
-        let graph = CodeGraph::default();
-        let out_file = dir.path().join("test_graph.html");
-
-        export_graph_html(&graph, &out_file)?;
-        assert!(out_file.exists());
-
-        let html = fs::read_to_string(&out_file)?;
-        assert!(html.contains("Knot Code Graph Visualizer"));
-        assert!(html.contains("vis.Network"));
-
-        Ok(())
+    fn empty() -> VizData {
+        viz_data(&CodeGraph::default(), &[])
     }
 
     #[test]
-    fn test_symbol_text_cannot_close_the_script_tag() -> Result<()> {
-        let dir = tempdir()?;
+    fn page_is_offline() {
+        let html = render_page(&empty());
+        assert!(!html.contains("src=\"http"));
+        assert!(!html.contains("href=\"http"));
+        assert!(!html.contains("@import url(http"));
+    }
+
+    #[test]
+    fn page_has_logo_and_both_favicons() {
+        let html = render_page(&empty());
+        assert!(html.contains("rel=\"icon\""));
+        assert!(html.contains("prefers-color-scheme: dark"));
+        assert!(html.contains("prefers-color-scheme: light"));
+        let logo = data_uri_png(LOGO_LIGHT);
+        assert!(html.contains(&logo[..80]));
+    }
+
+    #[test]
+    fn page_uses_knot_fonts_only() {
+        let html = render_page(&empty());
+        assert!(html.contains("Knot Sans"));
+        assert!(!html.contains("Plex"));
+    }
+
+    #[test]
+    fn layout_runs_off_the_main_frame() {
+        let html = render_page(&empty());
+        assert!(html.contains("new Worker(") || html.contains("requestAnimationFrame"));
+        assert!(html.contains("graphologyLibrary.layoutForceAtlas2"));
+        assert!(html.contains("self.DOMParser"), "the library needs DOMParser to load in a worker");
+    }
+
+    #[test]
+    fn empty_page_renders() {
+        let html = render_page(&empty());
+        assert!(html.contains("No symbols indexed yet"));
+        assert!(!html.contains("{{"), "every slot is filled");
+    }
+
+    #[test]
+    fn names_are_escaped_in_the_inspector() {
+        let t = TEMPLATE;
+        assert!(t.contains("const esc = (s) =>"));
+        assert!(t.contains("esc(m.l)"), "names");
+        assert!(t.contains("esc(m.s)"), "signatures");
+        assert!(t.contains("esc(L.title)"), "learning titles");
+    }
+
+    #[test]
+    fn inserted_text_is_not_rescanned_for_slots() {
+        let mut graph = CodeGraph::default();
+        graph.symbols.insert("a.rs::x".into(), symbol("a.rs::x", "fn x() { \"{{SIGMA}}\" }"));
+        let html = render_page(&viz_data(&graph, &[]));
+        assert!(html.contains("{{SIGMA}}"), "a slot name inside data stays as text");
+    }
+
+    fn symbol(id: &str, signature: &str) -> crate::ast::types::SymbolNode {
+        crate::ast::types::SymbolNode {
+            id: id.into(),
+            file: id.split("::").next().unwrap_or("").into(),
+            name: id.rsplit("::").next().unwrap_or("").into(),
+            kind: crate::ast::types::SymbolKind::Function,
+            signature: signature.into(),
+            span: (1, 1),
+            crux: String::new(),
+            hash: String::new(),
+            outgoing_calls: vec![],
+        }
+    }
+
+    #[test]
+    fn test_symbol_text_cannot_close_the_script_tag() {
         let mut graph = CodeGraph::default();
         graph.symbols.insert(
             "evil.ts::x".into(),
-            crate::ast::types::SymbolNode {
-                id: "evil.ts::x".into(),
-                file: "evil.ts".into(),
-                name: "x".into(),
-                kind: crate::ast::types::SymbolKind::Function,
-                signature: "function x() { return '</script><script>alert(1)</script>' }".into(),
-                span: (1, 1),
-                crux: String::new(),
-                hash: String::new(),
-                outgoing_calls: vec![],
-            },
+            symbol("evil.ts::x", "function x() { return '</script><script>alert(1)</script>' }"),
         );
-        let out_file = dir.path().join("g.html");
-        export_graph_html(&graph, &out_file)?;
-
-        let html = fs::read_to_string(&out_file)?;
-        assert_eq!(html.matches("</script>").count(), 2, "only the page's own script tags may close");
+        let html = render_page(&viz_data(&graph, &[]));
+        assert_eq!(
+            html.matches("</script>").count(),
+            TEMPLATE.matches("</script>").count(),
+            "only the page's own script tags may close"
+        );
         assert!(!html.contains("<script>alert"));
-        Ok(())
     }
 }
