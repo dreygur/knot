@@ -13,6 +13,16 @@ pub(crate) const ALWAYS_SKIPPED_DIRS: &[&str] = &[
     ".git", "target", "node_modules", "reference", ".knot", ".trail", ".idea", ".vscode", "dist", "build",
 ];
 
+/// Bundled third party builds, skipped wherever they sit: their symbols are minifier
+/// names that would crowd out the repo's own code.
+const ALWAYS_SKIPPED_SUFFIXES: &[&str] = &[".min.js"];
+
+/// Whether the index leaves out a file by its name alone, wherever it sits. The shell
+/// swap asks too, so it never answers a grep that would have matched in such a file.
+pub(crate) fn is_skipped_file(name: &str) -> bool {
+    ALWAYS_SKIPPED_SUFFIXES.iter().any(|s| name.ends_with(s))
+}
+
 /// List supported source files under `root`, honoring `.gitignore`, `.ignore` and git
 /// exclude files. Ignore files above `root` are not consulted, so indexing an ignored
 /// directory directly (e.g. a vendored reference checkout) still works.
@@ -30,8 +40,10 @@ pub fn list_supported_files(root: &Path) -> Result<Vec<PathBuf>> {
     for entry in walker {
         let entry = entry?;
         // `._name` files are macOS metadata written on non-Apple volumes, not source
-        let apple_double = entry.file_name().to_string_lossy().starts_with("._");
+        let name = entry.file_name().to_string_lossy();
+        let apple_double = name.starts_with("._");
         if !apple_double
+            && !is_skipped_file(&name)
             && entry.file_type().is_some_and(|t| t.is_file())
             && SupportedLang::from_path(entry.path()).is_some()
         {
@@ -700,6 +712,21 @@ pub fn start_server() {{
         assert_eq!(graph.importers.get("src/engine/beta.rs::flush"), Some(&vec!["src/main.rs".to_string()]));
         assert!(!graph.importers.contains_key("src/engine/alpha.rs::flush"));
 
+        Ok(())
+    }
+
+    #[test]
+    fn minified_scripts_are_not_indexed() -> Result<()> {
+        let dir = tempdir()?;
+        let root = dir.path();
+        std::fs::write(root.join("app.js"), "function app() {}\n")?;
+        std::fs::write(root.join("sigma.min.js"), "function t(e){return e}\n")?;
+
+        let names: Vec<String> = list_supported_files(root)?
+            .iter()
+            .map(|p| p.file_name().unwrap_or_default().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(names, vec!["app.js".to_string()]);
         Ok(())
     }
 

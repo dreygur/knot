@@ -366,9 +366,13 @@ async fn cli_logs(follow: bool) -> Result<()> {
 
 async fn cli_viz() -> Result<()> {
     let cwd = crate::ask::current_repo_root()?;
-    let out_path = crate::ui::viz::render_and_launch_viz(&cwd)?;
-    println!("[KNOT] Code graph visualizer generated: {}", out_path.display());
-    println!("[KNOT] Opened in default web browser.");
+    let out_path = crate::ui::viz::write_page(&cwd)?;
+    println!("[KNOT] Code graph map: {}", out_path.display());
+    if crate::ui::viz::open_page(&out_path) {
+        println!("[KNOT] Opened in your browser.");
+    } else {
+        println!("[KNOT] Couldn't open a browser; open the file above.");
+    }
     Ok(())
 }
 
@@ -870,17 +874,18 @@ struct StatusLine {
 /// Two lines: the index, learnings and savings, then the session (context use, last edit).
 fn statusline_text(s: &StatusLine) -> String {
     use crate::ask::savings::short;
-    const INDIGO: &str = "\x1b[38;2;84;111;255m";
+    const GREEN: &str = "\x1b[38;2;191;217;155m";
+    const OLIVE: &str = "\x1b[38;2;152;159;95m";
     const AMBER: &str = "\x1b[38;5;179m";
     const TEXT: &str = "\x1b[38;5;251m";
     const MUTED: &str = "\x1b[38;5;244m";
     let paint = |colour: &str, text: &str| {
         if s.color { format!("{colour}{text}\x1b[0m") } else { text.to_string() }
     };
-    let sep = paint(MUTED, " · ");
+    let sep = paint(OLIVE, " · ");
     let count = |n: usize, word: &str| format!("{n} {word}{}", if n == 1 { "" } else { "s" });
 
-    let mut top = vec![format!("{}{}", paint(MUTED, "◆ "), paint(INDIGO, "knot"))];
+    let mut top = vec![format!("{}{}", paint(OLIVE, "◤ "), paint(GREEN, "knot"))];
     if !s.index.indexed {
         if s.index.files > 0 {
             top.push(paint(AMBER, &format!("indexing {} files…", s.index.files)));
@@ -890,7 +895,7 @@ fn statusline_text(s: &StatusLine) -> String {
         top.push(if s.index.stale > 0 {
             paint(AMBER, &format!("reindexing {} changed", s.index.stale))
         } else {
-            paint(INDIGO, "✓ current")
+            paint(GREEN, "✓ current")
         });
     }
     if s.learnings > 0 {
@@ -899,7 +904,7 @@ fn statusline_text(s: &StatusLine) -> String {
     if let Some((reply, session)) = s.saved.filter(|(_, session)| *session > 0) {
         // An upper bound: it assumes every file an answer names would have been read whole
         top.push(paint(
-            INDIGO,
+            GREEN,
             &if reply > 0 {
                 format!("≤{} saved this reply, ≤{} session (est.)", short(reply), short(session))
             } else {
@@ -1403,14 +1408,23 @@ mod tests {
         };
         assert_eq!(
             statusline_text(&line),
-            "◆ knot · 2165 symbols · ✓ current · 3 learnings · ≤41k saved this session (est.)\n▸ ctx 42% · last edit: mod.rs"
+            "◤ knot · 2165 symbols · ✓ current · 3 learnings · ≤41k saved this session (est.)\n▸ ctx 42% · last edit: mod.rs"
         );
 
         line.index.stale = 2;
         line.ctx_pct = None;
         line.last_edit = None;
         line.saved = None;
-        assert_eq!(statusline_text(&line), "◆ knot · 2165 symbols · reindexing 2 changed · 3 learnings");
+        assert_eq!(statusline_text(&line), "◤ knot · 2165 symbols · reindexing 2 changed · 3 learnings");
+
+        line.color = true;
+        line.index.stale = 0;
+        line.saved = Some((0, 41_000));
+        line.last_edit = None;
+        assert_eq!(
+            statusline_text(&line),
+            "\x1b[38;2;152;159;95m◤ \x1b[0m\x1b[38;2;191;217;155mknot\x1b[0m\x1b[38;2;152;159;95m · \x1b[0m\x1b[38;5;251m2165 symbols\x1b[0m\x1b[38;2;152;159;95m · \x1b[0m\x1b[38;2;191;217;155m✓ current\x1b[0m\x1b[38;2;152;159;95m · \x1b[0m\x1b[38;5;179m3 learnings\x1b[0m\x1b[38;2;152;159;95m · \x1b[0m\x1b[38;2;191;217;155m≤41k saved this session (est.)\x1b[0m"
+        );
 
         line.last_edit = Some("evil\x1b[2J.rs".into());
         line.color = true;

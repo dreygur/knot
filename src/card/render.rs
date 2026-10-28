@@ -1,6 +1,7 @@
 //! Draw the share card: fill an SVG template, then rasterise it to a 1200×675 PNG.
 
 use super::stats::{CardStats, Trend};
+use crate::ui::viz_assets::{MONO, SANS, SANS_SEMIBOLD};
 use anyhow::Context;
 use base64::Engine;
 use resvg::{tiny_skia, usvg};
@@ -9,9 +10,6 @@ use std::sync::Arc;
 
 const TEMPLATE: &str = include_str!("card.svg");
 const LOGO: &[u8] = include_bytes!("../../assets/logo-light.png");
-const SANS: &[u8] = include_bytes!("../../assets/fonts/KnotSans-Regular.ttf");
-const SANS_SEMIBOLD: &[u8] = include_bytes!("../../assets/fonts/KnotSans-SemiBold.ttf");
-const MONO: &[u8] = include_bytes!("../../assets/fonts/KnotMono-Regular.ttf");
 
 /// Family names inside the embedded fonts: subsets of IBM Plex, renamed as the OFL requires.
 const SANS_FAMILY: &str = "Knot Sans";
@@ -22,7 +20,7 @@ const HEIGHT: u32 = 675;
 /// Left and right edges of the content.
 const LEFT: f32 = 56.0;
 const RIGHT: f32 = 1144.0;
-const GREEN: &str = "#34d399";
+const GREEN: &str = "#bfd99b";
 const MINUS: char = '\u{2212}';
 const MAX_CHIPS: usize = 3;
 /// Chips never run past this x, so they keep clear of the repo link.
@@ -470,6 +468,14 @@ mod tests {
         let svg = drawn(&view);
         assert!(svg.contains("a&amp;b&lt;c"));
         render_png(&view).unwrap();
+    }
+
+    #[test]
+    fn template_drops_the_old_mint() {
+        let t = TEMPLATE.to_lowercase();
+        assert!(!t.contains("#34d399") && !t.contains("#1f5c48") && !t.contains("#0e2a22"));
+        assert!(t.contains("#bfd99b"));
+        assert_eq!(GREEN, "#bfd99b");
     }
 
     #[test]
