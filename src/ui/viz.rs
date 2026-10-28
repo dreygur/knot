@@ -39,7 +39,7 @@ fn fill(template: &str, value: impl Fn(&str) -> Option<String>) -> String {
 
 /// The whole `knot viz` page: one offline file with the scripts, fonts, images and
 /// data inlined.
-pub fn render_page(data: &VizData) -> String {
+pub(crate) fn render_page(data: &VizData) -> String {
     // Symbol text comes from the indexed repo; escaping <, > and & keeps a signature
     // containing `</script>` from ending the inline script. JSON reads the escapes back.
     let json = serde_json::to_string(data)

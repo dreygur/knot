@@ -10,37 +10,54 @@ use crate::ast::resolve::CodeGraph;
 use crate::ast::types::SymbolNode;
 use crate::engine::learnings::RepoLearning;
 
+/// Everything the page draws, serialized into its inline script. Nodes are sorted by
+/// id, so the same graph always gives the same JSON and the same cached layout.
 #[derive(Serialize)]
-pub struct VizData {
-    pub folders: Vec<String>,
-    pub nodes: Vec<VizNode>,
-    pub edges: Vec<(usize, usize)>,
-    pub learnings: Vec<VizLearning>,
+pub(crate) struct VizData {
+    pub(crate) folders: Vec<String>,
+    pub(crate) nodes: Vec<VizNode>,
+    /// Calls as `(caller, callee)` indices into `nodes`.
+    pub(crate) edges: Vec<(usize, usize)>,
+    pub(crate) learnings: Vec<VizLearning>,
 }
 
+/// One symbol on the map. The JSON names are one or two letters because a large
+/// repo has tens of thousands of nodes, all inlined into the page.
 #[derive(Serialize)]
-pub struct VizNode {
-    pub id: String,
-    pub l: String,
-    pub f: String,
-    pub ln: usize,
-    pub s: String,
-    pub fo: usize,
-    pub k: String,
-    pub pr: f64,
-    pub le: Vec<usize>,
+pub(crate) struct VizNode {
+    pub(crate) id: String,
+    #[serde(rename = "l")]
+    pub(crate) name: String,
+    #[serde(rename = "f")]
+    pub(crate) file: String,
+    #[serde(rename = "ln")]
+    pub(crate) line: usize,
+    #[serde(rename = "s")]
+    pub(crate) signature: String,
+    /// Index into `VizData::folders`.
+    #[serde(rename = "fo")]
+    pub(crate) folder: usize,
+    #[serde(rename = "k")]
+    pub(crate) kind: String,
+    /// PageRank, rounded to six places to keep the JSON short.
+    #[serde(rename = "pr")]
+    pub(crate) rank: f64,
+    /// Indices into `VizData::learnings` of the learnings touching this symbol's file.
+    #[serde(rename = "le")]
+    pub(crate) learnings: Vec<usize>,
 }
 
+/// The part of a learning the inspector shows.
 #[derive(Serialize)]
-pub struct VizLearning {
-    pub title: String,
-    pub author: String,
-    pub date: String,
+pub(crate) struct VizLearning {
+    pub(crate) title: String,
+    pub(crate) author: String,
+    pub(crate) date: String,
 }
 
 /// The first two path segments of a file, or the first when the path has
 /// exactly two, or "(root)" for a bare file name.
-pub fn folder_of(file: &str) -> String {
+fn folder_of(file: &str) -> String {
     let parts: Vec<&str> = file.split('/').collect();
     match parts.len() {
         0 | 1 => "(root)".to_string(),
@@ -59,7 +76,9 @@ fn touches(learning: &RepoLearning, file: &str) -> bool {
     })
 }
 
-pub fn viz_data(graph: &CodeGraph, learnings: &[RepoLearning]) -> VizData {
+/// Turns the code graph and the active learnings into what the page draws. Calls to
+/// symbols outside the graph and calls to self are dropped.
+pub(crate) fn viz_data(graph: &CodeGraph, learnings: &[RepoLearning]) -> VizData {
     let rank = compute_pagerank(graph);
     let mut symbols: Vec<&SymbolNode> = graph.symbols.values().collect();
     symbols.sort_by(|a, b| a.id.cmp(&b.id));
@@ -77,14 +96,14 @@ pub fn viz_data(graph: &CodeGraph, learnings: &[RepoLearning]) -> VizData {
             let file = s.file.replace('\\', "/");
             VizNode {
                 id: s.id.clone(),
-                l: s.name.clone(),
-                f: s.file.clone(),
-                ln: s.span.0,
-                s: s.signature.clone(),
-                fo: folders.binary_search(&folder).unwrap_or(0),
-                k: s.kind.as_str().to_string(),
-                pr: (rank.get(&s.id).copied().unwrap_or(0.0) * 1e6).round() / 1e6,
-                le: (0..learnings.len()).filter(|&i| touches(&learnings[i], &file)).collect(),
+                name: s.name.clone(),
+                file: s.file.clone(),
+                line: s.span.0,
+                signature: s.signature.clone(),
+                folder: folders.binary_search(&folder).unwrap_or(0),
+                kind: s.kind.as_str().to_string(),
+                rank: (rank.get(&s.id).copied().unwrap_or(0.0) * 1e6).round() / 1e6,
+                learnings: (0..learnings.len()).filter(|&i| touches(&learnings[i], &file)).collect(),
             }
         })
         .collect();
@@ -93,11 +112,11 @@ pub fn viz_data(graph: &CodeGraph, learnings: &[RepoLearning]) -> VizData {
     for (from, tos) in &graph.callees {
         let Some(&a) = index.get(from.as_str()) else { continue };
         for to in tos {
-            if let Some(&b) = index.get(to.as_str()) {
-                if a != b {
-                    edges.insert((a, b));
-                }
+            let Some(&b) = index.get(to.as_str()) else { continue };
+            if a == b {
+                continue;
             }
+            edges.insert((a, b));
         }
     }
 
@@ -190,20 +209,29 @@ mod tests {
         let d = viz_data(&g, &ls);
         assert_eq!(d.learnings.len(), 2);
         assert_eq!(d.learnings[1].title, "about a");
-        assert_eq!(d.nodes[0].le, vec![1]);
-        assert!(d.nodes[1].le.is_empty());
+        assert_eq!(d.nodes[0].learnings, vec![1]);
+        assert!(d.nodes[1].learnings.is_empty());
     }
 
     #[test]
     fn kind_comes_from_symbol_kind() {
         let g = graph(vec![sym("a.rs", "S", SymbolKind::Struct)], &[]);
         let d = viz_data(&g, &[]);
-        assert_eq!(d.nodes[0].k, "struct");
-        assert_eq!(d.nodes[0].l, "S");
-        assert_eq!(d.nodes[0].ln, 7);
-        assert_eq!(d.nodes[0].s, "fn S()");
+        assert_eq!(d.nodes[0].kind, "struct");
+        assert_eq!(d.nodes[0].name, "S");
+        assert_eq!(d.nodes[0].line, 7);
+        assert_eq!(d.nodes[0].signature, "fn S()");
         assert_eq!(d.folders, vec!["(root)"]);
-        assert_eq!(d.nodes[0].fo, 0);
+        assert_eq!(d.nodes[0].folder, 0);
+    }
+
+    #[test]
+    fn wire_names_stay_short() {
+        let g = graph(vec![sym("src/a.rs", "a", SymbolKind::Function)], &[]);
+        let json = serde_json::to_string(&viz_data(&g, &[learning("l", &["src/a.rs"])])).unwrap();
+        let node = r#"{"id":"src/a.rs::a","l":"a","f":"src/a.rs","ln":7,"s":"fn a()","fo":0,"k":"function","pr":"#;
+        assert!(json.contains(node), "{json}");
+        assert!(json.contains(r#""le":[0]}"#), "{json}");
     }
 
     #[test]
