@@ -244,7 +244,8 @@ mod tests {
         ] {
             assert!(html.contains(copyright), "{copyright}");
         }
-        assert!(html.starts_with("<!DOCTYPE html>\n<!--"), "the notice opens the page");
+        let head = "<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n<!--";
+        assert!(html.starts_with(head), "the charset comes before the notice");
         assert!(!LICENSES.contains("--"), "the notice cannot close its own comment");
     }
 
@@ -288,6 +289,18 @@ mod tests {
         let html = render_page(&empty());
         assert!(html.contains("No symbols indexed yet"));
         assert!(!html.contains("{{"), "every slot is filled");
+    }
+
+    #[test]
+    fn page_uses_the_owner_palette() {
+        let t = TEMPLATE.to_lowercase();
+        for old in ["#8fa8ff", "#3550d6", "#34d399", "84,111,255", "84, 111, 255"] {
+            assert!(!t.contains(old), "{old} is gone");
+        }
+        for new in ["#bfd99b", "#23402b", "#00bcd4", "#f2d30f"] {
+            assert!(t.contains(new), "{new} is set");
+        }
+        assert!(!t.contains('\u{2026}'), "the ellipsis may be missing from the font subset");
     }
 
     #[test]

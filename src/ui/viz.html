@@ -1,9 +1,9 @@
 <!DOCTYPE html>
-<!--
-{{LICENSES}}-->
 <html lang="en">
 <head>
 <meta charset="utf-8">
+<!--
+{{LICENSES}}-->
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>knot · code graph</title>
 <link rel="icon" type="image/png" media="(prefers-color-scheme: dark)" href="{{MARK_LIGHT}}">
@@ -20,9 +20,9 @@
     --text: #e8ebf4;
     --text-2: #a3abc2;
     --text-3: #7a839c;
-    --caller: #5ad1e6;
-    --callee: #f2b866;
-    --focus: #8fa8ff;
+    --caller: #00bcd4;
+    --callee: #f2d30f;
+    --focus: #bfd99b;
     --shadow: 0 12px 32px -12px rgb(0 0 0 / .6), 0 2px 6px -2px rgb(0 0 0 / .5);
     --sans: "Knot Sans", ui-sans-serif, system-ui, sans-serif;
     --mono: "Knot Mono", ui-monospace, "SF Mono", monospace;
@@ -37,9 +37,9 @@
     --text: #1b1d24;
     --text-2: #4a4f5e;
     --text-3: #676c7a;
-    --caller: #0a7f95;
-    --callee: #a8620a;
-    --focus: #3550d6;
+    --caller: #007c8c;
+    --callee: #806a00;
+    --focus: #23402b;
     --shadow: 0 12px 32px -14px rgb(40 30 10 / .25), 0 2px 6px -2px rgb(40 30 10 / .12);
     color-scheme: light;
   }
@@ -102,6 +102,7 @@
   .switch { width: 32px; height: 18px; border-radius: 9px; background: var(--line-2); position: relative; transition: background .2s; }
   .switch::after { content: ""; position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; border-radius: 50%; background: var(--text); transition: transform .25s cubic-bezier(.2,.8,.2,1); }
   .switch[aria-checked="true"] { background: var(--focus); }
+  .switch[aria-checked="true"]::after { background: var(--panel); }
   .switch[aria-checked="true"]::after { transform: translateX(14px); }
 
   .zoom { position: fixed; right: 16px; bottom: 16px; display: flex; flex-direction: column; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; box-shadow: var(--shadow); overflow: hidden; transition: right .45s cubic-bezier(.16,1,.3,1); }
@@ -778,7 +779,7 @@ if (!DATA.nodes.length) {
   $("statusText").innerHTML = "No symbols indexed yet.<small>Run <code>knot index</code> in the repo, then <code>knot viz</code> again.</small>";
   $("bar").hidden = true;
 } else {
-  $("statusText").textContent = `Laying out ${fmt.format(DATA.nodes.length)} symbols…`;
+  $("statusText").textContent = `Laying out ${fmt.format(DATA.nodes.length)} symbols...`;
   // Labels are drawn on canvas, which does not wait for a web font on its own.
   layout((pos) => document.fonts.load(`600 12px ${LABEL_FONT}`).catch(() => {}).then(() => start(pos)));
 }
