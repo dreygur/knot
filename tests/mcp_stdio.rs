@@ -11,8 +11,10 @@ use serde_json::{json, Value};
 
 const RESPONSE_TIMEOUT: Duration = Duration::from_secs(20);
 const PROTOCOL_VERSION: &str = "2024-11-05";
+const LATEST_PROTOCOL_VERSION: &str = "2025-11-25";
 const INITIALIZE_ID: u64 = 1;
 const TOOLS_LIST_ID: u64 = 2;
+const TOOL_CALL_ID: u64 = 3;
 
 /// Every tool and its input properties, sorted, as v0.4.1 published them.
 const EXPECTED_TOOLS: &[(&str, &[&str])] = &[
@@ -148,4 +150,63 @@ fn lists_every_tool_over_stdio() {
         assert!(tool["description"].as_str().is_some_and(|d| !d.is_empty()), "{name} has no description");
         assert_eq!(property_names(tool), *props, "{name} parameters changed");
     }
+}
+
+fn initialize(stdin: &mut ChildStdin, messages: &Receiver<Value>, version: &str) -> Value {
+    send(
+        stdin,
+        json!({"jsonrpc": "2.0", "id": INITIALIZE_ID, "method": "initialize", "params": {
+            "protocolVersion": version,
+            "capabilities": {},
+            "clientInfo": {"name": "mcp_stdio_test", "version": "0"},
+        }}),
+    );
+    let init = response(messages, INITIALIZE_ID);
+    send(stdin, json!({"jsonrpc": "2.0", "method": "notifications/initialized"}));
+    init
+}
+
+fn call_tool(stdin: &mut ChildStdin, messages: &Receiver<Value>, name: &str, arguments: Value) -> Value {
+    send(
+        stdin,
+        json!({"jsonrpc": "2.0", "id": TOOL_CALL_ID, "method": "tools/call", "params": {
+            "name": name,
+            "arguments": arguments,
+        }}),
+    );
+    response(messages, TOOL_CALL_ID)
+}
+
+#[test]
+fn bad_arguments_are_tool_errors() {
+    let sandbox = tempfile::tempdir().unwrap();
+    let mut child = start_server(sandbox.path());
+    let messages = read_messages(&mut child);
+    let mut stdin = child.stdin.take().unwrap();
+    initialize(&mut stdin, &messages, PROTOCOL_VERSION);
+
+    let missing = call_tool(&mut stdin, &messages, "knot_ask", json!({}));
+    let wrong_type = call_tool(&mut stdin, &messages, "recall_memory", json!({"query": "x", "limit": "five"}));
+    child.kill().ok();
+    child.wait().ok();
+
+    for reply in [missing, wrong_type] {
+        assert!(reply["error"].is_null(), "expected a result, got a JSON-RPC error: {reply}");
+        assert_eq!(reply["result"]["isError"], true, "{reply}");
+        let text = reply["result"]["content"][0]["text"].as_str().unwrap_or_default();
+        assert!(text.contains("failed to deserialize parameters"), "{reply}");
+    }
+}
+
+#[test]
+fn answers_the_latest_protocol_version() {
+    let sandbox = tempfile::tempdir().unwrap();
+    let mut child = start_server(sandbox.path());
+    let messages = read_messages(&mut child);
+    let mut stdin = child.stdin.take().unwrap();
+    let init = initialize(&mut stdin, &messages, LATEST_PROTOCOL_VERSION);
+    child.kill().ok();
+    child.wait().ok();
+
+    assert_eq!(init["result"]["protocolVersion"], LATEST_PROTOCOL_VERSION, "{init}");
 }
