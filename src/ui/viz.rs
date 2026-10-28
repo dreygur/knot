@@ -6,6 +6,7 @@ use crate::ui::viz_assets::{data_uri_png, font_face_css, FA2_JS, GRAPHOLOGY_JS, 
 use crate::ui::viz_data::{viz_data, VizData};
 
 const TEMPLATE: &str = include_str!("viz.html");
+const PAGE_FILE: &str = "graph.html";
 
 /// Replace each `{{NAME}}` in `template` with `value(NAME)`, in one pass, so text that
 /// was inserted is never scanned for slots. Unknown names are left as they are.
@@ -57,35 +58,56 @@ pub fn render_page(data: &VizData) -> String {
     fill(TEMPLATE, slot)
 }
 
-fn open_browser(path: &Path) -> Result<()> {
-    #[cfg(target_os = "macos")]
-    {
-        std::process::Command::new("open").arg(path).spawn()?;
-    }
-    #[cfg(target_os = "linux")]
-    {
-        std::process::Command::new("xdg-open").arg(path).spawn()?;
-    }
-    #[cfg(target_os = "windows")]
-    {
-        std::process::Command::new("cmd").args(["/C", "start", &path.to_string_lossy()]).spawn()?;
+/// Runs `opener path` and waits: `open` and `xdg-open` hand off to the browser and
+/// return quickly, and their exit code is the only sign the page was not opened.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn run_opener(opener: &str, path: &Path) -> Result<()> {
+    let status = std::process::Command::new(opener).arg(path).status().with_context(|| format!("could not run {opener}"))?;
+    if !status.success() {
+        anyhow::bail!("{opener} exited with {status}");
     }
     Ok(())
 }
 
-pub fn render_and_launch_viz(repo_root: &Path) -> Result<PathBuf> {
+fn open_browser(path: &Path) -> Result<()> {
+    #[cfg(target_os = "macos")]
+    run_opener("open", path)?;
+    #[cfg(target_os = "linux")]
+    run_opener("xdg-open", path)?;
+    #[cfg(target_os = "windows")]
+    std::process::Command::new("cmd").args(["/C", "start", &path.to_string_lossy()]).spawn().context("could not run start")?;
+    Ok(())
+}
+
+/// Renders the page into `.knot/cache/graph.html`. The write goes through `state_file`,
+/// which refuses a symlinked `.knot`, cache folder or file.
+fn write_page(repo_root: &Path) -> Result<PathBuf> {
     let graph = crate::ask::load_graph(repo_root)?;
     let learnings = crate::engine::learnings::active_learnings(repo_root).unwrap_or_else(|e| {
         tracing::warn!("knot viz: could not read learnings, showing none: {e}");
         Vec::new()
     });
-    let out_path = repo_root.join(".knot").join("graph.html");
-    if let Some(parent) = out_path.parent() {
-        fs::create_dir_all(parent)?;
-    }
+    let out_path = crate::ask::state_file(&crate::ask::state_dir(repo_root), PAGE_FILE)?;
     fs::write(&out_path, render_page(&viz_data(&graph, &learnings))).context("Failed to write graph HTML")?;
-    let _ = open_browser(&out_path);
     Ok(out_path)
+}
+
+fn launch_viz(repo_root: &Path, opener: fn(&Path) -> Result<()>) -> Result<(PathBuf, bool)> {
+    let out_path = write_page(repo_root)?;
+    let opened = match opener(&out_path) {
+        Ok(()) => true,
+        Err(e) => {
+            tracing::warn!("knot viz: could not open a browser: {e}");
+            false
+        }
+    };
+    Ok((out_path, opened))
+}
+
+/// Writes the page and tries to open it. The bool says whether a browser opened; the
+/// page exists either way.
+pub fn render_and_launch_viz(repo_root: &Path) -> Result<(PathBuf, bool)> {
+    launch_viz(repo_root, open_browser)
 }
 
 #[cfg(test)]
@@ -108,6 +130,58 @@ mod tests {
             crux: String::new(),
             hash: String::new(),
             outgoing_calls: vec![],
+        }
+    }
+
+    fn no_browser(_: &Path) -> Result<()> {
+        anyhow::bail!("mock opener: no browser")
+    }
+
+    fn mock_browser(_: &Path) -> Result<()> {
+        Ok(())
+    }
+
+    #[test]
+    fn page_is_written_into_the_cache() {
+        let repo = tempfile::tempdir().unwrap();
+        let path = write_page(repo.path()).unwrap();
+        assert!(path.ends_with(".knot/cache/graph.html"), "{}", path.display());
+        assert!(fs::read_to_string(&path).unwrap().contains("Knot Sans"));
+        assert!(!repo.path().join(".knot").join("graph.html").exists());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn symlinked_cache_is_refused() {
+        let repo = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        fs::create_dir_all(repo.path().join(".knot")).unwrap();
+        std::os::unix::fs::symlink(outside.path(), repo.path().join(".knot").join("cache")).unwrap();
+
+        assert!(write_page(repo.path()).is_err());
+        assert!(launch_viz(repo.path(), mock_browser).is_err());
+        assert_eq!(fs::read_dir(outside.path()).unwrap().count(), 0, "nothing written through the link");
+    }
+
+    #[test]
+    fn open_failure_is_reported_honestly() {
+        let repo = tempfile::tempdir().unwrap();
+        let (path, opened) = launch_viz(repo.path(), no_browser).unwrap();
+        assert!(!opened);
+        assert!(path.exists(), "the page is still written");
+
+        let (_, opened) = launch_viz(repo.path(), mock_browser).unwrap();
+        assert!(opened);
+    }
+
+    #[test]
+    fn missing_opener_is_an_error() {
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
+        {
+            let err = run_opener("knot-no-such-opener", Path::new("graph.html")).unwrap_err();
+            assert!(err.to_string().contains("knot-no-such-opener"), "{err}");
+            assert!(run_opener("false", Path::new("graph.html")).is_err(), "non-zero exit is a failure");
+            assert!(run_opener("true", Path::new("graph.html")).is_ok());
         }
     }
 
