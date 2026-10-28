@@ -8,6 +8,9 @@ pub const SIGMA_JS: &str = include_str!("../../assets/viz/sigma.min.js");
 /// graphology-library's UMD build; its global is `graphologyLibrary` and the
 /// layout is `graphologyLibrary.layoutForceAtlas2`.
 pub const FA2_JS: &str = include_str!("../../assets/viz/graphology-library.min.js");
+/// The MIT notices of the three scripts and every package bundled inside them.
+/// None of the minified files keeps its banner, so the page carries these instead.
+pub const LICENSES: &str = include_str!("../../assets/viz/LICENSES.txt");
 
 pub const SANS: &[u8] = include_bytes!("../../assets/fonts/KnotSans-Regular.ttf");
 pub const SANS_SEMIBOLD: &[u8] = include_bytes!("../../assets/fonts/KnotSans-SemiBold.ttf");

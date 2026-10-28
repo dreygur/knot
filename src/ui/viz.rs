@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::ui::viz_assets::{data_uri_png, font_face_css, FA2_JS, GRAPHOLOGY_JS, LOGO_DARK, LOGO_LIGHT, MARK_DARK_64, MARK_LIGHT_64, SIGMA_JS};
+use crate::ui::viz_assets::{data_uri_png, font_face_css, FA2_JS, GRAPHOLOGY_JS, LICENSES, LOGO_DARK, LOGO_LIGHT, MARK_DARK_64, MARK_LIGHT_64, SIGMA_JS};
 use crate::ui::viz_data::{viz_data, VizData};
 
 const TEMPLATE: &str = include_str!("viz.html");
@@ -43,6 +43,7 @@ pub fn render_page(data: &VizData) -> String {
         .replace('&', "\\u0026");
     let slot = |name: &str| -> Option<String> {
         Some(match name {
+            "LICENSES" => LICENSES.to_string(),
             "FONTS_CSS" => font_face_css(),
             "GRAPHOLOGY" => GRAPHOLOGY_JS.to_string(),
             "SIGMA" => SIGMA_JS.to_string(),
@@ -183,6 +184,27 @@ mod tests {
             assert!(run_opener("false", Path::new("graph.html")).is_err(), "non-zero exit is a failure");
             assert!(run_opener("true", Path::new("graph.html")).is_ok());
         }
+    }
+
+    #[test]
+    fn page_carries_every_licence_notice() {
+        let html = render_page(&empty());
+        for copyright in [
+            "Copyright (c) 2016-2021 Guillaume Plique (Yomguithereal)",
+            "Copyright (C) 2013-2025, Alexis Jacomy, Guillaume Plique, Benoît Simard",
+            "Copyright (c) 2017-2021 Guillaume Plique (Yomguithereal)",
+            "Copyright Joyent, Inc. and other Node contributors.",
+            "Copyright (c) 2016 Guillaume Plique (Yomguithereal)",
+            "Copyright (c) 2017-2020 Guillaume Plique (Yomguithereal)",
+            "Copyright (c) 2018 Guillaume Plique (Yomguithereal)",
+            "Copyright OpenJS Foundation and other contributors",
+            "Copyright (c) 2017 Evgeny Poberezkin",
+            "Copyright 2011 Nicolas Thouvenin",
+        ] {
+            assert!(html.contains(copyright), "{copyright}");
+        }
+        assert!(html.starts_with("<!DOCTYPE html>\n<!--"), "the notice opens the page");
+        assert!(!LICENSES.contains("--"), "the notice cannot close its own comment");
     }
 
     #[test]
