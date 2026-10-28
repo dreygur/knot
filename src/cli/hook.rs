@@ -275,7 +275,7 @@ fn pre_tool_json(fields: serde_json::Value) -> serde_json::Value {
 }
 
 /// What the PreToolUse hook answers for a classified Bash command; `None` lets it run
-/// untouched. `already_denied` is false only the first time a python edit is seen.
+/// untouched. `already_denied` is true when this python edit was blocked before in the session; it then runs.
 pub(super) fn pre_tool_output(plan: &Plan, command: &str, bin: &Path, swap: bool, already_denied: bool) -> Option<serde_json::Value> {
     match plan {
         // "allow" is safe because classify admits only read-only searches of repo source.
@@ -286,7 +286,7 @@ pub(super) fn pre_tool_output(plan: &Plan, command: &str, bin: &Path, swap: bool
                 "updatedInput": { "command": rewritten },
             })))
         }
-        Plan::PythonWrite { file } if already_denied => Some(pre_tool_json(serde_json::json!({
+        Plan::PythonWrite { file } if !already_denied => Some(pre_tool_json(serde_json::json!({
             "permissionDecision": "deny",
             "permissionDecisionReason": format!(
                 "Knot: this edits {file} with a python script, which rewrites it without you seeing the result. \
@@ -323,7 +323,8 @@ fn pre_tool(json: &serde_json::Value, root: &Path, cwd: &Path, session_id: &str,
     let Ok(bin) = std::env::current_exe() else { return };
     let plan = classify(command, root, cwd);
     let first_python = matches!(plan, Plan::PythonWrite { .. }) && session::deny_once(root, session_id, command);
-    if let Some(out) = pre_tool_output(&plan, command, &bin, swap, first_python) {
+    let already_denied = matches!(plan, Plan::PythonWrite { .. }) && !first_python;
+    if let Some(out) = pre_tool_output(&plan, command, &bin, swap, already_denied) {
         println!("{out}");
     }
     if matches!(plan, Plan::PythonWrite { .. }) {
@@ -538,12 +539,12 @@ mod pre_tool_tests {
         let plan = classify(cmd, root, root);
         assert!(matches!(plan, Plan::PythonWrite { .. }), "{plan:?}");
 
-        let first = session::deny_once(root, "s1", cmd);
-        let out = pre_tool_output(&plan, cmd, Path::new("/bin/knot"), true, first).unwrap();
+        let seen_before = !session::deny_once(root, "s1", cmd);
+        let out = pre_tool_output(&plan, cmd, Path::new("/bin/knot"), true, seen_before).unwrap();
         assert_eq!(out.pointer("/hookSpecificOutput/permissionDecision").unwrap(), "deny");
         assert!(out.pointer("/hookSpecificOutput/permissionDecisionReason").unwrap().as_str().unwrap().contains("src/a.rs"));
 
-        let second = session::deny_once(root, "s1", cmd);
-        assert!(pre_tool_output(&plan, cmd, Path::new("/bin/knot"), true, second).is_none());
+        let seen_again = !session::deny_once(root, "s1", cmd);
+        assert!(pre_tool_output(&plan, cmd, Path::new("/bin/knot"), true, seen_again).is_none());
     }
 }
