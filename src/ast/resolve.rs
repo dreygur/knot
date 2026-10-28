@@ -406,12 +406,8 @@ impl CodeGraph {
         Ok(Self::from_parsed_with_aliases(parsed, TsAliases::load(repo_root)))
     }
 
-    /// Assemble the graph from already parsed files, e.g. ones loaded from a cache.
-    pub fn from_parsed(parsed: Vec<ParsedFile>) -> Self {
-        Self::from_parsed_with_aliases(parsed, TsAliases::default())
-    }
-
-    /// [`from_parsed`](Self::from_parsed), locating aliased TS/JS imports through `ts_aliases`.
+    /// Assemble the graph from already parsed files, e.g. ones loaded from a cache,
+    /// locating aliased TS/JS imports through `ts_aliases`.
     pub fn from_parsed_with_aliases(parsed: Vec<ParsedFile>, ts_aliases: TsAliases) -> Self {
         let mut symbols = HashMap::new();
         let mut name_to_ids: HashMap<String, Vec<String>> = HashMap::new();

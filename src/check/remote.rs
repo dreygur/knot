@@ -5,8 +5,6 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tokio::sync::watch;
-use tokio::task::JoinHandle;
 
 const DEFAULT_POLL_INTERVAL_SECS: u64 = 180;
 const FETCH_TIMEOUT: Duration = Duration::from_secs(30);
@@ -302,8 +300,6 @@ pub fn symbol_clashes(repo_root: &Path, rel_file: &str) -> Result<Vec<SymbolClas
 
 pub struct BranchMonitorHandle {
     latest_collisions: Arc<Mutex<Vec<RemoteCollision>>>,
-    shutdown_tx: watch::Sender<bool>,
-    task: JoinHandle<()>,
 }
 
 impl BranchMonitorHandle {
@@ -312,11 +308,6 @@ impl BranchMonitorHandle {
             .lock()
             .map(|l| l.clone())
             .unwrap_or_default()
-    }
-
-    pub fn stop(self) {
-        let _ = self.shutdown_tx.send(true);
-        self.task.abort();
     }
 }
 
@@ -357,45 +348,34 @@ pub fn start_branch_monitor(
     let interval = Duration::from_secs(interval_secs.unwrap_or(DEFAULT_POLL_INTERVAL_SECS));
     let latest_collisions = Arc::new(Mutex::new(Vec::new()));
     let shared_state = Arc::clone(&latest_collisions);
-    let (shutdown_tx, mut shutdown_rx) = watch::channel(false);
 
-    let task = tokio::spawn(async move {
+    tokio::spawn(async move {
         let mut ticker = tokio::time::interval(interval);
         loop {
-            tokio::select! {
-                _ = shutdown_rx.changed() => {
-                    break;
+            ticker.tick().await;
+            if let Err(e) = fetch_remotes(&repo_root).await {
+                tracing::debug!("Remote fetch skipped: {e}");
+            }
+            match detect_remote_collisions(&repo_root) {
+                Ok(report) => {
+                    for col in &report.collisions {
+                        tracing::warn!(
+                            "Remote collision detected on file '{}' with branch '{}' by '{}'",
+                            col.file, col.branch, col.author
+                        );
+                    }
+                    if let Ok(mut lock) = shared_state.lock() {
+                        *lock = report.collisions;
+                    }
                 }
-                _ = ticker.tick() => {
-                    if let Err(e) = fetch_remotes(&repo_root).await {
-                        tracing::debug!("Remote fetch skipped: {e}");
-                    }
-                    match detect_remote_collisions(&repo_root) {
-                        Ok(report) => {
-                            for col in &report.collisions {
-                                tracing::warn!(
-                                    "Remote collision detected on file '{}' with branch '{}' by '{}'",
-                                    col.file, col.branch, col.author
-                                );
-                            }
-                            if let Ok(mut lock) = shared_state.lock() {
-                                *lock = report.collisions;
-                            }
-                        }
-                        Err(e) => {
-                            tracing::debug!("Remote branch scan error: {e}");
-                        }
-                    }
+                Err(e) => {
+                    tracing::debug!("Remote branch scan error: {e}");
                 }
             }
         }
     });
 
-    BranchMonitorHandle {
-        latest_collisions,
-        shutdown_tx,
-        task,
-    }
+    BranchMonitorHandle { latest_collisions }
 }
 
 #[cfg(test)]

@@ -205,10 +205,6 @@ impl TsAliases {
         Self { configs }
     }
 
-    pub fn is_empty(&self) -> bool {
-        self.configs.is_empty()
-    }
-
     /// Repo-relative paths, without extension, that a non-relative `module` imported
     /// from `importer` may name. Empty when no config maps it.
     pub fn resolve(&self, module: &str, importer: &str) -> Vec<String> {

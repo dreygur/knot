@@ -1,4 +1,4 @@
-use crate::memory::{Edge, EdgeType, KnowledgeNode, MemoryScope};
+use crate::memory::{Edge, KnowledgeNode, MemoryScope};
 use crate::skills::SkillNode;
 use anyhow::Result;
 use chrono::Utc;
@@ -427,34 +427,6 @@ impl GraphStore {
         .execute(&self.pool)
         .await?;
         Ok(())
-    }
-
-    pub async fn get_edges_from(&self, source_id: Uuid) -> Result<Vec<Edge>> {
-        let rows = sqlx::query(
-            "SELECT id, source_id, target_id, edge_type, created_at \
-             FROM edges WHERE source_id = ?",
-        )
-        .bind(source_id.to_string())
-        .fetch_all(&self.pool)
-        .await?;
-
-        rows.iter()
-            .map(|r| {
-                let id: String = r.get("id");
-                let src: String = r.get("source_id");
-                let tgt: String = r.get("target_id");
-                let et: String = r.get("edge_type");
-                let ca: String = r.get("created_at");
-                Ok(Edge {
-                    id: Uuid::parse_str(&id)?,
-                    source_id: Uuid::parse_str(&src)?,
-                    target_id: Uuid::parse_str(&tgt)?,
-                    edge_type: EdgeType::from_str(&et)
-                        .ok_or_else(|| anyhow::anyhow!("Unknown edge type: {et}"))?,
-                    created_at: ca.parse()?,
-                })
-            })
-            .collect()
     }
 
     pub async fn mark_stale(&self, id: Uuid) -> Result<()> {

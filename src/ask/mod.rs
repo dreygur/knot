@@ -11,10 +11,10 @@ mod tokenize;
 pub mod usage;
 
 pub use cache::{
-    claim_reindex, index_status, state_file, state_file_readable, load_corpus, release_reindex, Corpus, IndexStatus, LoadStats,
+    claim_reindex, index_status, state_file, state_file_readable, load_corpus, release_reindex, IndexStatus,
 };
 pub use index::LexicalIndex;
-pub use learnings::{flatten, related_learnings, LearningHit};
+pub use learnings::{flatten, related_learnings};
 pub use tokenize::tokenize;
 
 use serde::Serialize;

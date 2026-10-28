@@ -1,7 +1,6 @@
 use std::collections::HashMap;
 
 use super::resolve::CodeGraph;
-use super::types::SymbolNode;
 
 const DAMPING_FACTOR: f64 = 0.85;
 const MAX_ITERATIONS: usize = 25;
@@ -99,26 +98,10 @@ pub fn compute_weighted_pagerank(graph: &CodeGraph, seed_weights: &HashMap<Strin
     run_pagerank(&ids, &graph.callers, &graph.callees, &teleport)
 }
 
-pub fn top_hubs<'a>(graph: &'a CodeGraph, limit: usize) -> Vec<(&'a SymbolNode, f64)> {
-    let scores = compute_pagerank(graph);
-    let mut ranked: Vec<(&'a SymbolNode, f64)> = graph
-        .symbols
-        .values()
-        .filter_map(|sym| {
-            let score = scores.get(&sym.id).copied()?;
-            Some((sym, score))
-        })
-        .collect();
-
-    ranked.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-    ranked.truncate(limit);
-    ranked
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ast::types::SymbolKind;
+    use crate::ast::types::{SymbolKind, SymbolNode};
 
     fn make_test_sym(id: &str, outgoing: Vec<&str>) -> SymbolNode {
         SymbolNode {
@@ -156,11 +139,10 @@ mod tests {
         graph.callees.insert("caller_b".into(), vec!["core_utility".into()]);
         graph.callees.insert("caller_c".into(), vec!["core_utility".into()]);
 
-        let hubs = top_hubs(&graph, 4);
-        assert_eq!(hubs[0].0.id, "core_utility");
-        assert!(hubs[0].1 > hubs[1].1);
+        let scores = compute_pagerank(&graph);
+        assert!(scores["core_utility"] > scores["caller_a"]);
 
-        let total: f64 = compute_pagerank(&graph).values().sum();
+        let total: f64 = scores.values().sum();
         assert!((total - 1.0).abs() < 1e-6, "rank must not leak from dangling nodes: {total}");
     }
 

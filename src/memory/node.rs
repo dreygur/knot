@@ -113,17 +113,6 @@ impl KnowledgeNode {
             updated_at: now,
         }
     }
-
-    /// Increment utility score on recall hit, capped at 1.0
-    pub fn hit(&mut self) {
-        self.utility_score = (self.utility_score + 0.05).min(1.0);
-        self.updated_at = Utc::now();
-    }
-
-    /// Qualifies for Global promotion
-    pub fn is_promotion_candidate(&self) -> bool {
-        self.utility_score >= 0.8 && !self.is_stale
-    }
 }
 
 /// A directed, typed edge between two KnowledgeNodes.

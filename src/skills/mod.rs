@@ -49,12 +49,6 @@ impl SkillNode {
         }
     }
 
-    pub fn increment_success(&mut self) {
-        self.success_count += 1;
-        self.utility_score = (self.utility_score + 0.05).min(1.0);
-        self.updated_at = Utc::now();
-    }
-
     pub fn is_dry_run_passed(&self, variables: &[(String, String)]) -> bool {
         for prereq in &self.prerequisites {
             let expanded = interpolate(prereq, variables);

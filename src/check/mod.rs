@@ -1,7 +1,7 @@
 pub mod remote;
 
 pub use remote::{
-    changed_symbols, detect_remote_collisions, start_branch_monitor, symbol_clashes, BranchMonitorHandle, RemoteCheckReport,
+    changed_symbols, detect_remote_collisions, start_branch_monitor, symbol_clashes, BranchMonitorHandle,
     RemoteCollision, SymbolClash,
 };
 
@@ -18,16 +18,6 @@ pub enum FindingKind {
     Conflict,
     Warning,
     Follows,
-}
-
-impl FindingKind {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            FindingKind::Conflict => "CONFLICT",
-            FindingKind::Warning => "WARNING",
-            FindingKind::Follows => "FOLLOWS",
-        }
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

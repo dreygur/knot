@@ -52,32 +52,6 @@ pub struct SymbolNode {
     pub outgoing_calls: Vec<String>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub enum EdgeKind {
-    Calls,
-    Imports,
-    Implements,
-    References,
-}
-
-impl EdgeKind {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            EdgeKind::Calls => "calls",
-            EdgeKind::Imports => "imports",
-            EdgeKind::Implements => "implements",
-            EdgeKind::References => "references",
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CallEdge {
-    pub from: String,
-    pub to: String,
-    pub kind: EdgeKind,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BlastRadiusReport {
     pub target: String,

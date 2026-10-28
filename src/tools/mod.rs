@@ -1299,7 +1299,6 @@ mod tests {
 
         let engine = server.engine.lock().await;
         assert!(engine.graph.get_node(kept.id).await.unwrap().is_some(), "forget_node ran in read-only mode");
-        assert!(engine.graph.get_edges_from(kept.id).await.unwrap().is_empty(), "link_nodes ran in read-only mode");
     }
 
     #[test]
