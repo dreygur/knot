@@ -31,6 +31,7 @@ account: everything runs locally and learnings travel through git.
 - [Set up a repository](#set-up-a-repository)
 - [Agent support](#agent-support)
 - [Finding code](#finding-code)
+- [See the code graph](#see-the-code-graph)
 - [Team learnings](#team-learnings)
 - [Status line](#status-line)
 - [Share what Knot saved](#share-what-knot-saved)
@@ -201,6 +202,22 @@ TypeScript path aliases from `tsconfig.json` / `jsconfig.json` (`@/lib/...`) res
 right files, so calls and imports through them are part of the graph.
 
 Every command takes `--json` where it makes sense, for scripts and other tools.
+
+---
+
+## See the code graph
+
+`knot viz` writes the repo's call graph to `.knot/cache/graph.html` and opens it. Each folder
+settles into its own region, and a symbol's size shows how central it is. Click one to see its
+callers, its calls and the learnings on its file; `/` searches by name or file.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/screenshots/knot-viz-dark.png">
+  <img src="assets/screenshots/knot-viz-light.png" alt="knot viz showing Knot's own code graph with cli_statusline selected, its caller and calls highlighted and the inspector open">
+</picture>
+
+The page is one offline file: no CDN and no network. It follows the system theme and has a
+toggle.
 
 ---
 
@@ -397,7 +414,7 @@ execute_skill(skill_name="format-module", variables=[{key:"file_path", value:"sr
 | `knot recall <query> [--limit N]` | Search the memory vault |
 | `knot commit <session_id> <project_id>` | Promote a session's memories to a project |
 | `knot explore [query]` | Terminal UI for browsing the code graph |
-| `knot viz` | Interactive HTML graph visualiser |
+| `knot viz` | Open the code graph map (`.knot/cache/graph.html`) |
 | `knot status` / `knot logs [-f]` | Vault health plus this repo's index and learnings; activity log |
 | `knot card [--repo] [--out <path>]` | Save and copy a picture of what Knot saved |
 | `knot --version` | Version |
