@@ -82,7 +82,7 @@ crossterm = "0.28"
 # Share card: SVG to PNG with embedded fonts only (no system fonts, same output everywhere)
 resvg = { version = "0.48.1", default-features = false, features = ["text", "raster-images"] }
 skrifa = "0.44"
-base64 = "0.22"
+base64 = "0.23"
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.52"
