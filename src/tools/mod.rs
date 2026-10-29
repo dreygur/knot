@@ -12,6 +12,10 @@ use std::sync::Arc;
 use crate::ask::{flatten, render};
 use crate::check::{BranchMonitorHandle, RemoteCollision};
 
+const DEFAULT_ASK_LIMIT: usize = 8;
+const MAX_ASK_LIMIT: usize = 25;
+const MAX_COLLISION_FIELD_CHARS: usize = 80;
+
 /// What Claude reads about Knot when the session starts, before any tool is called.
 const INSTRUCTIONS: &str = "\
 Knot indexes this repo's code and team learnings.
@@ -69,9 +73,6 @@ impl KnotServer {
     }
 }
 
-const DEFAULT_ASK_LIMIT: usize = 8;
-const MAX_ASK_LIMIT: usize = 25;
-
 /// The answer for `knot_ask`: ranked hits with pointers and excerpts, and the learnings on them.
 fn ask_text(root: &std::path::Path, cache_root: Option<&std::path::Path>, input: &AskInput) -> Result<render::Answer> {
     let limit = input.limit.unwrap_or(DEFAULT_ASK_LIMIT).min(MAX_ASK_LIMIT);
@@ -88,8 +89,6 @@ fn code_answer(root: &std::path::Path, tool: &str, answer: render::Answer) -> Ca
     crate::ask::savings::record(root, tool, &answer.files, &answer.text);
     CallToolResult::success(vec![ContentBlock::text(answer.text)])
 }
-
-const MAX_COLLISION_FIELD_CHARS: usize = 80;
 
 fn format_collisions(collisions: &[&RemoteCollision]) -> String {
     let mut out = format!(

@@ -13,12 +13,11 @@ const DEFAULT_COLUMNS: u16 = 80;
 const FOOTER: &str = "↑↓ move · space toggle · a all · enter confirm · esc cancel";
 
 /// One choice on screen: a name, whether it was found here, and what picking it writes.
+/// Every pick writes outside the repo, so the summary is always drawn as a warning.
 pub struct Row {
     pub label: String,
     pub detected: bool,
     pub summary: String,
-    /// Picking it writes outside the repo, so its summary is drawn as a warning.
-    pub machine_wide: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -101,7 +100,7 @@ impl Picker {
             let name = if here { paint(&row.label, LIGHT_GREEN, style) } else { row.label.clone() };
             let tag = if row.detected { String::new() } else { paint(NOT_DETECTED, OLIVE, style) };
             let gap = " ".repeat(width - label(row).chars().count());
-            let summary = paint(&row.summary, if row.machine_wide { AMBER } else { OLIVE }, style);
+            let summary = paint(&row.summary, AMBER, style);
             lines.push(format!("{pointer} {mark} {name}{tag}{gap}   {summary}"));
         }
         lines.push(String::new());
@@ -198,7 +197,7 @@ mod tests {
     use super::*;
 
     fn row(label: &str, detected: bool) -> Row {
-        Row { label: label.into(), detected, summary: format!("{label}.md"), machine_wide: false }
+        Row { label: label.into(), detected, summary: format!("{label}.md") }
     }
 
     fn picker() -> Picker {

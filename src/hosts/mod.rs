@@ -4,7 +4,7 @@ pub mod mcp;
 
 pub use agent::{Agent, Target};
 
-use agent::CURSOR_RULE;
+use agent::{ANTIGRAVITY_SKILL, CURSOR_RULE};
 use crate::utils::{is_symlink, refuse_symlink, write_atomic};
 use anyhow::Result;
 use std::fs;
@@ -96,9 +96,9 @@ pub fn install_antigravity_skill(home_dir: &Path) -> Result<()> {
 fn write_target(target: Target, repo_root: &Path, home: &Path) -> Result<()> {
     match target {
         CURSOR_RULE => install_cursor_rule(repo_root),
+        ANTIGRAVITY_SKILL => install_antigravity_skill(home),
         Target::Repo(path) => upsert_block_into_file(repo_root, &repo_root.join(path), &protocol_block()),
-        // The Antigravity skill is the one file Knot writes in the home folder
-        Target::Home(_) => install_antigravity_skill(home),
+        Target::Home(path) => anyhow::bail!("no writer for ~/{path}"),
     }
 }
 

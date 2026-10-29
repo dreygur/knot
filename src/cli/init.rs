@@ -112,7 +112,6 @@ fn picker_rows(found: &[(Agent, bool)], home: &Path) -> Vec<Row> {
             label: agent.id().to_string(),
             detected,
             summary: format!("{} · + MCP {}", summary(agent), mcp_place(agent, home)),
-            machine_wide: true,
         })
         .collect()
 }

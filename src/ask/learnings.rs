@@ -221,6 +221,34 @@ mod tests {
         assert!(related_learnings(dir.path(), "retry the parser", &[]).is_empty());
     }
 
+    fn shown(file: &str) -> LearningHit {
+        LearningHit {
+            title: "Pool size".into(),
+            file: file.into(),
+            summary: String::new(),
+            touched: Vec::new(),
+            score: 1.0,
+            author: "Maya".into(),
+            date: "2026-10-27".into(),
+            cost_minutes: Some(5),
+            cost_tokens: Some(1_000),
+        }
+    }
+
+    #[test]
+    fn mark_shown_logs_each_committed_learning() {
+        let rel = ".knot/learnings/pool.md";
+        let dir = super::super::events::tests::repo_with_file(rel, true);
+        mark_shown(dir.path(), &[]);
+        assert!(super::super::events::all(dir.path()).is_empty());
+
+        mark_shown(dir.path(), &[shown(rel), shown(".knot/learnings/missing.md")]);
+        let events = super::super::events::all(dir.path());
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].learning.as_deref(), Some("pool"));
+        assert_eq!(events[0].cost_tokens, Some(1_000));
+    }
+
     #[test]
     fn flatten_strips_control_characters_and_cuts() {
         assert_eq!(flatten("a\nb\x1b[31m  c", 10), "a b [31m c");

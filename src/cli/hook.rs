@@ -7,9 +7,9 @@ use std::path::{Path, PathBuf};
 
 use crate::ask::events;
 use crate::ask::{flatten, handoff, session, usage};
-use crate::utils::count;
 use crate::engine::learnings::{active_learnings, RepoLearning};
 use crate::python_block::python_edit;
+use crate::utils::count;
 
 const SUMMARY_CHARS: usize = 220;
 

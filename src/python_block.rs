@@ -1,4 +1,4 @@
-//! Spot a Bash command that edits code with a python one-off. The python block denies
+//! Spot a Bash command that edits code with an inline python script. The python block denies
 //! it once, so the agent uses its Edit tool and sees the change.
 //!
 //! Anything this is not sure about is left alone: a false match blocks a command the
@@ -104,7 +104,7 @@ fn heredoc_write(command: &str, at: usize, root: &Path, cwd: &Path) -> Option<St
     None // never closed
 }
 
-/// The repo source file `command` writes with a python one-off (`python3 -c` or a
+/// The repo source file `command` writes with an inline python script (`python3 -c` or a
 /// heredoc), or `None` for anything else.
 pub fn python_edit(command: &str, root: &Path, cwd: &Path) -> Option<String> {
     let command = command.trim();
