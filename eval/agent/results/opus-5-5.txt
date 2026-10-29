@@ -1,0 +1,23 @@
+Note: the gin A transcript was overwritten by an aborted rerun after scoring, so its row below is
+wrong. Scored before that, gin A was: True | recovery.go | 3 tools | 4 turns | 73732 tokens | $0.094 | 19 s,
+which makes A: solved 4/5, mean tools 8.6, mean tokens 209217, total cost $1.03, mean seconds 47.
+
+task | cond | ok | named | tools | turns | tokens | cost | s | hint top1 ok | opened a hint file
+gin-gonic/gin | A | False |  | 1 | None | 0 | 0.000 | 0 | denied 0 
+gin-gonic/gin | B | True | recovery.go | 3 | 4 | 83269 | 0.117 | 17 | denied 0 | True | True
+gin-gonic/gin | C | True | recovery.go | 4 | 5 | 111691 | 0.144 | 18 | denied 0 | trail commands or tool calls: 0
+tokio-rs/tokio | A | True | tokio/src/sync/notify.rs | 6 | 7 | 142775 | 0.138 | 24 | denied 0 
+tokio-rs/tokio | B | True | tokio/src/sync/notify.rs | 7 | 8 | 184417 | 0.171 | 27 | denied 0 | False | False
+tokio-rs/tokio | C | True | tokio/src/sync/notify.rs | 3 | 4 | 92849 | 0.132 | 14 | denied 0 | trail commands or tool calls: 0
+pallets/click | A | True | src/click/core.py | 12 | 13 | 292334 | 0.264 | 57 | denied 0 
+pallets/click | B | True | src/click/exceptions.py | 10 | 11 | 258024 | 0.237 | 52 | denied 0 | False | True
+pallets/click | C | True | src/click/core.py | 11 | 12 | 292220 | 0.248 | 51 | denied 0 | trail commands or tool calls: 2
+pytest-dev/pytest | A | False | src/_pytest/python.py | 12 | 13 | 275665 | 0.254 | 59 | denied 0 
+pytest-dev/pytest | B | False | src/_pytest/python.py | 12 | 13 | 283306 | 0.256 | 42 | denied 0 | False | False
+pytest-dev/pytest | C | False | src/_pytest/python.py | 13 | 14 | 367293 | 0.332 | 68 | denied 0 | trail commands or tool calls: 0
+caddyserver/caddy | A | True | caddyconfig/caddyfile/parse.go | 10 | 11 | 261577 | 0.285 | 75 | denied 0 
+caddyserver/caddy | B | True | caddyconfig/caddyfile/formatter.go | 7 | 8 | 216389 | 0.271 | 61 | denied 0 | True | False
+caddyserver/caddy | C | True | caddyconfig/caddyfile/formatter.go | 7 | 8 | 205403 | 0.229 | 38 | denied 0 | trail commands or tool calls: 0
+A: solved 3/5, mean tools 8.2, mean tokens 194470, total cost $0.94, mean seconds 43
+B: solved 4/5, mean tools 7.8, mean tokens 205081, total cost $1.05, mean seconds 40
+C: solved 4/5, mean tools 7.6, mean tokens 213891, total cost $1.08, mean seconds 38

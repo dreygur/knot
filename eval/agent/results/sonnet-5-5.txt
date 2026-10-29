@@ -1,0 +1,19 @@
+task | cond | ok | named | tools | turns | tokens | cost | s | hint top1 ok | opened a hint file
+gin-gonic/gin | A | True | recovery.go | 8 | 9 | 169187 | 0.068 | 34 | denied 1 
+gin-gonic/gin | B | True | recovery.go | 5 | 6 | 113635 | 0.065 | 32 | denied 0 | True | True
+gin-gonic/gin | C | True | recovery.go | 3 | 4 | 82680 | 0.046 | 12 | denied 0 | trail commands or tool calls: 0
+tokio-rs/tokio | A | True | tokio/src/sync/notify.rs | 5 | 6 | 130712 | 0.059 | 26 | denied 0 
+tokio-rs/tokio | B | True | tokio/src/sync/notify.rs | 7 | 8 | 183066 | 0.073 | 24 | denied 0 | False | False
+tokio-rs/tokio | C | True | tokio/src/sync/notify.rs | 4 | 5 | 106752 | 0.054 | 14 | denied 0 | trail commands or tool calls: 0
+pallets/click | A | True | src/click/core.py | 8 | 9 | 194658 | 0.071 | 29 | denied 0 
+pallets/click | B | True | src/click/core.py | 17 | 18 | 398752 | 0.131 | 70 | denied 2 | False | False
+pallets/click | C | True | src/click/core.py | 9 | 10 | 230820 | 0.091 | 30 | denied 0 | trail commands or tool calls: 0
+pytest-dev/pytest | A | False | src/_pytest/python.py | 14 | 15 | 308995 | 0.106 | 66 | denied 0 
+pytest-dev/pytest | B | True | src/_pytest/fixtures.py | 13 | 14 | 330669 | 0.109 | 45 | denied 0 | False | False
+pytest-dev/pytest | C | False | src/_pytest/python.py | 22 | 23 | 504273 | 0.162 | 89 | denied 0 | trail commands or tool calls: 0
+caddyserver/caddy | A | True | caddyconfig/caddyfile/parse.go | 8 | 9 | 213161 | 0.106 | 42 | denied 0 
+caddyserver/caddy | B | True | caddyconfig/caddyfile/formatter.go | 11 | 12 | 202310 | 0.117 | 45 | denied 0 | True | True
+caddyserver/caddy | C | True | caddyconfig/caddyfile/formatter.go | 7 | 8 | 188029 | 0.089 | 47 | denied 1 | trail commands or tool calls: 0
+A: solved 4/5, mean tools 8.6, mean tokens 203343, total cost $0.41, mean seconds 39
+B: solved 5/5, mean tools 10.6, mean tokens 245686, total cost $0.50, mean seconds 43
+C: solved 4/5, mean tools 9.0, mean tokens 222511, total cost $0.44, mean seconds 38

@@ -22,10 +22,122 @@ account: everything runs locally and learnings travel through git.
 
 > Built in Dhaka for the global developer community.
 
+> **Abandoned.** I am not working on Knot anymore, and I am not going to use code graph
+> tools for AI agents again. The search side measurably works, but agents do not use it,
+> and when it is pushed to them it does not change the result. The story and every number
+> are below; the code, evals and harnesses stay here for anyone who wants to check them
+> or fork the project.
+
+---
+
+## Why Knot was abandoned
+
+### The bet
+
+Coding agents burn tokens finding code: grep, read, grep again. The bet was that a local
+index (Tree-sitter symbols, BM25F over names, docs and paths, a call graph reranker) could
+hand them the right file and line in one call, and that team learnings attached to the
+code would stop repeated mistakes. Trail-Code makes the same bet, so it was the yardstick.
+
+### Step 1: Knot ranks well on its own questions
+
+On the question sets in `eval/` (written by me, used to tune Knot), Knot beat Trail and
+every other tool I could install. MRR@10, where 1.0 means the right symbol is always first:
+
+| tool | tuning | held out | Go and Java | TS app |
+|---|---|---|---|---|
+| Knot | 0.746 | 0.644 | 0.625 | 0.692 |
+| code-graph-mcp | 0.608 | 0.573 | 0.438 | 0.423 |
+| codebase-memory-mcp | 0.488 | 0.536 | 0.369 | 0.347 |
+| Semble | 0.391 | 0.442 | 0.225 | 0.440 |
+| code-review-graph | 0.425 | 0.438 | 0.409 | 0.385 |
+| Trail 0.28 | 0.581 | 0.405 | 0.370 | 0.581 |
+| GitNexus | 0.404 | 0.375 | 0.373 | 0.258 |
+| CodeGraph | 0.409 | 0.353 | 0.234 | 0.278 |
+| cocoindex-code | 0.376 | 0.344 | 0.392 | 0.304 |
+| trace-mcp | 0.257 | 0.216 | not valid | 0.228 |
+| Serena | 0.362 | 0.133 | 0.172 | 0.160 |
+
+These are my questions, scored on line spans the way Knot answers, so they flatter Knot.
+trace-mcp never indexed the Java corpus, and Serena has no natural language search; its
+adapter looks up symbol names word by word. Adapters: `eval/adapters/`, raw tables:
+`eval/tools/results/`. Turning off the graph moved held out MRR from 0.644 to 0.639:
+almost all of Knot's lead came from plain BM25F, not from the graph.
+
+### Step 2: an independent benchmark
+
+[Agent Retrieval Bench](https://github.com/eyuansu62/agent-retrieval-bench) takes its
+questions and answers from real pull requests: a failure trace, an edited file, a review
+comment or a PR's intent, and the files the agent needs next. Knot ran through ARB's own
+scoring code (`eval/arb/`); ARB's BM25 through the same script reproduces its published
+row exactly. Out of the box Knot tied RepoMap. Two changes moved it to the best MRR on the
+board, and two others were measured, made things worse and were dropped:
+
+| ranker (345 samples) | MRR | Recall@20 |
+|---|---|---|
+| BM25 (ARB) | 0.152 | 0.445 |
+| RepoMap (ARB) | 0.216 | 0.633 |
+| Qwen3 Embedding 8B (ARB) | 0.234 | 0.703 |
+| Knot as it was | 0.215 | 0.418 |
+| Knot, every match returned | 0.219 | 0.428 |
+| Knot, plus test and source counterparts | **0.307** | 0.493 |
+| rejected: graph neighbours pulled in | 0.216 | 0.389 |
+| rejected: folder boost | 0.304 | 0.494 |
+
+The counterpart rule (a failing test points at the code it tests, an edited file at its
+tests) was written after reading four ARB samples, so that gain is informed by the
+benchmark. Recall@20 stayed well behind RepoMap and the embedding models. Full write up:
+`eval/README.md`.
+
+### Step 3: do agents use it?
+
+Ranking only matters if an agent asks. Across every Claude Code transcript on my machine,
+agents called Knot's MCP tools **0 times**, against about 3,000 grep and Grep calls. Trail
+reaches agents by injecting hits into every prompt; the agent opened one of those files
+8% of the time.
+
+So I built the one delivery I thought could not be ignored: a hook that, after a failing
+test run, hands the agent Knot's top three files for the failure (Knot's strongest ARB
+task). Then I measured agents doing real work: 5 failure traces from ARB in gin, tokio,
+click, pytest and caddy, each run headless in Claude Code with no tool (A), with Knot
+wired into the repo (B) and with Trail wired in (C), on two models. Harness and raw scores:
+`eval/agent/`.
+
+| model | setup | solved | mean tool calls | mean tokens | cost |
+|---|---|---|---|---|---|
+| Opus 5.5 | A, nothing | 4/5 | 8.6 | 209k | $1.03 |
+| Opus 5.5 | B, Knot | 4/5 | 7.8 | 205k | $1.05 |
+| Opus 5.5 | C, Trail | 4/5 | 7.6 | 214k | $1.08 |
+| Sonnet 5.5 | A, nothing | 4/5 | 8.6 | 203k | $0.41 |
+| Sonnet 5.5 | B, Knot | 5/5 | 10.6 | 246k | $0.50 |
+| Sonnet 5.5 | C, Trail | 4/5 | 9.0 | 223k | $0.44 |
+
+In 20 sessions with Knot or Trail installed and instructions telling the agent to use
+them, the agents called Knot zero times and Trail twice. They used grep, sed and cat. The
+extra Sonnet solve with Knot came from the agent's own greps; Knot's hint for that task
+was wrong and never opened. Knot's hint was right on 2 of 5 tasks, and on both the error
+already named the file. With Knot or Trail installed, sessions cost the same or more.
+
+Five tasks is a small sample, but the pattern held across two models and both tools.
+
+### What I took from it
+
+1. Agents do not reach for retrieval tools. They grep, and for a strong model on a real
+   bug, grep is enough.
+2. Pushing results at them does not help either. Right answers repeat what the agent
+   already sees; wrong ones get ignored; both cost context.
+3. Benchmarks of ranking quality, mine or independent, do not measure what matters. Knot
+   went from a tie to first place on ARB and agent outcomes did not move.
+
+That is why the project stops here. The learnings, branch clash warnings and session
+handoff were never measured on their own; if anything in this repo is worth picking up,
+it is that part, not the search.
+
 ---
 
 ## Contents
 
+- [Why Knot was abandoned](#why-knot-was-abandoned)
 - [What it does](#what-it-does)
 - [Install](#install)
 - [Set up a repository](#set-up-a-repository)

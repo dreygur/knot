@@ -121,3 +121,26 @@ gain is informed by the benchmark; it rests on naming conventions, not on tuned
 constants. Recall@20 is where Knot still trails RepoMap and the embedding models,
 most of all on comment2context, whose answers share neither words nor paths with
 the comment.
+
+## Other tools on these question sets, 2026-10-29
+
+`examples/eval.rs --engine ext:<name>` runs `eval/adapters/<name>.sh <corpus> <question>
+<limit>`, which prints `file:Lstart-Lend` lines. Each tool was installed in its own
+folder with default settings and scored on the four sets above. Summary tables are in
+`eval/tools/results/` (one file per tool and set); the headline numbers are in the top
+level README. trace-mcp's Java index came out empty, so its Go and Java row is not valid.
+Serena has no natural language search; its adapter is a word by word symbol lookup.
+
+## Agents with and without Knot or Trail, 2026-10-29
+
+`eval/agent/` holds the pilot that ended the project. `prepare.py` picks 5 ARB failure
+traces (seed 7), rebuilds each repo at its base commit with a `repro.sh` that replays the
+failure, and makes three copies: plain, Knot wired into the repo only, Trail wired into
+the repo only (`setup_trail.sh`). `run_one.sh` runs one headless Claude Code session per
+copy with user settings and plugins switched off and only read and search commands
+allowed. `score.py` scores success (the final `ROOT CAUSE:` line names a gold file), tool
+calls, tokens, cost and time. Results for Opus 5.5 and Sonnet 5.5 are in
+`eval/agent/results/`. The scripts keep the absolute paths of the machine they ran on.
+
+Across 20 sessions with a tool installed, agents called Knot 0 times and Trail twice,
+and solve rates and costs did not improve.

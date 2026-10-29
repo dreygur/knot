@@ -1,0 +1,40 @@
+[
+  {
+    "id": "5bc1aa35cdd32914d7ba6958",
+    "repo": "gin-gonic/gin",
+    "gold": [
+      "recovery.go"
+    ]
+  },
+  {
+    "id": "b872b8ef648b8cad2d959a36",
+    "repo": "tokio-rs/tokio",
+    "gold": [
+      "tokio/src/sync/mod.rs",
+      "tokio/src/sync/notify.rs"
+    ]
+  },
+  {
+    "id": "bed9a23bf8a662f0e6251a42",
+    "repo": "pallets/click",
+    "gold": [
+      "src/click/core.py",
+      "src/click/exceptions.py"
+    ]
+  },
+  {
+    "id": "c727abdbfcdfc9879df581d2",
+    "repo": "pytest-dev/pytest",
+    "gold": [
+      "src/_pytest/fixtures.py"
+    ]
+  },
+  {
+    "id": "5bdeecc5409069d28e667e6d",
+    "repo": "caddyserver/caddy",
+    "gold": [
+      "caddyconfig/caddyfile/formatter.go",
+      "caddyconfig/caddyfile/parse.go"
+    ]
+  }
+]
