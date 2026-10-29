@@ -1,7 +1,7 @@
 {
   "name": "knot",
   "description": "Code graph search and team learnings for coding agents: ranked code answers, exhaustive grep, repo map, call graph, and decisions that travel with the code through git",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "author": {
     "name": "Rakibul Yeasin",
     "email": "ryeasin03@gmail.com"
