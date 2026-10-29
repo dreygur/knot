@@ -5,6 +5,7 @@ pub mod handoff;
 mod index;
 mod learnings;
 pub mod map;
+mod paths;
 pub mod render;
 pub mod savings;
 pub mod session;
@@ -72,6 +73,30 @@ fn normalize_by_max(scores: &mut HashMap<String, f64>) {
 /// Rank symbols for `query`: BM25F over names, signatures, docs, paths and bodies,
 /// then a Personalized PageRank seeded by every lexical hit so code that sits between
 /// several matches rises, and a small boost for files holding many matches.
+/// One symbol for each counterpart of a file the query names: the best scored symbol
+/// already in that file, else its first definition.
+fn counterpart_symbols(graph: &CodeGraph, scored: &HashMap<String, f64>, query: &str) -> Vec<String> {
+    let mut files: Vec<String> = graph.symbols.values().map(|s| s.file.clone()).collect();
+    files.sort();
+    files.dedup();
+
+    let mut picked = Vec::new();
+    for named in paths::named_files(query, &files) {
+        for file in paths::counterparts(named, &files) {
+            let score = |id: &str| scored.get(id).copied().unwrap_or(0.0);
+            let best = graph
+                .symbols
+                .values()
+                .filter(|s| s.file == file)
+                .max_by(|a, b| score(&a.id).total_cmp(&score(&b.id)).then(b.span.0.cmp(&a.span.0)));
+            if let Some(sym) = best {
+                picked.push(sym.id.clone());
+            }
+        }
+    }
+    picked
+}
+
 pub fn rank(graph: &CodeGraph, index: &LexicalIndex, query: &str, limit: usize, ranking: Ranking) -> Vec<AskHit> {
     let mut lexical: Vec<(usize, f64)> = index.search(query);
     if lexical.is_empty() {
@@ -116,6 +141,13 @@ pub fn rank(graph: &CodeGraph, index: &LexicalIndex, query: &str, limit: usize, 
         }
     }
 
+    // The other side of a file the query names ranks with the best hit, test or not:
+    // a failing test points at the code it tests, an edited file at its tests.
+    let top = combined.values().copied().fold(0.0f64, f64::max);
+    for id in counterpart_symbols(graph, &combined, query) {
+        combined.insert(id, top);
+    }
+
     let mut ranked: Vec<(String, f64)> = combined.into_iter().collect();
     ranked.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
 
@@ -123,7 +155,12 @@ pub fn rank(graph: &CodeGraph, index: &LexicalIndex, query: &str, limit: usize, 
     // asking for many hits gets every matching file, not just the first few dozen.
     let floor = ranked.last().map_or(0.0, |(_, s)| *s);
     let tail_top = tail.first().map_or(1.0, |(_, s)| *s).max(f64::MIN_POSITIVE);
-    ranked.extend(tail.iter().map(|(i, s)| (index.doc(*i).id.clone(), floor * s / tail_top)));
+    let placed: std::collections::HashSet<String> = ranked.iter().map(|(id, _)| id.clone()).collect();
+    ranked.extend(
+        tail.iter()
+            .map(|(i, s)| (index.doc(*i).id.clone(), floor * s / tail_top))
+            .filter(|(id, _)| !placed.contains(id)),
+    );
 
     ranked
         .into_iter()
@@ -263,6 +300,34 @@ mod tests {
         let names = |hits: &[AskHit]| hits.iter().map(|h| h.name.clone()).collect::<Vec<_>>();
         assert_eq!(names(&all[..LEXICAL_CANDIDATES]), names(&top), "the reranked head is unchanged");
         assert!(all.windows(2).all(|w| w[0].score >= w[1].score), "scores never rise down the list");
+    }
+
+    #[test]
+    fn a_failing_test_named_in_the_query_brings_in_the_code_it_tests() {
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "gate/gate.go", "package gate\nfunc Verify() {}\n");
+        write(dir.path(), "gate/gate_test.go", "package gate\nfunc TestPlaceholders() {}\n");
+        write(dir.path(), "other/expected.go", "package other\nfunc ExpectedUser() {}\n");
+        write(dir.path(), "other/alice.go", "package other\nfunc AliceUserFailure() {}\n");
+
+        let trace = "--- FAIL: TestPlaceholders (0.00s)\n    gate_test.go:67: expected user to be alice";
+        let hits = ask(dir.path(), None, trace, 5, Ranking::Hybrid).unwrap();
+        let files: Vec<&str> = hits.iter().map(|h| h.file.as_str()).collect();
+        assert_eq!(files.first(), Some(&"gate/gate.go"), "{files:?}");
+    }
+
+    #[test]
+    fn an_edited_file_named_in_the_query_brings_in_its_test() {
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "src/render.ts", "export function renderPage() {}\n");
+        write(dir.path(), "src/render.test.ts", "function checksLayout() {}\n");
+        for name in ["page", "title", "header", "footer"] {
+            write(dir.path(), &format!("src/{name}.ts"), &format!("export function render{name}Page() {{}}\n"));
+        }
+
+        let hits = ask(dir.path(), None, "changed src/render.ts: render the page", 3, Ranking::Hybrid).unwrap();
+        let files: Vec<&str> = hits.iter().map(|h| h.file.as_str()).collect();
+        assert!(files.contains(&"src/render.test.ts"), "{files:?}");
     }
 
     #[test]
