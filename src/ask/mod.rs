@@ -73,10 +73,11 @@ fn normalize_by_max(scores: &mut HashMap<String, f64>) {
 /// then a Personalized PageRank seeded by every lexical hit so code that sits between
 /// several matches rises, and a small boost for files holding many matches.
 pub fn rank(graph: &CodeGraph, index: &LexicalIndex, query: &str, limit: usize, ranking: Ranking) -> Vec<AskHit> {
-    let lexical: Vec<(usize, f64)> = index.search(query).into_iter().take(LEXICAL_CANDIDATES).collect();
+    let mut lexical: Vec<(usize, f64)> = index.search(query);
     if lexical.is_empty() {
         return Vec::new();
     }
+    let tail = lexical.split_off(lexical.len().min(LEXICAL_CANDIDATES));
 
     let mut lexical_scores: HashMap<String, f64> =
         lexical.iter().map(|(i, s)| (index.doc(*i).id.clone(), *s)).collect();
@@ -117,6 +118,12 @@ pub fn rank(graph: &CodeGraph, index: &LexicalIndex, query: &str, limit: usize, 
 
     let mut ranked: Vec<(String, f64)> = combined.into_iter().collect();
     ranked.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
+
+    // Matches past the reranked head keep their keyword order below it, so a caller
+    // asking for many hits gets every matching file, not just the first few dozen.
+    let floor = ranked.last().map_or(0.0, |(_, s)| *s);
+    let tail_top = tail.first().map_or(1.0, |(_, s)| *s).max(f64::MIN_POSITIVE);
+    ranked.extend(tail.iter().map(|(i, s)| (index.doc(*i).id.clone(), floor * s / tail_top)));
 
     ranked
         .into_iter()
@@ -242,6 +249,20 @@ mod tests {
 
         let hits = ask(dir.path(), None, "parse token", 5, Ranking::LexicalOnly).unwrap();
         assert_eq!(hits[0].pointer(), "src/b.rs:L1-L1");
+    }
+
+    #[test]
+    fn matches_past_the_reranked_candidates_still_come_back_in_order() {
+        let dir = tempfile::tempdir().unwrap();
+        let body: String = (0..70).map(|i| format!("pub fn parse_part_{i}() {{}}\n")).collect();
+        write(dir.path(), "src/parts.rs", &body);
+
+        let all = ask(dir.path(), None, "parse part", 100, Ranking::Hybrid).unwrap();
+        let top = ask(dir.path(), None, "parse part", LEXICAL_CANDIDATES, Ranking::Hybrid).unwrap();
+        assert_eq!(all.len(), 70);
+        let names = |hits: &[AskHit]| hits.iter().map(|h| h.name.clone()).collect::<Vec<_>>();
+        assert_eq!(names(&all[..LEXICAL_CANDIDATES]), names(&top), "the reranked head is unchanged");
+        assert!(all.windows(2).all(|w| w[0].score >= w[1].score), "scores never rise down the list");
     }
 
     #[test]
