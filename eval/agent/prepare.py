@@ -50,7 +50,8 @@ def git(root: Path, *args: str) -> None:
 
 
 def make_repo(snapshot: Path, dest: Path, excerpt: str) -> None:
-  shutil.copytree(snapshot, dest, ignore=lambda d, names: [n for n in names if n in SKIP or n.startswith("._")])
+  # Case-insensitive, since `.Claude` is `.claude` on the default macOS file system.
+  shutil.copytree(snapshot, dest, ignore=lambda d, names: [n for n in names if n.lower() in SKIP or n.startswith("._")])
   # The excerpt is data from the benchmark; it stays out of the shell script entirely.
   (dest / "repro.txt").write_text(excerpt + "\n")
   (dest / "repro.sh").write_text("#!/bin/sh\ncat repro.txt\nexit 1\n")
