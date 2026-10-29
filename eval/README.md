@@ -74,3 +74,50 @@ stop words with class bodies dropped (0.690), per field IDF (0.625), graph weigh
 
 With 7 held out questions per corpus, one question moves a corpus score by 14
 points. Read per corpus held out rows as direction, not magnitude.
+
+## Agent Retrieval Bench, 2026-10-29
+
+[Agent Retrieval Bench](https://github.com/eyuansu62/agent-retrieval-bench) (ARB,
+commit 9e4d689) asks for the files a coding agent needs next, from real workflow
+signals: a PR's intent (find its tests), a review comment (find more context), a
+failure trace (find the root cause) and an edited file (find what else changes).
+Its questions and answers come from real PRs, not from us, so it is the number to
+quote. Knot sees the same JSON query text as ARB's own baselines.
+
+`eval/arb/knot_rank.py` runs ARB's own loop and metrics and swaps in only the
+ranking: Knot ranks symbols in the repo rebuilt at the base commit, and each hit
+maps to ARB's chunk it overlaps. Files Knot never names count as unranked. Running
+ARB's BM25 through the same script reproduces its published row exactly (MRR
+0.1520, Recall@20 0.4452), which checks the setup.
+
+```
+git clone https://github.com/eyuansu62/agent-retrieval-bench.git $ARB_HOME/src
+uv venv $ARB_HOME/venv -p 3.12 && VIRTUAL_ENV=$ARB_HOME/venv uv pip install -e $ARB_HOME/src huggingface_hub
+(cd $ARB_HOME/src && PATH=$ARB_HOME/venv/bin:$PATH arb download-benchmark --all --local-dir data)
+ARB_HOME=... KNOT_BIN=target/release/knot KNOT_LABEL=knot eval/arb/run.sh knot
+```
+
+All 345 answerable samples, ARB's sample weighted overall:
+
+| ranker | MRR | Recall@20 | Recall@5 |
+|---|---|---|---|
+| BM25 (ARB, reproduced) | 0.152 | 0.445 | 0.190 |
+| lexical (ARB, published) | 0.157 | 0.494 | |
+| RepoMap (ARB, published) | 0.216 | 0.633 | |
+| Qwen3-Embedding-4B (ARB, published) | 0.238 | 0.631 | |
+| Qwen3-Embedding-8B (ARB, published) | 0.234 | 0.703 | |
+| knot 0a46963 (before any ARB work) | 0.215 | 0.418 | 0.251 |
+| knot 9ee4063, every match past the reranked head | 0.219 | 0.428 | 0.251 |
+| knot 0da7884, test and source counterparts | **0.307** | 0.493 | **0.370** |
+
+Per subset at 0da7884 (MRR / Recall@20): trace2code 0.552 / 0.835, edit2ripple
+0.254 / 0.504, code2test 0.183 / 0.330, comment2context 0.202 / 0.267.
+
+Rejected after one ARB run each: direct callers and callees of strong matches
+entering the results (MRR 0.216, Recall@20 0.389; they crowd out real matches)
+and a boost for matches in the folder of a named file (MRR 0.304, Recall@20 0.494;
+noise). The counterpart rule was written after reading four ARB samples, so its
+gain is informed by the benchmark; it rests on naming conventions, not on tuned
+constants. Recall@20 is where Knot still trails RepoMap and the embedding models,
+most of all on comment2context, whose answers share neither words nor paths with
+the comment.
