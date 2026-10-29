@@ -74,40 +74,6 @@ pub fn parse_file(repo_root: &Path, abs_path: &Path) -> Result<ParsedFile> {
     Ok(ParsedFile { rel_path, symbols, imports })
 }
 
-/// Cheap change detector for indexed sources: file count, total size, newest mtime.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct SourceFingerprint {
-    pub files: usize,
-    pub total_bytes: u64,
-    pub newest_mtime_ns: u128,
-}
-
-/// Stat every supported source file without parsing, so callers can skip rebuilding
-/// the graph when nothing changed.
-pub fn source_fingerprint(root: &Path) -> Result<SourceFingerprint> {
-    let mut fp = SourceFingerprint {
-        files: 0,
-        total_bytes: 0,
-        newest_mtime_ns: 0,
-    };
-    for path in list_supported_files(root)? {
-        let Ok(meta) = std::fs::metadata(&path) else {
-            continue;
-        };
-        fp.files += 1;
-        fp.total_bytes += meta.len();
-        if let Some(ns) = meta
-            .modified()
-            .ok()
-            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-            .map(|d| d.as_nanos())
-        {
-            fp.newest_mtime_ns = fp.newest_mtime_ns.max(ns);
-        }
-    }
-    Ok(fp)
-}
-
 #[derive(Debug, Clone, Default)]
 pub struct CodeGraph {
     pub symbols: HashMap<String, SymbolNode>,

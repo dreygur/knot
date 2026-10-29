@@ -89,7 +89,9 @@ pub fn skeleton(graph: &CodeGraph, file: &str) -> Answer {
     for item in &items {
         text.push_str(&format!("  L{:>4}-L{:<4} {:<10} {}\n", item.span.0, item.span.1, item.kind.as_str(), item.signature));
     }
-    Answer { text, files: vec![file.to_string()] }
+    // An empty answer points into nothing, so it saves nothing
+    let files = if items.is_empty() { Vec::new() } else { vec![file.to_string()] };
+    Answer { text, files }
 }
 
 /// The ranked hits for `query`, with the learnings on them first.
@@ -154,12 +156,65 @@ mod tests {
         assert_eq!(report.files, vec!["src/main.rs"]);
     }
 
+    fn hit() -> AskHit {
+        AskHit {
+            id: "src/db.rs::open_pool".into(),
+            file: "src/db.rs".into(),
+            name: "open_pool".into(),
+            kind: "function".into(),
+            signature: "pub fn open_pool()".into(),
+            span: (3, 9),
+            crux: "pub fn open_pool() {\n    connect(4)".into(),
+            score: 1.0,
+        }
+    }
+
+    fn learning() -> LearningHit {
+        LearningHit {
+            title: "Keep the pool at four".into(),
+            file: ".knot/learnings/pool.md".into(),
+            summary: "WAL readers block past four.".into(),
+            touched: Vec::new(),
+            score: 1.0,
+            author: "Maya".into(),
+            date: "2026-10-27".into(),
+            cost_minutes: None,
+            cost_tokens: None,
+        }
+    }
+
+    #[test]
+    fn ask_puts_learnings_above_the_hits() {
+        let answer = ask("open the pool", &[hit()], &[learning()], Excerpt::Source);
+        let learnings_at = answer.text.find("[KNOT] 1 learning on this").expect(&answer.text);
+        let hits_at = answer.text.find("[KNOT] 1 hit for 'open the pool':").expect(&answer.text);
+        assert!(learnings_at < hits_at, "{}", answer.text);
+        assert!(answer.text.contains("  If one shapes your answer, end it with: 📝 Started from Maya's learning\n"), "{}", answer.text);
+        assert!(answer.text.contains("   1. open_pool · function  src/db.rs:L3-L9\n        pub fn open_pool() {\n            connect(4)\n"), "{}", answer.text);
+        assert_eq!(answer.files, vec!["src/db.rs"]);
+
+        let signature = ask("open the pool", &[hit()], &[], Excerpt::Signature);
+        assert!(!signature.text.contains("learning"), "{}", signature.text);
+        assert!(signature.text.ends_with("src/db.rs:L3-L9\n        pub fn open_pool()\n"), "{}", signature.text);
+    }
+
+    #[test]
+    fn ask_with_no_hits_points_nowhere() {
+        let answer = ask("nothing", &[], &[learning()], Excerpt::Source);
+        assert!(answer.text.ends_with("[KNOT] No code matched 'nothing'.\n"), "{}", answer.text);
+        assert!(answer.text.contains("Keep the pool at four"), "{}", answer.text);
+        assert!(answer.files.is_empty());
+    }
+
     #[test]
     fn skeleton_lists_each_definition() {
         let (_dir, graph) = graph();
         let answer = skeleton(&graph, "src/main.rs");
         assert!(answer.text.starts_with("[KNOT] Skeleton for 'src/main.rs' (1 definition):\n"), "{}", answer.text);
         assert!(answer.text.contains("fn run()"), "{}", answer.text);
-        assert!(skeleton(&graph, "src/none.rs").text.starts_with("[KNOT] No definitions found"));
+        assert_eq!(answer.files, vec!["src/main.rs"]);
+        let none = skeleton(&graph, "src/none.rs");
+        assert!(none.text.starts_with("[KNOT] No definitions found"));
+        assert!(none.files.is_empty(), "an empty answer saved nothing");
     }
 }

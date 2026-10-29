@@ -149,7 +149,7 @@ pub(crate) fn read_tail(path: &Path, max: u64) -> Option<String> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     fn event(session: &str, ts_ms: i64, saved_tokens: usize) -> Event {
@@ -229,7 +229,7 @@ mod tests {
     }
 
     /// A git repo holding `rel`, committed when `commit` is set.
-    fn repo_with_file(rel: &str, commit: bool) -> tempfile::TempDir {
+    pub(crate) fn repo_with_file(rel: &str, commit: bool) -> tempfile::TempDir {
         let dir = tempfile::tempdir().unwrap();
         let repo = git2::Repository::init(dir.path()).unwrap();
         let path = dir.path().join(rel);
