@@ -141,6 +141,11 @@ copy with user settings and plugins switched off and only read and search comman
 allowed. `score.py` scores success (the final `ROOT CAUSE:` line names a gold file), tool
 calls, tokens, cost and time. Results for Opus 5.5 and Sonnet 5.5 are in
 `eval/agent/results/`. The scripts keep the absolute paths of the machine they ran on.
+The Opus sessions ran with `--permission-mode bypassPermissions`; the Sonnet sessions ran
+with an allow list that still included find, sed and rg. The committed `run_one.sh` and
+`prepare.py` are tightened after a security review (no bypass, no commands that can run
+other programs, the failure text kept out of the shell script, upstream `.claude` folders
+skipped), so a rerun will not match those conditions exactly.
 
 Across 20 sessions with a tool installed, agents called Knot 0 times and Trail twice,
 and solve rates and costs did not improve.

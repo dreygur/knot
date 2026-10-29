@@ -21,7 +21,8 @@ SNAPSHOTS = ARB / "snap"
 WORK = ARB / "agent/work"
 KNOT = ARB / "bin/knot-agent"
 SKILL = Path("/Volumes/TOTUL/Codes/compare/skills/knot/SKILL.md")
-SKIP = {".knot", ".arb-complete"}
+# .claude is skipped so an upstream repo's own settings and hooks never load in a session.
+SKIP = {".knot", ".arb-complete", ".claude"}
 
 
 def knot_block() -> str:
@@ -50,7 +51,9 @@ def git(root: Path, *args: str) -> None:
 
 def make_repo(snapshot: Path, dest: Path, excerpt: str) -> None:
   shutil.copytree(snapshot, dest, ignore=lambda d, names: [n for n in names if n in SKIP or n.startswith("._")])
-  (dest / "repro.sh").write_text("#!/bin/sh\ncat <<'KNOT_PILOT_EOF'\n" + excerpt + "\nKNOT_PILOT_EOF\nexit 1\n")
+  # The excerpt is data from the benchmark; it stays out of the shell script entirely.
+  (dest / "repro.txt").write_text(excerpt + "\n")
+  (dest / "repro.sh").write_text("#!/bin/sh\ncat repro.txt\nexit 1\n")
   git(dest, "add", "-A")
   git(dest, "-c", "user.name=pilot", "-c", "user.email=pilot@example.com", "commit", "-qm", "base")
 
