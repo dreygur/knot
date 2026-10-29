@@ -31,6 +31,21 @@ const CONTEXT_MARK: &str = "limit:context";
 const FIVE_HOUR_MARK: &str = "limit:five-hour";
 const HANDOFF_OUTLINE: &str =
     "the goal, what's done (with commit hashes), the next step, open questions and the files in progress";
+/// Text that marks a Bash run's output as a failure worth pointing at code for: test
+/// runners in Go, Rust, Python and JavaScript, plus Rust and Java compile errors.
+const FAILURE_MARKERS: &[&str] = &[
+    "--- FAIL",
+    "FAIL ",
+    "FAILED",
+    "Traceback (most recent call last)",
+    "panicked at",
+    "AssertionError",
+    "error[E",
+    "Exception in thread",
+];
+/// Files named after a failure; on Agent Retrieval Bench the right one is in Knot's
+/// top three on about two in three failure traces.
+const FAILURE_FILES: usize = 3;
 
 fn hook_output(event_name: &str, context: &str) -> serde_json::Value {
     serde_json::json!({
@@ -418,10 +433,48 @@ fn post_tool(root: &Path, session_id: &str, tool: &str, file: &str) -> Option<se
     (!context.is_empty()).then(|| hook_output("PostToolUse", &context.join("\n\n")))
 }
 
+/// After a Bash run that failed, the files Knot ranks first for its output, when the
+/// output names a file in this repo. Quiet in a repo Knot has not indexed, so the
+/// hook never starts a first index in the middle of a session.
+fn failure_hint(root: &Path, tool: &str, output: &str) -> Option<String> {
+    if tool != "Bash" || !FAILURE_MARKERS.iter().any(|m| output.contains(m)) {
+        return None;
+    }
+    if !crate::ask::state_dir(root).is_dir() {
+        return None;
+    }
+    if !crate::ask::index_status(root, &crate::ask::index_root(root)).ok()?.indexed {
+        return None;
+    }
+    let files = crate::ask::failure_files(root, output, FAILURE_FILES).ok()?;
+    (!files.is_empty()).then(|| {
+        format!(
+            "[knot] That run failed and names files in this repo. Knot's likeliest places to look, best first: {}. \
+             Leads from the index, not certainties; check them before acting.",
+            files.join(", ")
+        )
+    })
+}
+
 /// What the PostToolUse hook adds after every tool: a limit warning, so a session that
-/// only runs Bash is warned too. It runs after every call, so it only reads one small file.
-fn usage_check(root: &Path, session_id: &str) -> Option<serde_json::Value> {
-    limit_warning(root, session_id).map(|warning| hook_output("PostToolUse", &warning))
+/// only runs Bash is warned too, and after a failed Bash run the files behind it. It
+/// runs after every call, so a passing run only costs a few string searches.
+fn usage_check(root: &Path, session_id: &str, tool: &str, output: &str) -> Option<serde_json::Value> {
+    let lines: Vec<String> = limit_warning(root, session_id).into_iter().chain(failure_hint(root, tool, output)).collect();
+    (!lines.is_empty()).then(|| hook_output("PostToolUse", &lines.join("\n\n")))
+}
+
+/// What a Bash call printed: Claude Code sends `stdout` and `stderr` in `tool_response`.
+fn bash_output(json: &serde_json::Value) -> String {
+    let response = json.get("tool_response");
+    if let Some(text) = response.and_then(|r| r.as_str()) {
+        return text.to_string();
+    }
+    ["stdout", "stderr"]
+        .iter()
+        .filter_map(|key| response.and_then(|r| r.get(*key)).and_then(|v| v.as_str()))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 pub(super) fn run(event: &str) -> Result<()> {
@@ -449,7 +502,7 @@ pub(super) fn run(event: &str) -> Result<()> {
     }
     // Runs after every tool call, so it skips the session bookkeeping the others do
     if event == "usage" {
-        if let Some(out) = usage_check(&root, &session_id) {
+        if let Some(out) = usage_check(&root, &session_id, &text("/tool_name"), &bash_output(&json)) {
             println!("{out}");
         }
         return Ok(());
@@ -736,7 +789,7 @@ mod limit_tests {
     }
 
     fn warning(root: &Path) -> Option<String> {
-        let out = usage_check(root, "s1")?;
+        let out = usage_check(root, "s1", "", "")?;
         assert_eq!(out.pointer("/hookSpecificOutput/hookEventName").unwrap(), "PostToolUse");
         out.pointer("/hookSpecificOutput/additionalContext").and_then(|v| v.as_str()).map(str::to_string)
     }
@@ -830,7 +883,7 @@ mod limit_tests {
     fn no_usage_no_warning() {
         let dir = knot_repo();
         assert!(warning(dir.path()).is_none());
-        assert!(usage_check(dir.path(), "").is_none());
+        assert!(usage_check(dir.path(), "", "", "").is_none());
     }
 
     #[test]
@@ -848,8 +901,52 @@ mod limit_tests {
     #[test]
     fn the_usage_hook_writes_nothing_in_a_folder_without_knot() {
         let dir = tempfile::tempdir().unwrap();
-        assert!(usage_check(dir.path(), "s1").is_none());
+        assert!(usage_check(dir.path(), "s1", "", "").is_none());
         assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+    }
+}
+
+#[cfg(test)]
+mod failure_tests {
+    use super::*;
+
+    const FAILING_RUN: &str = "--- FAIL: TestPlaceholders (0.00s)\n    gate_test.go:67: expected user to be alice\nFAIL";
+
+    fn indexed_repo() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        for (file, body) in [
+            ("gate/gate.go", "package gate\nfunc Verify() {}\n"),
+            ("gate/gate_test.go", "package gate\nfunc TestPlaceholders() {}\n"),
+            ("other/expected.go", "package other\nfunc ExpectedUser() {}\n"),
+        ] {
+            std::fs::create_dir_all(root.join(file).parent().unwrap()).unwrap();
+            std::fs::write(root.join(file), body).unwrap();
+        }
+        crate::ask::ask(root, Some(&crate::ask::index_root(root)), "verify", 1, crate::ask::Ranking::Hybrid).unwrap();
+        dir
+    }
+
+    fn context(out: Option<serde_json::Value>) -> Option<String> {
+        out?.pointer("/hookSpecificOutput/additionalContext").and_then(|v| v.as_str()).map(str::to_string)
+    }
+
+    #[test]
+    fn a_failing_test_run_points_at_the_code_it_tests() {
+        let dir = indexed_repo();
+        let said = context(usage_check(dir.path(), "s1", "Bash", FAILING_RUN)).unwrap();
+        assert!(said.contains("gate/gate.go"), "{said}");
+    }
+
+    #[test]
+    fn passing_runs_other_tools_and_unindexed_repos_stay_quiet() {
+        let dir = indexed_repo();
+        assert!(usage_check(dir.path(), "s1", "Bash", "ok  \tgate\t0.01s\nPASS").is_none());
+        assert!(usage_check(dir.path(), "s1", "Read", FAILING_RUN).is_none());
+
+        let bare = tempfile::tempdir().unwrap();
+        assert!(usage_check(bare.path(), "s1", "Bash", FAILING_RUN).is_none());
+        assert_eq!(std::fs::read_dir(bare.path()).unwrap().count(), 0, "nothing written where knot never indexed");
     }
 }
 

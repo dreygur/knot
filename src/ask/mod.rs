@@ -70,19 +70,19 @@ fn normalize_by_max(scores: &mut HashMap<String, f64>) {
     }
 }
 
-/// Rank symbols for `query`: BM25F over names, signatures, docs, paths and bodies,
-/// then a Personalized PageRank seeded by every lexical hit so code that sits between
-/// several matches rises, and a small boost for files holding many matches.
-/// One symbol for each counterpart of a file the query names: the best scored symbol
-/// already in that file, else its first definition.
-fn counterpart_symbols(graph: &CodeGraph, scored: &HashMap<String, f64>, query: &str) -> Vec<String> {
+fn repo_files(graph: &CodeGraph) -> Vec<String> {
     let mut files: Vec<String> = graph.symbols.values().map(|s| s.file.clone()).collect();
     files.sort();
     files.dedup();
+    files
+}
 
+/// One symbol for each counterpart of a file the query names: the best scored symbol
+/// already in that file, else its first definition.
+fn counterpart_symbols(graph: &CodeGraph, scored: &HashMap<String, f64>, named: &[&str], files: &[String]) -> Vec<String> {
     let mut picked = Vec::new();
-    for named in paths::named_files(query, &files) {
-        for file in paths::counterparts(named, &files) {
+    for named in named {
+        for file in paths::counterparts(named, files) {
             let score = |id: &str| scored.get(id).copied().unwrap_or(0.0);
             let best = graph
                 .symbols
@@ -97,6 +97,9 @@ fn counterpart_symbols(graph: &CodeGraph, scored: &HashMap<String, f64>, query: 
     picked
 }
 
+/// Rank symbols for `query`: BM25F over names, signatures, docs, paths and bodies,
+/// then a Personalized PageRank seeded by every lexical hit so code that sits between
+/// several matches rises, and a small boost for files holding many matches.
 pub fn rank(graph: &CodeGraph, index: &LexicalIndex, query: &str, limit: usize, ranking: Ranking) -> Vec<AskHit> {
     let mut lexical: Vec<(usize, f64)> = index.search(query);
     if lexical.is_empty() {
@@ -141,10 +144,13 @@ pub fn rank(graph: &CodeGraph, index: &LexicalIndex, query: &str, limit: usize, 
         }
     }
 
+    let files = repo_files(graph);
+    let named = paths::named_files(query, &files);
+
     // The other side of a file the query names ranks with the best hit, test or not:
     // a failing test points at the code it tests, an edited file at its tests.
     let top = combined.values().copied().fold(0.0f64, f64::max);
-    for id in counterpart_symbols(graph, &combined, query) {
+    for id in counterpart_symbols(graph, &combined, &named, &files) {
         combined.insert(id, top);
     }
 
@@ -245,6 +251,27 @@ pub fn ask(
     Ok(rank(&corpus.graph, &corpus.index, query, limit, ranking))
 }
 
+/// The files most likely behind a failure's output, best first, at most `limit`. An
+/// output that names no file in this repository gets none: an error from a
+/// dependency or the system is not this repo's to guess at.
+pub fn failure_files(root: &Path, output: &str, limit: usize) -> anyhow::Result<Vec<String>> {
+    let (corpus, _) = load_corpus(root, Some(&index_root(root)))?;
+    if paths::named_files(output, &repo_files(&corpus.graph)).is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut files: Vec<String> = Vec::new();
+    for hit in rank(&corpus.graph, &corpus.index, output, LEXICAL_CANDIDATES, Ranking::Hybrid) {
+        if files.len() == limit {
+            break;
+        }
+        if !files.contains(&hit.file) {
+            files.push(hit.file);
+        }
+    }
+    Ok(files)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -328,6 +355,23 @@ mod tests {
         let hits = ask(dir.path(), None, "changed src/render.ts: render the page", 3, Ranking::Hybrid).unwrap();
         let files: Vec<&str> = hits.iter().map(|h| h.file.as_str()).collect();
         assert!(files.contains(&"src/render.test.ts"), "{files:?}");
+    }
+
+
+    #[test]
+    fn a_failure_naming_repo_files_gets_its_likely_files() {
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "gate/gate.go", "package gate\nfunc Verify() {}\n");
+        write(dir.path(), "gate/gate_test.go", "package gate\nfunc TestPlaceholders() {}\n");
+        write(dir.path(), "other/expected.go", "package other\nfunc ExpectedUser() {}\n");
+
+        let failure = "--- FAIL: TestPlaceholders (0.00s)\n    gate_test.go:67: expected user to be alice";
+        let files = failure_files(dir.path(), failure, 2).unwrap();
+        assert_eq!(files.first().map(String::as_str), Some("gate/gate.go"));
+        assert!(files.len() <= 2);
+
+        let elsewhere = "Traceback (most recent call last):\n  File \"/usr/lib/python3/site.py\", line 3\nKeyError: user";
+        assert!(failure_files(dir.path(), elsewhere, 2).unwrap().is_empty(), "no repo file named, no guess");
     }
 
     #[test]
