@@ -27,10 +27,11 @@ use crate::utils::count;
 
 /// Lexical hits considered for the final ranking.
 const LEXICAL_CANDIDATES: usize = 60;
-/// Top lexical hits whose scores seed the graph walk.
-const GRAPH_SEEDS: usize = 20;
-/// Share of the final score taken from graph proximity to the lexical hits.
-const GRAPH_WEIGHT: f64 = 0.25;
+/// Graph proximity to the lexical hits, added on top of the lexical score.
+const GRAPH_WEIGHT: f64 = 0.5;
+/// Boost per other candidate in the same file, on a log scale: a file holding many
+/// matches is usually where the answer lives. Above this, held out sets got worse.
+const FILE_WEIGHT: f64 = 0.05;
 /// Test code rarely answers "how does X work"; keep it findable but below the real thing.
 const TEST_PENALTY: f64 = 0.35;
 
@@ -69,8 +70,8 @@ fn normalize_by_max(scores: &mut HashMap<String, f64>) {
 }
 
 /// Rank symbols for `query`: BM25F over names, signatures, docs, paths and bodies,
-/// then a Personalized PageRank seeded by the strongest lexical hits so code that
-/// sits between several matches rises.
+/// then a Personalized PageRank seeded by every lexical hit so code that sits between
+/// several matches rises, and a small boost for files holding many matches.
 pub fn rank(graph: &CodeGraph, index: &LexicalIndex, query: &str, limit: usize, ranking: Ranking) -> Vec<AskHit> {
     let lexical: Vec<(usize, f64)> = index.search(query).into_iter().take(LEXICAL_CANDIDATES).collect();
     if lexical.is_empty() {
@@ -83,11 +84,7 @@ pub fn rank(graph: &CodeGraph, index: &LexicalIndex, query: &str, limit: usize, 
 
     let mut combined = lexical_scores.clone();
     if ranking == Ranking::Hybrid {
-        let seeds: HashMap<String, f64> = lexical
-            .iter()
-            .take(GRAPH_SEEDS)
-            .map(|(i, s)| (index.doc(*i).id.clone(), *s))
-            .collect();
+        let seeds: HashMap<String, f64> = lexical.iter().map(|(i, s)| (index.doc(*i).id.clone(), *s)).collect();
         let mut proximity: HashMap<String, f64> = compute_weighted_pagerank(graph, &seeds)
             .into_iter()
             .filter(|(id, _)| lexical_scores.contains_key(id))
@@ -95,9 +92,18 @@ pub fn rank(graph: &CodeGraph, index: &LexicalIndex, query: &str, limit: usize, 
         normalize_by_max(&mut proximity);
 
         for (id, score) in combined.iter_mut() {
-            let graph_score = proximity.get(id).copied().unwrap_or(0.0);
-            *score = (1.0 - GRAPH_WEIGHT) * *score + GRAPH_WEIGHT * graph_score;
+            *score += GRAPH_WEIGHT * proximity.get(id).copied().unwrap_or(0.0);
         }
+    }
+
+    let file_of = |id: &str| id.split("::").next().unwrap_or(id).to_string();
+    let mut per_file: HashMap<String, usize> = HashMap::new();
+    for id in lexical_scores.keys() {
+        *per_file.entry(file_of(id)).or_default() += 1;
+    }
+    for (id, score) in combined.iter_mut() {
+        let others = per_file.get(&file_of(id)).copied().unwrap_or(1).saturating_sub(1);
+        *score += FILE_WEIGHT * (1.0 + others as f64).ln();
     }
 
     for (i, _) in &lexical {
@@ -226,6 +232,16 @@ mod tests {
         assert_eq!(hits[0].pointer(), "src/http.rs:L2-L2");
         let test_rank = hits.iter().position(|h| h.name == "follows_redirects_test");
         assert!(test_rank.is_none_or(|r| r > 0));
+    }
+
+    #[test]
+    fn a_file_with_more_matches_wins_a_tie() {
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "src/a.rs", "pub fn parse_token() {}\n");
+        write(dir.path(), "src/b.rs", "pub fn parse_token() {}\npub fn token_size() {}\n");
+
+        let hits = ask(dir.path(), None, "parse token", 5, Ranking::LexicalOnly).unwrap();
+        assert_eq!(hits[0].pointer(), "src/b.rs:L1-L1");
     }
 
     #[test]
