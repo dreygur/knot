@@ -19,8 +19,10 @@ fn file_name(path: &str) -> &str {
     path.rsplit('/').next().unwrap_or(path)
 }
 
-/// `gate_test.go:67:5` gives `gate_test.go`; `b/src/x.rs` gives `src/x.rs`.
+/// `gate_test.go:67:5` gives `gate_test.go`; `b/src/x.rs` gives `src/x.rs`; a pytest
+/// node id `tests/test_x.py::test_y` gives `tests/test_x.py`.
 fn clean(token: &str) -> &str {
+    let token = token.split("::").next().unwrap_or(token);
     let mut token = token.trim_end_matches([':', '.']);
     while let Some((head, tail)) = token.rsplit_once(':') {
         if tail.is_empty() || !tail.chars().all(|c| c.is_ascii_digit()) {
@@ -125,6 +127,8 @@ mod tests {
         let repo = files(&["gate/gate_test.go", "src/x.rs", "README.md"]);
         assert_eq!(named_files("    gate_test.go:67: expected", &repo), vec!["gate/gate_test.go"]);
         assert_eq!(named_files("--- a/src/x.rs\n+++ b/src/x.rs", &repo), vec!["src/x.rs"]);
+        let pytest = files(&["testing/test_show.py"]);
+        assert_eq!(named_files("FAILED testing/test_show.py::test_direct_params - Failed", &pytest), vec!["testing/test_show.py"]);
         assert!(named_files("nothing here, version 1.2 ends.", &repo).is_empty());
     }
 

@@ -36,6 +36,9 @@ const HANDOFF_OUTLINE: &str =
 const FAILURE_MARKERS: &[&str] = &[
     "--- FAIL",
     "FAIL ",
+    "FAIL\t",
+    "FAIL:",
+    "[build failed]",
     "FAILED",
     "Traceback (most recent call last)",
     "panicked at",
@@ -936,6 +939,17 @@ mod failure_tests {
         let dir = indexed_repo();
         let said = context(usage_check(dir.path(), "s1", "Bash", FAILING_RUN)).unwrap();
         assert!(said.contains("gate/gate.go"), "{said}");
+    }
+
+    #[test]
+    fn go_build_failures_and_unittest_failures_count_as_failures() {
+        let dir = indexed_repo();
+        let go_build = "$ go test ./.\nFAIL\tgithub.com/x/gate [build failed]\n./gate_test.go:356:16: undefined: readNthLine";
+        let unittest = "FAIL: test_placeholders (gate_test.TestGate)\n  File \"gate_test.go\", line 3";
+        for output in [go_build, unittest] {
+            let said = context(usage_check(dir.path(), "s1", "Bash", output));
+            assert!(said.is_some_and(|s| s.contains("gate/gate.go")), "{output}");
+        }
     }
 
     #[test]
